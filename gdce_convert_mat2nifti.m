@@ -1,0 +1,53 @@
+function outFile = gdce_convert_mat2nifti(matFile, outFile, varargin)
+%GDCE_CONVERT_MAT2NIFTI Batch-convert a GRASP .mat reconstruction to 4D NIfTI.
+%
+%   gdce_convert_mat2nifti('recon.mat')                 -> recon_dce.nii.gz
+%   gdce_convert_mat2nifti('recon.mat', 'out.nii.gz', 'Name', Value, ...)
+%
+%   Options (in addition to all GraspData.fromFile options):
+%   'Plane'      'axial' | 'coronal' | 'sagittal'     ('axial')
+%   'SwapInPlane' logical                              (false)
+%   'Flip'       [LR AP SI] logical flips              ([0 0 0])
+%   'Voxel'      [row col slice] mm                    ([1 1 1])
+%   'dt'         s per frame                           (NaN)
+%   't0'         s, time of frame 1                    (0)
+%   'Frames'     frame indices to write                (all)
+%
+%   Uses exactly the same frame synthesis, orientation and affine as the
+%   viewer, so masks exported from GraspDCEViewer overlay this file. A JSON
+%   sidecar with timing and provenance is written next to the image.
+%
+%   Example (loop over 8/16/32-spoke reconstructions):
+%     f = dir('*.mat');
+%     for k = 1:numel(f)
+%         gdce_convert_mat2nifti(f(k).name, '', 'Voxel', [0.94 0.94 2], 'dt', 3.3);
+%     end
+
+if nargin < 2 || isempty(outFile)
+    [p, b] = fileparts(matFile);
+    outFile = fullfile(p, [b '_dce.nii.gz']);
+end
+g = struct('Plane', 'axial', 'SwapInPlane', false, 'Flip', [false false false], ...
+    'Voxel', [1 1 1], 'dt', NaN, 't0', 0, 'Frames', []);
+pass = {};
+for i = 1:2:numel(varargin)
+    fn = fieldnames(g);
+    m = find(strcmpi(fn, varargin{i}), 1);
+    if isempty(m)
+        pass(end + 1:end + 2) = varargin(i:i + 1); %#ok<AGROW>
+    else
+        g.(fn{m}) = varargin{i + 1};
+    end
+end
+prog = @(f, msg) fprintf('  %5.1f%%  %s\n', 100 * f, msg);
+fprintf('Loading %s\n', matFile);
+D = GraspData.fromFile(matFile, pass{:});
+D.setOrientation(g.Plane, g.SwapInPlane, g.Flip);
+D.VoxNative = g.Voxel;
+D.dt = g.dt;
+D.t0 = g.t0;
+fr = g.Frames;
+if isempty(fr), fr = 1:D.NT; end
+gdce_write_dce_nifti(D, outFile, fr, prog);
+fprintf('Wrote %s\n', outFile);
+end

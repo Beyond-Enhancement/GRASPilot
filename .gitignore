@@ -1,0 +1,13 @@
+# Never commit imaging data or exported results
+*.mat
+*.nii
+*.nii.gz
+*.dcm
+*.xlsx
+*.csv
+*.json
+*.png
+# MATLAB autosave / editor files
+*.asv
+*.m~
+.DS_Store
