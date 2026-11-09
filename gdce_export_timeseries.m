@@ -90,7 +90,10 @@ info = {
     'Voxel size i j k (mm)', num2str(D.canonVox());
     'Native acquisition plane', D.Plane;
     'Frames', T;
-    'Temporal resolution (s/frame)', D.dt;
+    'Temporal binning (raw frames averaged per frame)', D.BinSize;
+    'Raw frames', D.NTRaw;
+    'Dropped raw frames (incomplete last bin)', num2str(D.droppedFrames());
+    'Temporal resolution (s/frame, after binning)', D.effectiveDt();
     'Time of frame 1 (s)', D.t0;
     'Crop factor', D.CropFactor;
     'Normalized to global max (ReadData.m)', double(D.Normalized);

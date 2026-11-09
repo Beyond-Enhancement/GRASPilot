@@ -11,7 +11,8 @@ function outFile = gdce_convert_mat2nifti(matFile, outFile, varargin)
 %   'Voxel'      [row col slice] mm                    ([1 1 1])
 %   'dt'         s per frame                           (NaN)
 %   't0'         s, time of frame 1                    (0)
-%   'Frames'     frame indices to write                (all)
+%   'BinSize'    average n consecutive frames          (1)
+%   'Frames'     frame indices to write, after binning (all)
 %
 %   Uses exactly the same frame synthesis, orientation and affine as the
 %   viewer, so masks exported from GraspDCEViewer overlay this file. A JSON
@@ -28,7 +29,7 @@ if nargin < 2 || isempty(outFile)
     outFile = fullfile(p, [b '_dce.nii.gz']);
 end
 g = struct('Plane', 'axial', 'SwapInPlane', false, 'Flip', [false false false], ...
-    'Voxel', [1 1 1], 'dt', NaN, 't0', 0, 'Frames', []);
+    'Voxel', [1 1 1], 'dt', NaN, 't0', 0, 'Frames', [], 'BinSize', 1);
 pass = {};
 for i = 1:2:numel(varargin)
     fn = fieldnames(g);
@@ -45,6 +46,7 @@ D = GraspData.fromFile(matFile, pass{:});
 D.setOrientation(g.Plane, g.SwapInPlane, g.Flip);
 D.VoxNative = g.Voxel;
 D.dt = g.dt;
+D.setBinning(g.BinSize);
 D.t0 = g.t0;
 fr = g.Frames;
 if isempty(fr), fr = 1:D.NT; end

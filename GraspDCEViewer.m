@@ -11,13 +11,15 @@ classdef GraspDCEViewer < handle
 %   Name/value options: 'Plane' ('axial'|'coronal'|'sagittal'), 'Voxel'
 %   [row col slice] mm, 'dt' s/frame, 't0' s, 'DimOrder' (dense input,
 %   default 'xytz'), 'CropFactor', 'Normalize', 'CoefVar', 'BasisVar',
-%   'ImageVar', 'NoDialog' (true skips the load dialog).
+%   'ImageVar', 'BinSize' (average n consecutive frames), 'NoDialog'
+%   (true skips the load dialog).
 %
 %   Mouse:  left = active tool, right-drag = window/level, shift- or
 %           middle-drag = pan, wheel = slice, Ctrl+wheel = zoom.
 %   Keys:   Left/Right frame -/+1 (Shift: 10), Up/Down slice, Home/End,
 %           Space play, N/C/B/E tools, [ ] brush size, D toggle 3D,
-%           P preview, Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo.
+%           P preview, S subtraction view, G grow from crosshair,
+%           Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo.
 %
 %   No toolboxes are required. Nothing is written except files you export.
 
@@ -36,7 +38,11 @@ classdef GraspDCEViewer < handle
         Exclusive = true;
         Constrain = false;
         Preview = false;
-        ThrSrc = 1;
+        ThrSrc = 2;             % index into ThrKeys (default: subtraction)
+        SubFrames = [1 1];      % subtraction map = frame SubFrames(1) - frame SubFrames(2)
+        ViewMode = 'frame';     % 'frame' or 'sub' (views show the subtraction map)
+        CLimStore = struct('frame', [], 'sub', []);
+        GrowR = 40;             % mm, max distance for grow-from-crosshair
         ThrLo = -Inf;
         ThrHi = Inf;
         BaseFrames = [1 5];
@@ -62,6 +68,7 @@ classdef GraspDCEViewer < handle
         LastDir = '';
         CursorTC = [];
         ViewImg = cell(1, 3);
+        FrameImg = cell(1, 3);
         OvlRGB = cell(1, 3);
         OvlA = cell(1, 3);
         PrevA = cell(1, 3);
@@ -75,9 +82,10 @@ classdef GraspDCEViewer < handle
         ViewAxis = [3 2 1];
         ViewNames = {'Axial', 'Coronal', 'Sagittal'};
         ViewLabels = {{'R', 'L', 'A', 'P'}, {'R', 'L', 'S', 'I'}, {'A', 'P', 'S', 'I'}};
-        ThrNames = {'Signal at current frame', 'Current frame - baseline', ...
-            'Current frame rel. enhancement (%)', 'Peak - baseline (max over time)', ...
-            'Peak rel. enhancement (%)'};
+        ThrKeys = {'frame', 'sub', 'frameSub', 'frameRE', 'peakEnh', 'peakRE'};
+        ThrNames = {'Signal at current frame', 'Subtraction: post - pre frame', ...
+            'Current frame - baseline', 'Current frame rel. enhancement (%)', ...
+            'Peak - baseline (max over time)', 'Peak rel. enhancement (%)'};
         Palette = [1.00 0.85 0.10; 0.20 0.90 1.00; 1.00 0.35 0.95; 0.40 1.00 0.35; ...
             1.00 0.60 0.15; 0.55 0.55 1.00; 0.60 1.00 0.85; 1.00 0.55 0.55; 0.85 0.65 1.00];
         SSSColor = [1.00 0.22 0.22];
@@ -176,6 +184,9 @@ classdef GraspDCEViewer < handle
             D.VoxNative = opts.Voxel(:)';
             D.dt = opts.dt;
             D.t0 = opts.t0;
+            if isfield(opts, 'BinSize') && ~isempty(opts.BinSize) && opts.BinSize > 1
+                D.setBinning(opts.BinSize);
+            end
             obj.LoadOpts.Plane = opts.Plane;
             obj.LoadOpts.Voxel = opts.Voxel(:)';
             obj.LoadOpts.dt = opts.dt;
@@ -212,6 +223,11 @@ classdef GraspDCEViewer < handle
             obj.BaseFrames = [1 max(1, min(5, D.NT))];
             set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
             set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+            obj.setSubFrames(D.NT, 1, false);
+            set(obj.H.binEdit, 'String', num2str(D.BinSize));
+            obj.ViewMode = 'frame';
+            set(obj.H.btnSub, 'Value', 0);
+            obj.CLimStore = struct('frame', [], 'sub', []);
             obj.setupTimeSlider();
             obj.resetViewsGeometry();
             obj.autoContrast(false);
@@ -241,7 +257,7 @@ classdef GraspDCEViewer < handle
                 obj.refreshView(v, 'image');
             end
             obj.updateTicFrameLine();
-            if obj.ThrSrc <= 3, obj.updateThrInfo(); end
+            if obj.thrUsesFrame(), obj.updateThrInfo(); end
         end
 
         function setPos(obj, c)
@@ -505,9 +521,10 @@ classdef GraspDCEViewer < handle
 
         % ------------------------------------------------------------ threshold
         function setThrSource(obj, k)
+            if ischar(k), k = find(strcmp(obj.ThrKeys, k), 1); end
             obj.ThrSrc = k;
             set(obj.H.thrSrc, 'Value', k);
-            if k >= 2 && (obj.Preview || obj.Constrain)
+            if obj.thrNeedsMaps() && (obj.Preview || obj.Constrain)
                 if ~obj.ensureMaps(false), return; end
             end
             obj.updateThrSliderRange();
@@ -532,7 +549,7 @@ classdef GraspDCEViewer < handle
 
         function setPreview(obj, on)
             on = logical(on);
-            if on && obj.ThrSrc >= 2 && ~obj.ensureMaps(false), on = false; end
+            if on && obj.thrNeedsMaps() && ~obj.ensureMaps(false), on = false; end
             obj.Preview = on;
             set(obj.H.chkPrev, 'Value', double(on));
             obj.refreshPreviews();
@@ -540,7 +557,7 @@ classdef GraspDCEViewer < handle
 
         function setConstrain(obj, on)
             on = logical(on);
-            if on && obj.ThrSrc >= 2 && ~obj.ensureMaps(false), on = false; end
+            if on && obj.thrNeedsMaps() && ~obj.ensureMaps(false), on = false; end
             obj.Constrain = on;
             set(obj.H.chkCons, 'Value', double(on));
         end
@@ -594,6 +611,160 @@ classdef GraspDCEViewer < handle
             obj.setThreshold(th, Inf);
             obj.setStatus(sprintf('Otsu threshold %.4g from %s (%s). Use Keep: 3D to apply.', th, src, ...
                 obj.ThrNames{obj.ThrSrc}));
+        end
+
+        function setSubFrames(obj, post, pre, refresh)
+            % subtraction map = frame post - frame pre (default last - first)
+            if nargin < 4, refresh = true; end
+            T = obj.Data.NT;
+            if ~isfinite(post), post = T; end
+            if ~isfinite(pre), pre = 1; end
+            post = max(1, min(T, round(post)));
+            pre = max(1, min(T, round(pre)));
+            obj.SubFrames = [post pre];
+            set(obj.H.subPost, 'String', num2str(post));
+            set(obj.H.subPre, 'String', num2str(pre));
+            if ~refresh, return; end
+            if strcmp(obj.ViewMode, 'sub')
+                obj.CLimStore.sub = [];
+                obj.autoContrast(true);
+            end
+            obj.refreshAll();
+            obj.updateThrSliderRange();
+        end
+
+        function A = subVolume(obj)
+            A = obj.Data.canonSubtraction(obj.SubFrames(1), obj.SubFrames(2));
+        end
+
+        function setViewMode(obj, mode)
+            if ~obj.requireData(), set(obj.H.btnSub, 'Value', 0); return; end
+            if strcmp(mode, obj.ViewMode), set(obj.H.btnSub, 'Value', double(strcmp(mode, 'sub'))); return; end
+            obj.CLimStore.(obj.ViewMode) = obj.CLim;
+            obj.ViewMode = mode;
+            set(obj.H.btnSub, 'Value', double(strcmp(mode, 'sub')));
+            for v = 1:3
+                obj.refreshView(v, 'all');
+            end
+            if isempty(obj.CLimStore.(mode))
+                obj.autoContrast(true);
+            else
+                obj.setCLim(obj.CLimStore.(mode));
+            end
+            if strcmp(mode, 'sub')
+                obj.setStatus(sprintf(['Showing subtraction map: frame %d - frame %d. Threshold it (Map = ' ...
+                    'Subtraction, Otsu/Low), then Grow from crosshair or Keep: 3D.'], obj.SubFrames));
+            else
+                obj.setStatus('Showing the current frame.');
+            end
+        end
+
+        function n = growFromCrosshair(obj)
+            % 3D (6-connected) region of in-window voxels connected to the
+            % crosshair, within GrowR mm, added to the active ROI.
+            n = 0;
+            if ~obj.requireData() || ~obj.ensureThresholdReady(), return; end
+            if ~isfinite(obj.ThrLo) && ~isfinite(obj.ThrHi)
+                obj.inform('Set a threshold window first (Low/High or Otsu).', 'Grow from crosshair');
+                return
+            end
+            nn = obj.Data.canonSize();
+            vox = obj.Data.canonVox();
+            seed = obj.Pos;
+            rv = ceil(obj.GrowR ./ vox);
+            lo = max(1, seed - rv);
+            hi = min(nn, seed + rv);
+            [I, J, K] = ndgrid(lo(1):hi(1), lo(2):hi(2), lo(3):hi(3));
+            lin = sub2ind(nn, I(:), J(:), K(:));
+            M = reshape(obj.inWindow(obj.thrValues(lin)), hi - lo + 1);
+            s0 = seed - lo + 1;
+            if ~M(s0(1), s0(2), s0(3))
+                obj.inform(['The crosshair voxel is outside the threshold window. Put the crosshair on ' ...
+                    'enhancing tumor (Navigate tool) and try again.'], 'Grow from crosshair');
+                return
+            end
+            R = GraspDCEViewer.floodFill3D(M, s0);
+            add = lin(R(:));
+            if ~obj.ensureActiveROI(), return; end
+            r = obj.ActiveROI;
+            obj.beginAction();
+            obj.addVoxels(r, add);
+            obj.commitAction('Grow');
+            obj.afterMaskChange();
+            n = numel(add);
+            obj.setStatus(sprintf('Grew %d voxels (%.3f mL) connected to the crosshair into %s (%s, max %g mm).', ...
+                n, n * prod(vox) / 1000, obj.ROIs(r).Name, obj.ThrNames{obj.ThrSrc}, obj.GrowR));
+        end
+
+        function n = windowToROI(obj)
+            % add every voxel inside the threshold window to the active ROI
+            n = 0;
+            if ~obj.requireData() || ~obj.ensureThresholdReady(), return; end
+            if ~isfinite(obj.ThrLo) && ~isfinite(obj.ThrHi)
+                obj.inform('Set a threshold window first (Low/High or Otsu).', 'All in window -> ROI');
+                return
+            end
+            lin = find(obj.inWindow(obj.thrVolume()));
+            if isempty(lin)
+                obj.inform('No voxels are inside the threshold window.', 'All in window -> ROI');
+                return
+            end
+            frac = numel(lin) / prod(obj.Data.canonSize());
+            if frac > 0.05
+                b = obj.ask(sprintf(['This adds %d voxels (%.1f%% of the volume), which usually includes ' ...
+                    'vessels and other enhancing tissue. Continue?'], numel(lin), 100 * frac), ...
+                    'All in window -> ROI', {'Add', 'Cancel'}, 'Add');
+                if ~strcmp(b, 'Add'), return; end
+            end
+            if ~obj.ensureActiveROI(), return; end
+            r = obj.ActiveROI;
+            obj.beginAction();
+            obj.addVoxels(r, lin);
+            obj.commitAction('Window -> ROI');
+            obj.afterMaskChange();
+            n = numel(lin);
+            obj.setStatus(sprintf('Added %d voxels inside the window to %s.', n, obj.ROIs(r).Name));
+        end
+
+        function applyBinning(obj, n, keepPartial)
+            % average n consecutive frames (signal intensity); n = 1 restores the original series
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            if nargin < 3 || isempty(keepPartial), keepPartial = D.BinKeepPartial; end
+            if ~isfinite(n), n = D.BinSize; end
+            n = max(1, min(D.NTRaw, round(n)));
+            rawCur = D.BinIdx{obj.Frame}(1);
+            rawBase = [D.BinIdx{obj.BaseFrames(1)}(1), D.BinIdx{obj.BaseFrames(2)}(end)];
+            obj.stopPlay();
+            D.setBinning(n, keepPartial);
+            T = D.NT;
+            obj.Frame = min(T, floor((rawCur - 1) / n) + 1);
+            a = min(T, floor((rawBase(1) - 1) / n) + 1);
+            b = max(a, min(T, floor(rawBase(2) / n)));
+            obj.BaseFrames = [a b];
+            set(obj.H.base1, 'String', num2str(a));
+            set(obj.H.base2, 'String', num2str(b));
+            obj.setSubFrames(T, 1, false);
+            obj.CLimStore.sub = [];
+            set(obj.H.binEdit, 'String', num2str(n));
+            for r = 1:numel(obj.ROIs), obj.ROIs(r).Dirty = true; end
+            obj.CursorTC = [];
+            if obj.Preview && obj.thrNeedsMaps(), obj.ensureMaps(false); end
+            obj.setupTimeSlider();
+            obj.updateDataInfo();
+            if strcmp(obj.ViewMode, 'sub'), obj.autoContrast(true); end
+            obj.refreshAll();
+            obj.updateThrSliderRange();
+            dr = D.droppedFrames();
+            note = '';
+            if ~isempty(dr), note = sprintf(' Raw frames %d-%d dropped (incomplete bin).', dr(1), dr(end)); end
+            if D.hasTiming()
+                ts = sprintf(', %.3g s/frame', D.effectiveDt());
+            else
+                ts = '';
+            end
+            obj.setStatus(sprintf('Temporal binning: %d raw frames -> %d frames of %d averaged%s.%s', ...
+                D.NTRaw, T, n, ts, note));
         end
 
         function fillHoles(obj)
@@ -662,13 +833,23 @@ classdef GraspDCEViewer < handle
 
         function autoContrast(obj, ~)
             if isempty(obj.Data), return; end
-            Vv = obj.Data.canonVolume(obj.Frame);
+            if strcmp(obj.ViewMode, 'sub')
+                Vv = obj.subVolume();
+            else
+                Vv = obj.Data.canonVolume(obj.Frame);
+            end
             step = max(1, floor(numel(Vv) / 200000));
             s = sort(double(Vv(1:step:end)));
-            hi = s(max(1, round(0.995 * numel(s))));
+            s = s(isfinite(s));
+            if isempty(s), return; end
+            if strcmp(obj.ViewMode, 'sub')
+                hi = s(max(1, round(0.998 * numel(s))));
+            else
+                hi = s(max(1, round(0.995 * numel(s))));
+            end
             lo = 0;
-            if s(1) < 0, lo = s(max(1, round(0.005 * numel(s)))); end
-            if hi <= lo, hi = s(end); end
+            if s(1) < 0 && ~strcmp(obj.ViewMode, 'sub'), lo = s(max(1, round(0.005 * numel(s)))); end
+            if hi <= lo, hi = max(s(end), lo + 1e-6); end
             obj.setCLim([lo hi]);
         end
 
@@ -865,6 +1046,9 @@ classdef GraspDCEViewer < handle
             S.dt = D.dt;
             S.t0 = D.t0;
             S.BaseFrames = obj.BaseFrames;
+            S.BinSize = D.BinSize;
+            S.BinKeepPartial = D.BinKeepPartial;
+            S.SubFrames = obj.SubFrames;
             S.ROINames = {obj.ROIs.Name};
             S.ROIColors = reshape([obj.ROIs.Color], 3, [])';
             S.ROIVisible = [obj.ROIs.Visible];
@@ -896,12 +1080,23 @@ classdef GraspDCEViewer < handle
             geoDiff = ~strcmp(S.Plane, D.Plane) || logical(S.SwapInPlane) ~= D.SwapInPlane || ...
                 any(logical(S.UserFlip(:)') ~= D.UserFlip) || any(abs(S.VoxNative(:)' - D.VoxNative) > 1e-6) ...
                 || ~isequaln(S.dt, D.dt);
-            if geoDiff
-                b = obj.ask(['Apply the geometry saved with the ROIs (orientation, voxel size, timing)? ' ...
-                    'The ROI voxels are correct either way.'], 'Load ROIs', {'Apply', 'Keep current'}, 'Apply');
-                if strcmp(b, 'Apply')
+            sBin = 1;
+            if isfield(S, 'BinSize'), sBin = S.BinSize; end
+            binDiff = sBin ~= D.BinSize;
+            applied = false;
+            if geoDiff || binDiff
+                b = obj.ask(['Apply the geometry and timing saved with the ROIs (orientation, voxel size, ' ...
+                    'temporal resolution, frame binning)? The ROI voxels are correct either way.'], ...
+                    'Load ROIs', {'Apply', 'Keep current'}, 'Apply');
+                applied = strcmp(b, 'Apply');
+                if applied && geoDiff
                     obj.applyGeometry(S.Plane, logical(S.SwapInPlane), logical(S.UserFlip(:)'), ...
                         S.VoxNative, S.dt, S.t0);
+                end
+                if applied && binDiff
+                    kp = false;
+                    if isfield(S, 'BinKeepPartial'), kp = logical(S.BinKeepPartial); end
+                    obj.applyBinning(sBin, kp);
                 end
             end
             if strcmp(mode, 'Replace')
@@ -917,10 +1112,14 @@ classdef GraspDCEViewer < handle
                 obj.Masks{k} = D.native2canon(Mn);
                 obj.ROIs(k).Visible = logical(S.ROIVisible(r));
             end
-            if isfield(S, 'BaseFrames')
-                obj.BaseFrames = S.BaseFrames;
-                set(obj.H.base1, 'String', num2str(S.BaseFrames(1)));
-                set(obj.H.base2, 'String', num2str(S.BaseFrames(2)));
+            if isfield(S, 'BaseFrames') && (applied || ~binDiff)
+                bfr = max(1, min(D.NT, S.BaseFrames));
+                obj.BaseFrames = [bfr(1) max(bfr)];
+                set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
+                set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+            end
+            if isfield(S, 'SubFrames') && (applied || ~binDiff)
+                obj.setSubFrames(S.SubFrames(1), S.SubFrames(2), false);
             end
             obj.UndoStack = {}; obj.RedoStack = {};
             obj.afterMaskChange();
@@ -988,7 +1187,7 @@ classdef GraspDCEViewer < handle
             C = obj.Col;
             ss = get(0, 'ScreenSize');
             W = min(1720, max(1200, ss(3) - 80));
-            Hh = min(1020, max(760, ss(4) - 110));
+            Hh = min(1020, max(770, ss(4) - 110));
             pos = [max(1, round((ss(3) - W) / 2)), max(30, round((ss(4) - Hh) / 2)), W, Hh];
             obj.Fig = figure('Name', 'GRASP DCE Viewer', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                 'ToolBar', 'none', 'Color', C.bg, 'Units', 'pixels', 'Position', pos, 'Visible', 'off', ...
@@ -1069,9 +1268,13 @@ classdef GraspDCEViewer < handle
             uimenu(m, 'Label', 'Clear active ROI on slice', 'Separator', 'on', 'Callback', @(s, e) obj.clearROI('slice'));
             uimenu(m, 'Label', 'Clear active ROI (all slices)', 'Callback', @(s, e) obj.clearROI('all'));
             uimenu(m, 'Label', 'Fill holes in active ROI', 'Callback', @(s, e) obj.fillHoles());
+            uimenu(m, 'Label', 'Grow from crosshair   (G)', 'Separator', 'on', 'Callback', @(s, e) obj.growFromCrosshair());
+            uimenu(m, 'Label', 'All voxels in threshold window -> active ROI', 'Callback', @(s, e) obj.windowToROI());
             m = uimenu(obj.Fig, 'Label', 'View');
             uimenu(m, 'Label', 'Geometry and orientation...', 'Callback', @(s, e) obj.geometryDialog());
-            uimenu(m, 'Label', 'Auto contrast', 'Callback', @(s, e) obj.autoContrast(true));
+            uimenu(m, 'Label', 'Show subtraction map   (S)', 'Callback', @(s, e) obj.toggleSubView());
+            uimenu(m, 'Label', 'Temporal binning...', 'Callback', @(s, e) obj.onBinningDialog());
+            uimenu(m, 'Label', 'Auto contrast', 'Separator', 'on', 'Callback', @(s, e) obj.autoContrast(true));
             uimenu(m, 'Label', 'Reset zoom', 'Callback', @(s, e) obj.resetZoom());
             m = uimenu(obj.Fig, 'Label', 'Help');
             uimenu(m, 'Label', 'Mouse and keyboard...', 'Callback', @(s, e) obj.showHelp());
@@ -1112,99 +1315,129 @@ classdef GraspDCEViewer < handle
             hdr(8, 'DATA');
             obj.ctl(P, 10, 28, 135, 26, 'pushbutton', 'Open .mat...', 'Callback', @(s, e) obj.onOpen());
             obj.ctl(P, 150, 28, 140, 26, 'pushbutton', 'Geometry...', 'Callback', @(s, e) obj.geometryDialog());
-            obj.H.info = obj.ctl(P, 10, 58, -10, 48, 'text', 'No data loaded.', 'FontSize', 8, 'ForegroundColor', C.dim);
+            obj.H.info = obj.ctl(P, 10, 58, -10, 44, 'text', 'No data loaded.', 'FontSize', 8, 'ForegroundColor', C.dim);
+            obj.ctl(P, 10, 108, 86, 18, 'text', 'Average every');
+            obj.H.binEdit = obj.ctl(P, 98, 106, 36, 22, 'edit', '1', ...
+                'TooltipString', 'Combine consecutive frames by averaging signal intensity (1 = original)', ...
+                'Callback', @(s, e) obj.applyBinning(str2double(get(s, 'String'))));
+            obj.ctl(P, 138, 108, 48, 18, 'text', 'frames');
+            obj.ctl(P, 188, 106, 102, 22, 'pushbutton', 'Apply binning', ...
+                'TooltipString', 'Lower the temporal resolution: each frame = mean of n consecutive frames', ...
+                'Callback', @(s, e) obj.applyBinning(str2double(get(obj.H.binEdit, 'String'))));
 
-            hdr(112, 'SEGMENTATION');
+            hdr(136, 'SEGMENTATION');
             names = {'nav', 'circle', 'brush', 'erase'};
             labels = {'Navigate', 'Circle', 'Brush', 'Eraser'};
             xs = [10 81 152 223];
             for i = 1:4
                 nm = names{i};
-                obj.H.tool.(nm) = obj.ctl(P, xs(i), 132, 66, 26, 'togglebutton', labels{i}, ...
+                obj.H.tool.(nm) = obj.ctl(P, xs(i), 156, 66, 26, 'togglebutton', labels{i}, ...
                     'Callback', @(s, e) obj.setTool(nm));
             end
-            obj.ctl(P, 10, 167, 80, 18, 'text', 'Radius (mm)');
-            obj.H.rSlider = obj.ctl(P, 92, 167, 140, 18, 'slider', '', 'Min', 0.5, 'Max', 25, ...
+            obj.ctl(P, 10, 191, 80, 18, 'text', 'Radius (mm)');
+            obj.H.rSlider = obj.ctl(P, 92, 191, 140, 18, 'slider', '', 'Min', 0.5, 'Max', 25, ...
                 'Value', obj.BrushR, 'SliderStep', [0.5 2] / 24.5, 'Callback', @(s, e) obj.setBrushR(get(s, 'Value')));
-            obj.H.rEdit = obj.ctl(P, 238, 165, 52, 22, 'edit', num2str(obj.BrushR), ...
+            obj.H.rEdit = obj.ctl(P, 238, 189, 52, 22, 'edit', num2str(obj.BrushR), ...
                 'Callback', @(s, e) obj.setBrushR(str2double(get(s, 'String'))));
-            obj.H.chk3D = obj.ctl(P, 10, 192, 135, 20, 'checkbox', '3D (sphere)', 'Value', obj.Use3D, ...
+            obj.H.chk3D = obj.ctl(P, 10, 216, 135, 20, 'checkbox', '3D (sphere)', 'Value', obj.Use3D, ...
                 'TooltipString', 'Circle, brush and eraser act in 3D (key D)', 'Callback', @(s, e) obj.set3D(get(s, 'Value')));
-            obj.H.chkExcl = obj.ctl(P, 150, 192, 140, 20, 'checkbox', 'Exclusive ROIs', 'Value', obj.Exclusive, ...
+            obj.H.chkExcl = obj.ctl(P, 150, 216, 140, 20, 'checkbox', 'Exclusive ROIs', 'Value', obj.Exclusive, ...
                 'TooltipString', 'Painting removes the voxels from other ROIs (no overlap)', ...
                 'Callback', @(s, e) obj.setFlag('Exclusive', get(s, 'Value')));
-            obj.ctl(P, 10, 216, 66, 24, 'pushbutton', 'Undo', 'Callback', @(s, e) obj.undo());
-            obj.ctl(P, 81, 216, 66, 24, 'pushbutton', 'Redo', 'Callback', @(s, e) obj.redo());
-            obj.ctl(P, 152, 216, 66, 24, 'pushbutton', 'Clear slice', ...
+            obj.ctl(P, 10, 240, 66, 24, 'pushbutton', 'Undo', 'Callback', @(s, e) obj.undo());
+            obj.ctl(P, 81, 240, 66, 24, 'pushbutton', 'Redo', 'Callback', @(s, e) obj.redo());
+            obj.ctl(P, 152, 240, 66, 24, 'pushbutton', 'Clear slice', ...
                 'TooltipString', 'Clear the active ROI on the current slice of the last-used view', ...
                 'Callback', @(s, e) obj.clearROI('slice'));
-            obj.ctl(P, 223, 216, 66, 24, 'pushbutton', 'Clear ROI', 'Callback', @(s, e) obj.clearROI('all'));
+            obj.ctl(P, 223, 240, 66, 24, 'pushbutton', 'Clear ROI', 'Callback', @(s, e) obj.clearROI('all'));
 
-            hdr(250, 'THRESHOLD');
-            obj.ctl(P, 10, 271, 40, 18, 'text', 'Map');
-            obj.H.thrSrc = obj.ctl(P, 50, 269, -10, 22, 'popupmenu', obj.ThrNames, 'Value', obj.ThrSrc, ...
+            hdr(272, 'THRESHOLD / SUBTRACTION');
+            obj.ctl(P, 10, 293, 40, 18, 'text', 'Map');
+            obj.H.thrSrc = obj.ctl(P, 50, 291, -10, 22, 'popupmenu', obj.ThrNames, 'Value', obj.ThrSrc, ...
                 'Callback', @(s, e) obj.setThrSource(get(s, 'Value')));
-            obj.ctl(P, 10, 299, 100, 18, 'text', 'Baseline frames');
-            obj.H.base1 = obj.ctl(P, 112, 297, 40, 22, 'edit', '1', 'Callback', @(s, e) obj.onBaseline());
-            obj.ctl(P, 155, 299, 20, 18, 'text', 'to');
-            obj.H.base2 = obj.ctl(P, 176, 297, 40, 22, 'edit', '5', 'Callback', @(s, e) obj.onBaseline());
-            obj.ctl(P, 222, 297, 68, 22, 'pushbutton', 'Maps', ...
+            obj.ctl(P, 10, 321, 70, 18, 'text', 'Subtraction');
+            obj.ctl(P, 82, 321, 28, 18, 'text', 'post');
+            obj.H.subPost = obj.ctl(P, 110, 319, 38, 22, 'edit', '1', ...
+                'TooltipString', 'Post-contrast frame (default: last)', ...
+                'Callback', @(s, e) obj.setSubFrames(str2double(get(s, 'String')), obj.SubFrames(2)));
+            obj.ctl(P, 151, 321, 32, 18, 'text', '- pre');
+            obj.H.subPre = obj.ctl(P, 184, 319, 38, 22, 'edit', '1', ...
+                'TooltipString', 'Pre-contrast frame (default: first)', ...
+                'Callback', @(s, e) obj.setSubFrames(obj.SubFrames(1), str2double(get(s, 'String'))));
+            obj.H.btnSub = obj.ctl(P, 226, 319, 64, 22, 'togglebutton', 'Show', ...
+                'TooltipString', 'Display the subtraction map instead of the current frame (key S)', ...
+                'Callback', @(s, e) obj.toggleSubView());
+            obj.ctl(P, 10, 349, 100, 18, 'text', 'Baseline frames');
+            obj.H.base1 = obj.ctl(P, 112, 347, 40, 22, 'edit', '1', 'Callback', @(s, e) obj.onBaseline());
+            obj.ctl(P, 155, 349, 20, 18, 'text', 'to');
+            obj.H.base2 = obj.ctl(P, 176, 347, 40, 22, 'edit', '5', 'Callback', @(s, e) obj.onBaseline());
+            obj.ctl(P, 222, 347, 68, 22, 'pushbutton', 'Maps', ...
                 'TooltipString', 'Recompute baseline / peak enhancement maps', 'Callback', @(s, e) obj.ensureMaps(true));
-            obj.ctl(P, 10, 327, 32, 18, 'text', 'Low');
-            obj.H.thrLo = obj.ctl(P, 42, 325, 74, 22, 'edit', '-Inf', 'Callback', @(s, e) obj.onThrEdit());
-            obj.ctl(P, 122, 327, 34, 18, 'text', 'High');
-            obj.H.thrHi = obj.ctl(P, 156, 325, 74, 22, 'edit', 'Inf', 'Callback', @(s, e) obj.onThrEdit());
-            obj.ctl(P, 236, 325, 54, 22, 'pushbutton', 'Otsu', ...
+            obj.ctl(P, 10, 377, 32, 18, 'text', 'Low');
+            obj.H.thrLo = obj.ctl(P, 42, 375, 74, 22, 'edit', '-Inf', 'Callback', @(s, e) obj.onThrEdit());
+            obj.ctl(P, 122, 377, 34, 18, 'text', 'High');
+            obj.H.thrHi = obj.ctl(P, 156, 375, 74, 22, 'edit', 'Inf', 'Callback', @(s, e) obj.onThrEdit());
+            obj.ctl(P, 236, 375, 54, 22, 'pushbutton', 'Otsu', ...
                 'TooltipString', 'Suggest Low from the active ROI (Otsu)', 'Callback', @(s, e) obj.suggestThreshold());
-            obj.H.thrSlider = obj.ctl(P, 10, 353, -10, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', 0, ...
+            obj.H.thrSlider = obj.ctl(P, 10, 403, -10, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', 0, ...
                 'Callback', @(s, e) obj.onThrSlider());
             try
                 addlistener(obj.H.thrSlider, 'ContinuousValueChange', @(s, e) obj.onThrSlider());
             catch
             end
-            obj.H.chkPrev = obj.ctl(P, 10, 377, 90, 20, 'checkbox', 'Preview', 'Value', 0, ...
+            obj.H.chkPrev = obj.ctl(P, 10, 425, 90, 20, 'checkbox', 'Preview', 'Value', 0, ...
                 'TooltipString', 'Show voxels inside the threshold window (green) - key P', ...
                 'Callback', @(s, e) obj.setPreview(get(s, 'Value')));
-            obj.H.chkCons = obj.ctl(P, 105, 377, 185, 20, 'checkbox', 'Constrain brush/circle', 'Value', 0, ...
+            obj.H.chkCons = obj.ctl(P, 105, 425, 185, 20, 'checkbox', 'Constrain brush/circle', 'Value', 0, ...
                 'TooltipString', 'Brush and circle add only voxels inside the threshold window', ...
                 'Callback', @(s, e) obj.setConstrain(get(s, 'Value')));
-            obj.ctl(P, 10, 401, 92, 24, 'pushbutton', 'Keep: slice', ...
+            obj.ctl(P, 10, 449, 92, 24, 'pushbutton', 'Keep: slice', ...
                 'TooltipString', 'Remove voxels outside the window from the active ROI on this slice', ...
                 'Callback', @(s, e) obj.applyThreshold('slice'));
-            obj.ctl(P, 106, 401, 92, 24, 'pushbutton', 'Keep: 3D', ...
+            obj.ctl(P, 106, 449, 92, 24, 'pushbutton', 'Keep: 3D', ...
                 'TooltipString', 'Remove voxels outside the window from the whole active ROI', ...
                 'Callback', @(s, e) obj.applyThreshold('3d'));
-            obj.ctl(P, 202, 401, 88, 24, 'pushbutton', 'Fill holes', ...
+            obj.ctl(P, 202, 449, 88, 24, 'pushbutton', 'Fill holes', ...
                 'TooltipString', 'Fill enclosed holes slice by slice (plane of the last-used view)', ...
                 'Callback', @(s, e) obj.fillHoles());
-            obj.H.thrInfo = obj.ctl(P, 10, 429, -10, 18, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
+            obj.ctl(P, 10, 477, 130, 24, 'pushbutton', 'Grow from crosshair', ...
+                'TooltipString', ['Add the 3D region of in-window voxels connected to the crosshair ' ...
+                'voxel to the active ROI (key G)'], 'Callback', @(s, e) obj.growFromCrosshair());
+            obj.ctl(P, 142, 480, 24, 18, 'text', 'max');
+            obj.H.growR = obj.ctl(P, 166, 478, 32, 22, 'edit', num2str(obj.GrowR), ...
+                'TooltipString', 'Maximum distance from the crosshair (mm)', 'Callback', @(s, e) obj.onGrowR());
+            obj.ctl(P, 199, 480, 22, 18, 'text', 'mm');
+            obj.ctl(P, 222, 477, 68, 24, 'pushbutton', 'All -> ROI', ...
+                'TooltipString', 'Add every voxel inside the threshold window (whole volume) to the active ROI', ...
+                'Callback', @(s, e) obj.windowToROI());
+            obj.H.thrInfo = obj.ctl(P, 10, 505, -10, 18, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
 
-            hdr(455, 'DISPLAY');
-            obj.ctl(P, 10, 477, 50, 18, 'text', 'Window');
-            obj.H.wMin = obj.ctl(P, 62, 475, 60, 22, 'edit', '0', 'Callback', @(s, e) obj.onWindowEdit());
-            obj.H.wMax = obj.ctl(P, 126, 475, 60, 22, 'edit', '1', 'Callback', @(s, e) obj.onWindowEdit());
-            obj.ctl(P, 190, 475, 48, 22, 'pushbutton', 'Auto', 'Callback', @(s, e) obj.autoContrast(true));
-            obj.ctl(P, 242, 475, 48, 22, 'pushbutton', 'Fit', 'TooltipString', 'Reset zoom', ...
+            hdr(530, 'DISPLAY');
+            obj.ctl(P, 10, 552, 50, 18, 'text', 'Window');
+            obj.H.wMin = obj.ctl(P, 62, 550, 60, 22, 'edit', '0', 'Callback', @(s, e) obj.onWindowEdit());
+            obj.H.wMax = obj.ctl(P, 126, 550, 60, 22, 'edit', '1', 'Callback', @(s, e) obj.onWindowEdit());
+            obj.ctl(P, 190, 550, 48, 22, 'pushbutton', 'Auto', 'Callback', @(s, e) obj.autoContrast(true));
+            obj.ctl(P, 242, 550, 48, 22, 'pushbutton', 'Fit', 'TooltipString', 'Reset zoom', ...
                 'Callback', @(s, e) obj.resetZoom());
-            obj.ctl(P, 10, 503, 100, 18, 'text', 'ROI opacity');
-            obj.H.alpha = obj.ctl(P, 112, 503, -10, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', obj.Alpha, ...
+            obj.ctl(P, 10, 578, 100, 18, 'text', 'ROI opacity');
+            obj.H.alpha = obj.ctl(P, 112, 578, -10, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', obj.Alpha, ...
                 'Callback', @(s, e) obj.setFlag('Alpha', get(s, 'Value')));
-            obj.H.chkOutline = obj.ctl(P, 10, 527, 80, 20, 'checkbox', 'Outline', 'Value', obj.ShowOutline, ...
+            obj.H.chkOutline = obj.ctl(P, 10, 600, 80, 20, 'checkbox', 'Outline', 'Value', obj.ShowOutline, ...
                 'Callback', @(s, e) obj.setFlag('ShowOutline', get(s, 'Value')));
-            obj.H.chkCross = obj.ctl(P, 95, 527, 90, 20, 'checkbox', 'Crosshair', 'Value', obj.ShowCross, ...
+            obj.H.chkCross = obj.ctl(P, 95, 600, 90, 20, 'checkbox', 'Crosshair', 'Value', obj.ShowCross, ...
                 'Callback', @(s, e) obj.setFlag('ShowCross', get(s, 'Value')));
-            obj.H.chkCursor = obj.ctl(P, 190, 527, 100, 20, 'checkbox', 'Cursor TIC', 'Value', obj.ShowCursorTIC, ...
+            obj.H.chkCursor = obj.ctl(P, 190, 600, 100, 20, 'checkbox', 'Cursor TIC', 'Value', obj.ShowCursorTIC, ...
                 'TooltipString', 'Plot the time course of the crosshair voxel', ...
                 'Callback', @(s, e) obj.setFlag('ShowCursorTIC', get(s, 'Value')));
 
-            hdr(557, 'EXPORT');
-            obj.ctl(P, 10, 577, 137, 26, 'pushbutton', 'Image -> NIfTI', 'Callback', @(s, e) obj.onExportImage());
-            obj.ctl(P, 152, 577, 138, 26, 'pushbutton', 'Mask -> NIfTI', 'Callback', @(s, e) obj.onExportMask());
-            obj.ctl(P, 10, 607, -10, 26, 'pushbutton', 'ROI voxel time series -> spreadsheet', ...
+            hdr(628, 'EXPORT');
+            obj.ctl(P, 10, 648, 137, 24, 'pushbutton', 'Image -> NIfTI', 'Callback', @(s, e) obj.onExportImage());
+            obj.ctl(P, 152, 648, 138, 24, 'pushbutton', 'Mask -> NIfTI', 'Callback', @(s, e) obj.onExportMask());
+            obj.ctl(P, 10, 676, -10, 24, 'pushbutton', 'ROI voxel time series -> spreadsheet', ...
                 'Callback', @(s, e) obj.onExportTS());
-            obj.ctl(P, 10, 637, 90, 26, 'pushbutton', 'Save ROIs', 'Callback', @(s, e) obj.onSaveROIs());
-            obj.ctl(P, 104, 637, 90, 26, 'pushbutton', 'Load ROIs', 'Callback', @(s, e) obj.onLoadROIs());
-            obj.ctl(P, 198, 637, 92, 26, 'pushbutton', 'Import mask', 'Callback', @(s, e) obj.onImportMask());
+            obj.ctl(P, 10, 704, 90, 24, 'pushbutton', 'Save ROIs', 'Callback', @(s, e) obj.onSaveROIs());
+            obj.ctl(P, 104, 704, 90, 24, 'pushbutton', 'Load ROIs', 'Callback', @(s, e) obj.onLoadROIs());
+            obj.ctl(P, 198, 704, 92, 24, 'pushbutton', 'Import mask', 'Callback', @(s, e) obj.onImportMask());
         end
 
         function buildTime(obj)
@@ -1353,6 +1586,7 @@ classdef GraspDCEViewer < handle
                 ax = obj.V(v).Ax;
                 set(obj.V(v).Img, 'CData', zeros([sz 3]), 'XData', [1 sz(2)], 'YData', [1 sz(1)]);
                 obj.ViewImg{v} = zeros(sz, 'single');
+                obj.FrameImg{v} = zeros(sz, 'single');
                 obj.OvlRGB{v} = []; obj.OvlA{v} = []; obj.PrevA{v} = [];
                 set(ax, 'XLim', [0.5 sz(2) + 0.5], 'YLim', [0.5 sz(1) + 0.5], 'DataAspectRatio', [sy sx 1], ...
                     'CLim', obj.CLim);
@@ -1480,7 +1714,12 @@ classdef GraspDCEViewer < handle
             a = obj.ViewAxis(v);
             comp = false;
             if any(strcmp(what, {'all', 'image'}))
-                obj.ViewImg{v} = obj.toScreen(v, obj.Data.canonSlice(a, obj.Pos(a), obj.Frame));
+                obj.FrameImg{v} = obj.toScreen(v, obj.Data.canonSlice(a, obj.Pos(a), obj.Frame));
+                if strcmp(obj.ViewMode, 'sub')
+                    obj.ViewImg{v} = obj.screenSliceOf(v, obj.subVolume());
+                else
+                    obj.ViewImg{v} = obj.FrameImg{v};
+                end
                 obj.computePreview(v);
                 comp = true;
             end
@@ -1492,7 +1731,11 @@ classdef GraspDCEViewer < handle
             if any(strcmp(what, {'all', 'cross'}))
                 obj.refreshCross(v);
                 n = obj.Data.canonSize();
-                set(obj.V(v).Title, 'String', sprintf('%s   %d / %d', obj.ViewNames{v}, obj.Pos(a), n(a)));
+                tt = sprintf('%s   %d / %d', obj.ViewNames{v}, obj.Pos(a), n(a));
+                if strcmp(obj.ViewMode, 'sub')
+                    tt = sprintf('%s   [SUB %d - %d]', tt, obj.SubFrames(1), obj.SubFrames(2));
+                end
+                set(obj.V(v).Title, 'String', tt);
             end
         end
 
@@ -1601,49 +1844,90 @@ classdef GraspDCEViewer < handle
         end
 
         % ------------------------------------------------------------ threshold maps
+        function k = thrKey(obj)
+            k = obj.ThrKeys{obj.ThrSrc};
+        end
+
+        function tf = thrNeedsMaps(obj)
+            tf = any(strcmp(obj.thrKey(), {'frameSub', 'frameRE', 'peakEnh', 'peakRE'}));
+        end
+
+        function tf = thrUsesFrame(obj)
+            tf = any(strcmp(obj.thrKey(), {'frame', 'frameSub', 'frameRE'}));
+        end
+
         function M = thrSliceMap(obj, v)
+            % threshold map on the current slice of view v (screen orientation)
             M = [];
-            if isempty(obj.Data) || isempty(obj.ViewImg{v}), return; end
-            S = double(obj.ViewImg{v});
-            if obj.ThrSrc == 1
-                M = S;
-                return
+            if isempty(obj.Data) || isempty(obj.FrameImg{v}), return; end
+            F = double(obj.FrameImg{v});
+            key = obj.thrKey();
+            switch key
+                case 'frame'
+                    M = F;
+                    return
+                case 'sub'
+                    M = double(obj.screenSliceOf(v, obj.subVolume()));
+                    return
             end
             bf = obj.BaseFrames(1):obj.BaseFrames(2);
             if ~obj.Data.hasMaps(bf), return; end
-            switch obj.ThrSrc
-                case 2
-                    M = S - double(obj.screenSliceOf(v, obj.Data.canonMap('Baseline')));
-                case 3
+            switch key
+                case 'frameSub'
+                    M = F - double(obj.screenSliceOf(v, obj.Data.canonMap('Baseline')));
+                case 'frameRE'
                     B = double(obj.screenSliceOf(v, obj.Data.canonMap('Baseline')));
-                    M = 100 * (S - B) ./ B;
+                    M = 100 * (F - B) ./ B;
                     M(~(B > 0)) = NaN;
-                case 4
+                case 'peakEnh'
                     M = double(obj.screenSliceOf(v, obj.Data.canonMap('PeakEnh')));
-                case 5
+                case 'peakRE'
                     M = double(obj.screenSliceOf(v, obj.Data.canonMap('RelEnh')));
             end
         end
 
         function vals = thrValues(obj, lin)
             lin = lin(:);
-            switch obj.ThrSrc
-                case 1
+            switch obj.thrKey()
+                case 'frame'
                     vals = double(obj.Data.valuesAtFrame(lin, obj.Frame));
-                case 2
+                case 'sub'
+                    S = obj.subVolume();
+                    vals = double(S(lin));
+                case 'frameSub'
                     B = obj.Data.canonMap('Baseline');
                     vals = double(obj.Data.valuesAtFrame(lin, obj.Frame)) - double(B(lin));
-                case 3
+                case 'frameRE'
                     B = double(obj.Data.canonMap('Baseline'));
                     b = B(lin);
                     vals = 100 * (double(obj.Data.valuesAtFrame(lin, obj.Frame)) - b) ./ b;
                     vals(~(b > 0)) = NaN;
-                case 4
+                case 'peakEnh'
                     M = obj.Data.canonMap('PeakEnh');
                     vals = double(M(lin));
-                case 5
+                case 'peakRE'
                     M = obj.Data.canonMap('RelEnh');
                     vals = double(M(lin));
+            end
+        end
+
+        function V = thrVolume(obj)
+            % threshold map over the whole volume (canonical)
+            switch obj.thrKey()
+                case 'frame'
+                    V = obj.Data.canonVolume(obj.Frame);
+                case 'sub'
+                    V = obj.subVolume();
+                case 'frameSub'
+                    V = obj.Data.canonVolume(obj.Frame) - obj.Data.canonMap('Baseline');
+                case 'frameRE'
+                    B = obj.Data.canonMap('Baseline');
+                    V = 100 * (obj.Data.canonVolume(obj.Frame) - B) ./ B;
+                    V(~(B > 0)) = NaN;
+                case 'peakEnh'
+                    V = obj.Data.canonMap('PeakEnh');
+                case 'peakRE'
+                    V = obj.Data.canonMap('RelEnh');
             end
         end
 
@@ -1653,7 +1937,7 @@ classdef GraspDCEViewer < handle
 
         function ok = ensureThresholdReady(obj)
             ok = true;
-            if obj.ThrSrc >= 2, ok = obj.ensureMaps(false); end
+            if obj.thrNeedsMaps(), ok = obj.ensureMaps(false); end
         end
 
         function updateThrSliderRange(obj)
@@ -1682,7 +1966,7 @@ classdef GraspDCEViewer < handle
             s = '';
             if ~isempty(obj.Data) && r > 0 && r <= numel(obj.Masks) && (isfinite(obj.ThrLo) || isfinite(obj.ThrHi))
                 lin = find(obj.Masks{r});
-                if ~isempty(lin) && (obj.ThrSrc == 1 || obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)))
+                if ~isempty(lin) && (~obj.thrNeedsMaps() || obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)))
                     k = nnz(obj.inWindow(obj.thrValues(lin)));
                     s = sprintf('Window keeps %d / %d voxels of %s (%.0f%%)', k, numel(lin), ...
                         obj.ROIs(r).Name, 100 * k / numel(lin));
@@ -1832,12 +2116,7 @@ classdef GraspDCEViewer < handle
 
         function ticClick(obj)
             cp = get(obj.Tic.Ax, 'CurrentPoint');
-            x = cp(1, 1);
-            if obj.TicX == 1 && obj.Data.hasTiming()
-                f = round((x - obj.Data.t0) / obj.Data.dt) + 1;
-            else
-                f = round(x);
-            end
+            [~, f] = min(abs(obj.ticX() - cp(1, 1)));
             obj.setFrame(f);
         end
 
@@ -2036,8 +2315,10 @@ classdef GraspDCEViewer < handle
                 ft = obj.Data.frameTimes();
                 tl = sprintf('  t = %.1f s', ft(obj.Frame));
             end
-            obj.setStatus(sprintf('%s  [i j k] = [%d %d %d]   S = %.4g   frame %d%s%s', obj.ViewNames{v}, ...
-                c(1), c(2), c(3), val, obj.Frame, tl, rs));
+            lab = 'S';
+            if strcmp(obj.ViewMode, 'sub'), lab = sprintf('Sub(%d-%d)', obj.SubFrames); end
+            obj.setStatus(sprintf('%s  [i j k] = [%d %d %d]   %s = %.4g   frame %d%s%s', obj.ViewNames{v}, ...
+                c(1), c(2), c(3), lab, val, obj.Frame, tl, rs));
         end
 
         function c = cursorColor(obj)
@@ -2103,12 +2384,38 @@ classdef GraspDCEViewer < handle
                 case 'e', if ~ctrl, obj.setTool('erase'); end
                 case 'd', if ~ctrl, obj.set3D(~obj.Use3D); end
                 case 'p', if ~ctrl, obj.setPreview(~obj.Preview); end
+                case 's', if ~ctrl, obj.toggleSubView(); end
+                case 'g', if ~ctrl, obj.growFromCrosshair(); end
                 case 'leftbracket', obj.setBrushR(obj.BrushR / 1.25);
                 case 'rightbracket', obj.setBrushR(obj.BrushR * 1.25);
             end
         end
 
         % ------------------------------------------------------------ control callbacks
+        function toggleSubView(obj)
+            if strcmp(obj.ViewMode, 'sub')
+                obj.setViewMode('frame');
+            else
+                obj.setViewMode('sub');
+            end
+        end
+
+        function onGrowR(obj)
+            r = str2double(get(obj.H.growR, 'String'));
+            if isfinite(r) && r > 0, obj.GrowR = r; end
+            set(obj.H.growR, 'String', num2str(obj.GrowR));
+        end
+
+        function onBinningDialog(obj)
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            a = inputdlg({sprintf(['Average every n consecutive frames (1 = original, %d raw frames):'], D.NTRaw), ...
+                'Keep an incomplete last bin? (0 = drop, 1 = keep)'}, 'Temporal binning', 1, ...
+                {num2str(D.BinSize), num2str(double(D.BinKeepPartial))});
+            if isempty(a), return; end
+            obj.applyBinning(str2double(a{1}), str2double(a{2}) == 1);
+        end
+
         function onSlider(obj)
             if isempty(obj.Data), return; end
             obj.setFrame(get(obj.H.slider, 'Value'));
@@ -2161,7 +2468,7 @@ classdef GraspDCEViewer < handle
             set(obj.H.base2, 'String', num2str(b));
             if isequal([a b], obj.BaseFrames), return; end
             obj.BaseFrames = [a b];
-            if obj.ThrSrc >= 2 && (obj.Preview || obj.Constrain)
+            if obj.thrNeedsMaps() && (obj.Preview || obj.Constrain)
                 obj.ensureMaps(false);
             end
             obj.refreshPreviews();
@@ -2354,13 +2661,21 @@ classdef GraspDCEViewer < handle
                 '  [  ]             brush radius down / up'
                 '  D                toggle 3D (sphere) drawing'
                 '  P                toggle threshold preview'
+                '  S                show subtraction map (post - pre frame)'
+                '  G                grow from crosshair (threshold window)'
                 '  Ctrl+Z / Ctrl+Y  undo / redo (Ctrl+Shift+Z also redoes)'
                 ''
-                'ENHANCING TUMOR WORKFLOW'
-                '  1. + Tumor, then draw a generous circle/sphere around the lesion'
-                '  2. Map = rel. enhancement (current or peak), baseline = pre-contrast frames'
-                '  3. Otsu (or type Low), check Preview, then Keep: 3D'
-                '  Alternatively tick "Constrain brush/circle" and paint.'};
+                'ENHANCING TUMOR FROM THE SUBTRACTION MAP (last - first frame)'
+                '  1. Map = Subtraction (post = last, pre = first), Show to view it'
+                '  2. + Tumor, set Low (type a value, drag the slider, or draw a rough'
+                '     sphere and press Otsu); tick Preview to see the green window'
+                '  3. Navigate to the enhancing rim, then Grow from crosshair (connected'
+                '     voxels within max mm), or draw a sphere and press Keep: 3D'
+                '  All -> ROI adds every in-window voxel (includes vessels).'
+                ''
+                'TEMPORAL BINNING'
+                '  Average every n frames + Apply binning: each frame becomes the mean'
+                '  signal of n consecutive frames; curves, maps and exports follow.'};
             if obj.Quiet
                 fprintf('%s\n', s{:});
             else
@@ -2458,9 +2773,16 @@ classdef GraspDCEViewer < handle
             D = obj.Data;
             [~, nm, ext] = fileparts(D.SourceFile);
             v = D.VoxNative;
-            if D.hasTiming(), dts = sprintf('%.3g s/frame', D.dt); else, dts = 'dt not set'; end
-            s = sprintf('%s%s\n%s\n%s plane, %.3gx%.3gx%.3g mm, %s', nm, ext, D.describe(), D.Plane, ...
-                v(1), v(2), v(3), dts);
+            n = D.NativeSize;
+            if D.hasTiming(), dts = sprintf('%.3g s/frame', D.effectiveDt()); else, dts = 'dt not set'; end
+            if strcmp(D.Mode, 'subspace'), md = sprintf('subspace K=%d', D.NK); else, md = 'dense'; end
+            if D.BinSize > 1
+                ts = sprintf('%d frames (%dx binned from %d)', D.NT, D.BinSize, D.NTRaw);
+            else
+                ts = sprintf('%d frames', D.NT);
+            end
+            s = sprintf('%s%s\n%dx%dx%d %s, %.3gx%.3gx%.3g mm, %s\n%s, %s, %.0f MB', nm, ext, n(1), n(2), n(3), ...
+                D.Plane, v(1), v(2), v(3), md, ts, dts, D.memoryBytes() / 2^20);
             set(obj.H.info, 'String', s);
         end
 
@@ -2490,9 +2812,11 @@ classdef GraspDCEViewer < handle
             set(obj.H.roiPop, 'String', str, 'Value', ar);
             set(obj.H.swatch, 'BackgroundColor', obj.ROIs(ar).Color);
             set(obj.H.roiTable, 'Data', data);
-            try
-                set(obj.H.roiTable, 'BackgroundColor', bgc, 'RowStriping', 'on', 'ForegroundColor', [0 0 0]);
-            catch
+            if ~exist('OCTAVE_VERSION', 'builtin')
+                try
+                    set(obj.H.roiTable, 'BackgroundColor', bgc, 'RowStriping', 'on', 'ForegroundColor', [0 0 0]);
+                catch
+                end
             end
         end
 
@@ -2704,7 +3028,7 @@ classdef GraspDCEViewer < handle
             o = struct('Format', 'auto', 'CoefVar', 'vk_all', 'BasisVar', 'basis_all', 'ImageVar', '', ...
                 'DimOrder', 'xytz', 'CropFactor', [], 'Normalize', [], 'Plane', 'axial', ...
                 'SwapInPlane', false, 'Flip', [false false false], 'Voxel', [1 1 1], 'dt', NaN, ...
-                't0', 0, 'NoDialog', false);
+                't0', 0, 'NoDialog', false, 'BinSize', 1);
         end
 
         function h = handleArray(n)
@@ -2730,6 +3054,34 @@ classdef GraspDCEViewer < handle
             lf = [false(h, 1), m(:, 1:end - 1)];
             rt = [m(:, 2:end), false(h, 1)];
             e = m & ~(up & dn & lf & rt);
+        end
+
+        function R = floodFill3D(M, s0)
+            % 6-connected region of true voxels in M containing s0; grows
+            % inside a box that expands by one voxel per iteration.
+            sz = [size(M, 1) size(M, 2) size(M, 3)];
+            R = false(sz);
+            R(s0(1), s0(2), s0(3)) = true;
+            b0 = s0(:)'; b1 = s0(:)';
+            cnt = 1;
+            while true
+                a0 = max(1, b0 - 1); a1 = min(sz, b1 + 1);
+                i1 = a0(1):a1(1); i2 = a0(2):a1(2); i3 = a0(3):a1(3);
+                Rs = R(i1, i2, i3);
+                Rn = Rs;
+                Rn(2:end, :, :) = Rn(2:end, :, :) | Rs(1:end - 1, :, :);
+                Rn(1:end - 1, :, :) = Rn(1:end - 1, :, :) | Rs(2:end, :, :);
+                Rn(:, 2:end, :) = Rn(:, 2:end, :) | Rs(:, 1:end - 1, :);
+                Rn(:, 1:end - 1, :) = Rn(:, 1:end - 1, :) | Rs(:, 2:end, :);
+                Rn(:, :, 2:end) = Rn(:, :, 2:end) | Rs(:, :, 1:end - 1);
+                Rn(:, :, 1:end - 1) = Rn(:, :, 1:end - 1) | Rs(:, :, 2:end);
+                Rn = Rn & M(i1, i2, i3);
+                c = nnz(Rn);
+                if c == cnt, break; end
+                cnt = c;
+                R(i1, i2, i3) = Rn;
+                b0 = a0; b1 = a1;
+            end
         end
 
         function F = fillHoles2D(M)

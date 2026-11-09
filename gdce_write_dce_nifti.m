@@ -9,9 +9,9 @@ if nargin < 4, progress = []; end
 n = D.canonSize();
 hdr.Dim = [n numel(frames)];
 hdr.Vox = D.canonVox();
+ft = D.frameTimes();
 if D.hasTiming() && numel(frames) > 1
-    df = unique(diff(frames));
-    hdr.dt = D.dt * df(1);
+    hdr.dt = median(diff(ft(frames)));
 else
     hdr.dt = 0;
 end
@@ -21,7 +21,6 @@ hdr.Descrip = 'GRASP DCE Viewer';
 gdce_nifti_write(outFile, @(i) D.canonVolume(frames(i)), hdr, progress);
 
 % JSON sidecar
-ft = D.frameTimes();
 J = struct();
 J.CreatedBy = 'GRASP DCE Viewer';
 J.Created = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
@@ -31,8 +30,14 @@ J.DataMode = D.Mode;
 J.Frames = frames;
 if D.hasTiming()
     J.FrameTimes_s = ft(frames);
-    J.TemporalResolution_s = D.dt;
+    J.TemporalResolution_s = D.effectiveDt();
+    J.RawTemporalResolution_s = D.dt;
 end
+J.RawFrames = D.NTRaw;
+J.BinSize = D.BinSize;
+J.BinningNote = 'each frame = mean magnitude of BinSize consecutive reconstructed frames';
+J.RawFramesPerFrame = D.BinIdx(frames);
+J.DroppedRawFrames = D.droppedFrames();
 J.VoxelSize_mm = D.canonVox();
 J.NativeSize = D.NativeSize;
 J.NativePlane = D.Plane;

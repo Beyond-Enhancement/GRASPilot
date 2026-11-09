@@ -60,7 +60,7 @@ app.undo();
 lin = find(app.Masks{2});
 v = double(D.valuesAtFrame(lin, app.Frame));
 th = median(v);
-app.setThrSource(1);
+app.setThrSource('frame');
 app.setThreshold(th, Inf);
 app.applyThreshold('3d');
 lin2 = find(app.Masks{2});
@@ -69,7 +69,7 @@ nfail = nfail + check('threshold keeps voxels >= Low only', all(v2 >= th) && num
 app.undo();
 
 % ---- map-based threshold (peak relative enhancement) + preview + Otsu
-app.setThrSource(5);
+app.setThrSource('peakRE');
 app.setPreview(true);
 nfail = nfail + check('enhancement maps computed on demand', D.hasMaps(1:5), 0);
 th = app.suggestThreshold();
@@ -82,7 +82,7 @@ RE = D.canonMap('RelEnh');
 nfail = nfail + check('peak-RE threshold applied', all(RE(app.Masks{2}) >= th), nnz(app.Masks{2}));
 app.undo();
 app.setPreview(false);
-app.setThrSource(1);
+app.setThrSource('frame');
 app.setThreshold(-Inf, Inf);
 
 % ---- constrained painting
@@ -140,6 +140,97 @@ nfail = nfail + check('last-frame button', app.Frame == D.NT, app.Frame);
 app.onKey(struct('Key', 'z', 'Modifier', {{'control'}}));
 nfail = nfail + check('Ctrl+Z undo via keyboard', ~any(app.Masks{r}(filled & ~ring)), 0);
 app.onKey(struct('Key', 'y', 'Modifier', {{'control'}}));
+
+% ---- subtraction map (last - first) as threshold source and display
+app.setFrame(9);
+app.setThrSource('sub');
+nfail = nfail + check('subtraction frames default to last - first', isequal(app.SubFrames, [D.NT 1]), 0);
+Sref = D.native2canon(ref(:, :, :, D.NT) - ref(:, :, :, 1));
+app.setViewMode('sub');
+c = app.Pos;
+e = max(abs(reshape(double(app.ViewImg{1}) - double(Sref(:, :, c(3)).'), [], 1)));
+nfail = nfail + check('subtraction view (axial) == data1(last) - data1(first)', e < tol && ...
+    strcmp(app.ViewMode, 'sub'), e);
+e = max(abs(reshape(double(app.FrameImg{1}) - double(ref(:, :, c(3), 9)), [], 1)));
+nfail = nfail + check('frame image kept for frame-based thresholds', e < tol, e);
+app.onKey(struct('Key', 's', 'Modifier', {{}}));
+nfail = nfail + check('S key toggles back to frame view', strcmp(app.ViewMode, 'frame'), 0);
+app.setViewMode('sub');
+
+% grow from crosshair == 6-connected component (BFS reference)
+th = median(Sref(:));
+app.setThreshold(th, Inf);
+app.addTumor();
+rg = numel(app.ROIs);
+app.GrowR = 6;
+[~, imax] = max(Sref(:));
+[i0, j0, k0] = ind2sub(n, imax);
+app.setPos([i0 j0 k0]);
+ng = app.growFromCrosshair();
+vox = D.canonVox();
+rv = ceil(6 ./ vox);
+lo = max(1, [i0 j0 k0] - rv); hi = min(n, [i0 j0 k0] + rv);
+inw = false(n);
+inw(lo(1):hi(1), lo(2):hi(2), lo(3):hi(3)) = Sref(lo(1):hi(1), lo(2):hi(2), lo(3):hi(3)) >= th;
+Rf = false(n); Rf(i0, j0, k0) = true; queue = [i0 j0 k0];
+nb = [1 0 0; -1 0 0; 0 1 0; 0 -1 0; 0 0 1; 0 0 -1];
+while ~isempty(queue)
+    p = queue(1, :); queue(1, :) = [];
+    for q = 1:6
+        u = p + nb(q, :);
+        if all(u >= 1) && all(u <= n) && inw(u(1), u(2), u(3)) && ~Rf(u(1), u(2), u(3))
+            Rf(u(1), u(2), u(3)) = true; queue(end + 1, :) = u; %#ok<AGROW>
+        end
+    end
+end
+gotG = app.Masks{rg};
+nfail = nfail + check('grow from crosshair == BFS connected component', isequal(gotG, Rf) && ng == nnz(Rf), ...
+    nnz(xor(gotG, Rf)));
+app.undo();
+app.setPos([1 1 1]);
+app.setThreshold(max(Sref(:)) + 1, Inf);
+nfail = nfail + check('grow refuses a seed outside the window', app.growFromCrosshair() == 0, 0);
+app.setThreshold(prctile_(Sref(:), 0.97), Inf);
+nw = app.windowToROI();
+nfail = nfail + check('all in window -> ROI', nw == nnz(Sref >= prctile_(Sref(:), 0.97)) && ...
+    isequal(app.Masks{rg}, Sref >= prctile_(Sref(:), 0.97)), nw);
+app.undo();
+app.setThreshold(th, Inf);
+lin = app.sphereIndices([16 6 6], 4);
+app.beginAction(); app.setVoxels(rg, lin, true); app.commitAction('s'); app.afterMaskChange();
+app.applyThreshold('3d');
+nfail = nfail + check('Keep: 3D on subtraction map', all(Sref(app.Masks{rg}) >= th) && ...
+    nnz(app.Masks{rg}) == nnz(Sref(lin) >= th), nnz(app.Masks{rg}));
+app.setSubFrames(5, 2);
+S52 = D.native2canon(ref(:, :, :, 5) - ref(:, :, :, 2));
+e = max(abs(reshape(app.subVolume() - S52, [], 1)));
+nfail = nfail + check('custom subtraction frames (5 - 2)', e < tol, e);
+app.setSubFrames(Inf, 1);
+app.setViewMode('frame');
+app.setThreshold(-Inf, Inf);
+
+% ---- temporal binning in the viewer
+app.setFrame(10);
+app.BaseFrames = [1 4];
+app.applyBinning(2);
+nfail = nfail + check('binning x2: frames, current frame and baseline remapped', D.NT == 11 && ...
+    app.Frame == 5 && isequal(app.BaseFrames, [1 2]) && isequal(app.SubFrames, [11 1]), D.NT);
+app.computeStats(2);
+lin = find(app.Masks{2});
+TC2 = (Vc(lin, 1:2:21) + Vc(lin, 2:2:22)) / 2;
+e = max(abs(app.ROIs(2).Stats.mean - mean(TC2, 1)));
+nfail = nfail + check('ROI curve after binning == mean of frame pairs', e < tol, e);
+Sb = D.native2canon(mean(ref(:, :, :, 21:22), 4) - mean(ref(:, :, :, 1:2), 4));
+e = max(abs(reshape(app.subVolume() - Sb, [], 1)));
+nfail = nfail + check('subtraction after binning uses binned last/first', e < tol, e);
+fB = fullfile(out, 'gui_binned.nii.gz');
+app.exportImageNifti(fB);
+[imB, hB] = gdce_nifti_read(fB);
+e = max(abs(reshape(imB(:, :, :, 3) - D.canonVolume(3), [], 1)));
+nfail = nfail + check('binned NIfTI: 11 frames, dt = 2 x 2.5 s', e < tol && hB.Dim(4) == 11 && ...
+    abs(hB.dt - 5) < 1e-6, hB.dt);
+app.applyBinning(1);
+nfail = nfail + check('binning reset to 1', D.NT == 23 && app.Frame == 9, app.Frame);
 
 % ---- exports
 masksBefore = app.Masks;
@@ -202,4 +293,9 @@ else
     fprintf('  FAIL  %-48s (%.3g)\n', name, val);
     f = 1;
 end
+end
+
+function q = prctile_(x, p)
+x = sort(x(:));
+q = x(max(1, round(p * numel(x))));
 end

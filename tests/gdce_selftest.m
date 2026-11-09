@@ -113,6 +113,59 @@ e = max(abs(reshape(D.Maps.Baseline - b, [], 1)));
 e = max(e, max(abs(reshape(D.Maps.Max - mx, [], 1))));
 nfail = nfail + check('enhancement maps', e < tol, e);
 
+% ---------------------------------------------------------------- 4b. temporal binning
+% each binned frame = mean magnitude of n consecutive ReadData.m frames
+for mode = 1:2
+    if mode == 1, Db = GraspData.fromSubspace(vk_all, basis_all); lab = 'subspace';
+    else, Db = GraspData.fromDense(data1, 'xytz'); lab = 'dense'; end
+    Db.setOrientation('coronal', true, [1 0 0]);
+    Db.dt = 2; Db.t0 = 1;
+    Db.setBinning(3);                                  % 23 frames -> 7 bins, frames 22-23 dropped
+    e = 0;
+    okn = Db.NT == 7 && isequal(Db.droppedFrames(), [22 23]);
+    refB = zeros([size(ref, 1) size(ref, 2) size(ref, 3) Db.NT], 'single');
+    for b = 1:Db.NT
+        refB(:, :, :, b) = mean(ref(:, :, :, (b - 1) * 3 + (1:3)), 4);
+    end
+    for b = [1 4 7]
+        e = max(e, max(abs(reshape(Db.nativeVolume(b) - refB(:, :, :, b), [], 1))));
+        for d = 1:3
+            q = 3;
+            switch d
+                case 1, R = squeeze(refB(q, :, :, b));
+                case 2, R = squeeze(refB(:, q, :, b));
+                case 3, R = refB(:, :, q, b);
+            end
+            e = max(e, max(max(abs(Db.nativeSlice(d, q, b) - R))));
+        end
+        e = max(e, max(abs(Db.nativeValuesAtFrame(lin, b) - reshape(refB(lin + (b - 1) * numel(refB(:, :, :, 1))), [], 1))));
+    end
+    RB = reshape(refB, [], Db.NT);
+    e = max(e, max(max(abs(Db.nativeTC(lin) - RB(lin, :)))));
+    ft = Db.frameTimes();
+    okt = abs(ft(1) - 3) < 1e-9 && abs(ft(2) - 9) < 1e-9 && abs(Db.effectiveDt() - 6) < 1e-9;
+    nfail = nfail + check(sprintf('binning x3 == mean of ReadData frames (%s)', lab), ...
+        e < tol && okn && okt, e);
+    Db.computeMaps(1:2);
+    e = max(abs(reshape(Db.Maps.Baseline - mean(refB(:, :, :, 1:2), 4), [], 1)));
+    e = max(e, max(abs(reshape(Db.Maps.Max - max(refB, [], 4), [], 1))));
+    nfail = nfail + check(sprintf('maps on binned series (%s)', lab), e < tol, e);
+end
+Db.setBinning(5, true);                                % keep partial last bin (frames 21-23)
+e = max(abs(reshape(Db.nativeVolume(5) - mean(ref(:, :, :, 21:23), 4), [], 1)));
+nfail = nfail + check('binning keeps partial last bin', Db.NT == 5 && e < tol, e);
+Db.setBinning(1);
+e = max(abs(reshape(Db.nativeVolume(T) - ref(:, :, :, T), [], 1)));
+nfail = nfail + check('binning reset to 1', Db.NT == T && e < tol, e);
+
+% ---------------------------------------------------------------- 4c. subtraction map (last - first)
+D.setOrientation('sagittal', false, [0 1 0]);
+S = D.canonSubtraction(D.NT, 1);
+e = max(abs(reshape(S - D.native2canon(ref(:, :, :, T) - ref(:, :, :, 1)), [], 1)));
+S2 = D.canonSubtraction(D.NT, 1);
+nfail = nfail + check('subtraction map == data1(last) - data1(first)', e < tol && isequal(S, S2), e);
+D.setOrientation('axial', false, [0 0 0]);
+
 % ---------------------------------------------------------------- 5. NIfTI round trip
 D.setOrientation('coronal', true, [1 0 1]);
 D.VoxNative = [0.9 1.1 2.5]; D.dt = 3.2; D.t0 = 0;

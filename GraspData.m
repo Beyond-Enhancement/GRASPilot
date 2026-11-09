@@ -17,6 +17,11 @@ classdef GraspData < handle
 %
 %   DENSE MODE holds a magnitude series as single [nx ny nz T].
 %
+%   TEMPORAL BINNING (setBinning) averages the magnitude of n consecutive
+%   reconstructed frames into one frame. Every frame-based method (slices,
+%   volumes, time courses, maps, frame times, exports) then works on the
+%   binned series; NT is the binned frame count and NTRaw the original.
+%
 %   Index conventions
 %     native    : [rows cols partitions] = data1(:,:,t,z) of ReadData.m
 %     canonical : array used by the viewer and every export. Axis 1 runs
@@ -41,7 +46,12 @@ classdef GraspData < handle
         Phi = [];                   % temporal basis [T K nz] single
         D = [];                     % dense magnitude [nx ny nz T] single
         NativeSize = [0 0 0];
-        NT = 0;
+        NT = 0;                     % frames after temporal binning
+        NTRaw = 0;                  % frames as reconstructed
+        BinSize = 1;                % consecutive frames averaged per binned frame
+        BinKeepPartial = false;     % keep an incomplete last bin
+        BinIdx = {};                % raw frame indices of each binned frame
+        BinW = [];                  % [NTRaw x NT] averaging matrix
         NK = 0;
         ScaleFactor = 1;            % normalization factor applied (1/max)
         CropFactor = 1;
@@ -179,8 +189,9 @@ classdef GraspData < handle
             obj.C = Cc;
             obj.Phi = Phi;
             obj.NativeSize = [nx ny nz];
-            obj.NT = T;
+            obj.NTRaw = T;
             obj.NK = K;
+            obj.setBinning(1);
             obj.ScaleFactor = sf;
             obj.CropFactor = cf;
             obj.Normalized = logical(p.Normalize);
@@ -230,8 +241,9 @@ classdef GraspData < handle
             obj.Mode = 'dense';
             obj.D = img;
             obj.NativeSize = [size(img, 1) size(img, 2) size(img, 3)];
-            obj.NT = size(img, 4);
+            obj.NTRaw = size(img, 4);
             obj.NK = 0;
+            obj.setBinning(1);
             obj.ScaleFactor = sf;
             obj.CropFactor = cf;
             obj.Normalized = logical(p.Normalize);
@@ -321,9 +333,49 @@ classdef GraspData < handle
             tf = isfinite(obj.dt) && obj.dt > 0;
         end
 
+        function setBinning(obj, n, keepPartial)
+            % Average n consecutive frames (magnitudes). An incomplete last
+            % bin is dropped unless keepPartial is true.
+            if nargin < 3 || isempty(keepPartial), keepPartial = false; end
+            T0 = obj.NTRaw;
+            n = max(1, min(T0, round(n)));
+            nb = floor(T0 / n);
+            if keepPartial && mod(T0, n) > 0, nb = nb + 1; end
+            nb = max(1, nb);
+            idx = cell(1, nb);
+            W = zeros(T0, nb);
+            for b = 1:nb
+                f = (b - 1) * n + 1:min(T0, b * n);
+                idx{b} = f;
+                W(f, b) = 1 / numel(f);
+            end
+            obj.BinSize = n;
+            obj.BinKeepPartial = logical(keepPartial);
+            obj.BinIdx = idx;
+            obj.BinW = W;
+            obj.NT = nb;
+            obj.Maps = [];
+            obj.CanonMapCache = struct();
+        end
+
+        function f = binFrames(obj, t)
+            f = obj.BinIdx{t};
+        end
+
+        function f = droppedFrames(obj)
+            % raw frames not used by any bin
+            used = [obj.BinIdx{:}];
+            f = setdiff(1:obj.NTRaw, used);
+        end
+
+        function d = effectiveDt(obj)
+            d = obj.dt * obj.BinSize;
+        end
+
         function t = frameTimes(obj)
+            % time of each (binned) frame = mean time of its raw frames
             if obj.hasTiming()
-                t = obj.t0 + (0:obj.NT - 1) * obj.dt;
+                t = (obj.t0 + (0:obj.NTRaw - 1) * obj.dt) * obj.BinW;
             else
                 t = NaN(1, obj.NT);
             end
@@ -394,63 +446,75 @@ classdef GraspData < handle
         % ---------- native access ----------
         function S = nativeSlice(obj, d, idx, t)
             nx = obj.NativeSize(1); ny = obj.NativeSize(2); nz = obj.NativeSize(3);
+            f = obj.BinIdx{t};
             if strcmp(obj.Mode, 'dense')
                 switch d
-                    case 3, S = obj.D(:, :, idx, t);
-                    case 1, S = reshape(obj.D(idx, :, :, t), ny, nz);
-                    case 2, S = reshape(obj.D(:, idx, :, t), nx, nz);
+                    case 3, S = mean(obj.D(:, :, idx, f), 4);
+                    case 1, S = reshape(mean(obj.D(idx, :, :, f), 4), ny, nz);
+                    case 2, S = reshape(mean(obj.D(:, idx, :, f), 4), nx, nz);
                 end
                 return
             end
             K = obj.NK;
-            w = conj(obj.Phi(t, :, :));                    % [1 K nz]
             switch d
                 case 3
-                    S = reshape(obj.C(:, :, :, idx), nx * ny, K) * reshape(w(1, :, idx), K, 1);
-                    S = abs(reshape(S, nx, ny));
-                case 1
-                    X = reshape(obj.C(idx, :, :, :), ny, K, nz);
-                    S = abs(reshape(sum(X .* reshape(w, 1, K, nz), 2), ny, nz));
-                case 2
-                    X = reshape(obj.C(:, idx, :, :), nx, K, nz);
-                    S = abs(reshape(sum(X .* reshape(w, 1, K, nz), 2), nx, nz));
+                    S = abs(reshape(obj.C(:, :, :, idx), nx * ny, K) * obj.Phi(f, :, idx)');
+                    S = reshape(mean(S, 2), nx, ny);
+                case {1, 2}
+                    if d == 1
+                        X = reshape(obj.C(idx, :, :, :), ny, K, nz); m = ny;
+                    else
+                        X = reshape(obj.C(:, idx, :, :), nx, K, nz); m = nx;
+                    end
+                    S = zeros(m, nz, 'single');
+                    for j = 1:numel(f)
+                        w = reshape(conj(obj.Phi(f(j), :, :)), 1, K, nz);
+                        S = S + abs(reshape(sum(X .* w, 2), m, nz));
+                    end
+                    S = S / numel(f);
             end
         end
 
         function V = nativeVolume(obj, t)
+            f = obj.BinIdx{t};
             if strcmp(obj.Mode, 'dense')
-                V = obj.D(:, :, :, t);
+                V = mean(obj.D(:, :, :, f), 4);
                 return
             end
             nx = obj.NativeSize(1); ny = obj.NativeSize(2); nz = obj.NativeSize(3);
             K = obj.NK;
             V = zeros(nx, ny, nz, 'single');
             for z = 1:nz
-                w = reshape(conj(obj.Phi(t, :, z)), K, 1);
-                V(:, :, z) = abs(reshape(reshape(obj.C(:, :, :, z), nx * ny, K) * w, nx, ny));
+                S = abs(reshape(obj.C(:, :, :, z), nx * ny, K) * obj.Phi(f, :, z)');
+                V(:, :, z) = reshape(mean(S, 2), nx, ny);
             end
         end
 
         function TC = nativeTC(obj, lin)
             lin = lin(:);
             if strcmp(obj.Mode, 'dense')
-                D2 = reshape(obj.D, [], obj.NT);
+                D2 = reshape(obj.D, [], obj.NTRaw);
                 TC = D2(lin, :);
-                return
+            else
+                [Cv, z] = obj.gatherCoefs(lin);
+                TC = zeros(numel(lin), obj.NTRaw, 'single');
+                [zu, ~, g] = unique(z);
+                for ii = 1:numel(zu)
+                    m = (g == ii);
+                    TC(m, :) = abs(Cv(m, :) * obj.Phi(:, :, zu(ii))');
+                end
             end
-            [Cv, z] = obj.gatherCoefs(lin);
-            TC = zeros(numel(lin), obj.NT, 'single');
-            [zu, ~, g] = unique(z);
-            for ii = 1:numel(zu)
-                m = (g == ii);
-                TC(m, :) = abs(Cv(m, :) * obj.Phi(:, :, zu(ii))');
+            if obj.BinSize > 1 || obj.NT ~= obj.NTRaw
+                TC = single(double(TC) * obj.BinW);
             end
         end
 
         function v = nativeValuesAtFrame(obj, lin, t)
             lin = lin(:);
+            f = obj.BinIdx{t};
             if strcmp(obj.Mode, 'dense')
-                v = obj.D(lin + (t - 1) * prod(obj.NativeSize));
+                N = prod(obj.NativeSize);
+                v = mean(obj.D(repmat(lin, 1, numel(f)) + repmat((f - 1) * N, numel(lin), 1)), 2);
                 return
             end
             [Cv, z] = obj.gatherCoefs(lin);
@@ -458,7 +522,7 @@ classdef GraspData < handle
             [zu, ~, g] = unique(z);
             for ii = 1:numel(zu)
                 m = (g == ii);
-                v(m) = abs(Cv(m, :) * reshape(conj(obj.Phi(t, :, zu(ii))), obj.NK, 1));
+                v(m) = mean(abs(Cv(m, :) * obj.Phi(f, :, zu(ii))'), 2);
             end
         end
 
@@ -483,7 +547,10 @@ classdef GraspData < handle
                 if strcmp(obj.Mode, 'subspace')
                     S = abs(reshape(obj.C(:, :, :, z), nx * ny, obj.NK) * obj.Phi(:, :, z)');
                 else
-                    S = reshape(obj.D(:, :, z, :), nx * ny, T);
+                    S = reshape(obj.D(:, :, z, :), nx * ny, obj.NTRaw);
+                end
+                if obj.BinSize > 1 || T ~= obj.NTRaw
+                    S = single(double(S) * obj.BinW);
                 end
                 b = mean(S(:, bf), 2);
                 [mx, imx] = max(S, [], 2);
@@ -497,6 +564,21 @@ classdef GraspData < handle
             end
             obj.Maps = M;
             obj.CanonMapCache = struct();
+        end
+
+        function A = canonSubtraction(obj, post, pre)
+            % Subtraction map frame(post) - frame(pre), canonical order (cached)
+            key = sprintf('Sub_%d_%d', post, pre);
+            if isfield(obj.CanonMapCache, key)
+                A = obj.CanonMapCache.(key);
+                return
+            end
+            fn = fieldnames(obj.CanonMapCache);
+            for i = 1:numel(fn)
+                if strncmp(fn{i}, 'Sub_', 4), obj.CanonMapCache = rmfield(obj.CanonMapCache, fn{i}); end
+            end
+            A = obj.native2canon(obj.nativeVolume(post) - obj.nativeVolume(pre));
+            obj.CanonMapCache.(key) = A;
         end
 
         function clearMaps(obj)
@@ -541,11 +623,16 @@ classdef GraspData < handle
 
         function s = describe(obj)
             n = obj.NativeSize;
-            if strcmp(obj.Mode, 'subspace')
-                s = sprintf('Subspace: %dx%dx%d, K=%d, T=%d, %.0f MB', n(1), n(2), n(3), obj.NK, ...
-                    obj.NT, obj.memoryBytes() / 2^20);
+            if obj.BinSize > 1
+                ts = sprintf('T=%d (bin %d of %d)', obj.NT, obj.BinSize, obj.NTRaw);
             else
-                s = sprintf('Dense: %dx%dx%d, T=%d, %.0f MB', n(1), n(2), n(3), obj.NT, ...
+                ts = sprintf('T=%d', obj.NT);
+            end
+            if strcmp(obj.Mode, 'subspace')
+                s = sprintf('Subspace: %dx%dx%d, K=%d, %s, %.0f MB', n(1), n(2), n(3), obj.NK, ...
+                    ts, obj.memoryBytes() / 2^20);
+            else
+                s = sprintf('Dense: %dx%dx%d, %s, %.0f MB', n(1), n(2), n(3), ts, ...
                     obj.memoryBytes() / 2^20);
             end
         end

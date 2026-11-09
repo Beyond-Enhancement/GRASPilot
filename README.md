@@ -7,6 +7,16 @@ stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_a
   newer recommended; `.xlsx` export needs R2019a+ (`writecell`/`writematrix`), `.csv` works anywhere.
 - Runs fully offline. Nothing is written except the files you export.
 
+![Frame view with SSS control and enhancing-tumor ROIs and their time-intensity curves](docs/screenshot_main.png)
+
+![Subtraction map (last - first frame) with the enhancing rim grown from the crosshair](docs/screenshot_subtraction.png)
+
+*Synthetic brain phantom (ring-enhancing lesion, superior sagittal sinus), rendered with GNU
+Octave; controls look slightly different in MATLAB. Top: frame view after 2x temporal binning
+with the SSS control and the tumor ROI. Bottom: subtraction map (frame 60 - frame 1),
+threshold preview in green and the enhancing rim grown from the crosshair (necrotic core
+excluded).*
+
 ## Quick start
 
 ```matlab
@@ -16,6 +26,7 @@ GraspDCEViewer('recon.mat')             % opens the load dialog for this file
 GraspDCEViewer(vk_all, basis_all)       % variables already in the workspace
 GraspDCEViewer(data1)                   % output of ReadData.m ([nx ny t nz])
 GraspDCEViewer('recon.mat', 'Voxel', [0.94 0.94 2], 'dt', 3.3, 'NoDialog', true)
+GraspDCEViewer('recon.mat', 'BinSize', 2)   % average every 2 frames on load
 ```
 
 The load dialog lists the variables in the file, detects `vk_all`/`basis_all`, shows the
@@ -69,7 +80,7 @@ Mouse: left = active tool, right-drag = window/level, shift- or middle-drag = pa
 wheel = slice, Ctrl+wheel = zoom, click on the TIC plot = jump to that frame.
 Keys: Left/Right = frame -/+1 (Shift: 10), Home/End, PgUp/PgDn, Up/Down = slice,
 Space = play, N/C/B/E = tools, [ ] = brush radius, D = 3D toggle, P = threshold preview,
-Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
+S = subtraction view, G = grow from crosshair, Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
 
 ## Segmentation tools
 
@@ -85,23 +96,53 @@ Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
   Rename, recolor, show/hide, delete; the table shows voxels and mL.
 - Clear slice / Clear ROI, Fill holes (slice by slice in the plane of the last-used view).
 
-## Threshold (enhancing tumor only)
+## Enhancing tumor from the subtraction map
 
-Threshold maps:
+The subtraction map is `frame(post) - frame(pre)`, by default **last GRASP volume minus
+first GRASP volume** (post = last, pre = first; both editable). It is the default threshold
+map, and **Show** (or key S) displays it in all three views instead of the current frame,
+with its own window/level.
+
+1. `+ Tumor`, Map = *Subtraction: post - pre frame*, press **Show**.
+2. Set the window: type Low (High = Inf), drag the slider, or draw a rough sphere around the
+   lesion and press **Otsu**. Tick **Preview** to see in-window voxels in green.
+3. Turn the subtracted enhancement into the ROI mask, either:
+   - **Grow from crosshair** (key G): put the crosshair on the enhancing rim (Navigate) and
+     add the 3D, 6-connected region of in-window voxels touching it, up to *max* mm from the
+     crosshair. Vessels, choroid plexus and dura that do not touch the lesion stay out, and a
+     non-enhancing necrotic core is excluded.
+   - **Keep: 3D / Keep: slice**: draw a generous circle/sphere first, then keep only its
+     in-window voxels.
+   - **All -> ROI**: add every in-window voxel in the volume (includes vessels; erase or
+     intersect afterwards).
+4. Undo/redo, eraser and Fill holes work as usual on the result.
+
+## Threshold maps
+
 1. Signal at current frame
-2. Current frame - baseline
-3. Current frame relative enhancement (%)
-4. Peak - baseline (max over time)
-5. Peak relative enhancement (%)
+2. Subtraction: post - pre frame (default last - first)
+3. Current frame - baseline
+4. Current frame relative enhancement (%)
+5. Peak - baseline (max over time)
+6. Peak relative enhancement (%)
 
-Baseline = mean of the chosen pre-contrast frames (default 1-5). Maps 2-5 are computed on
-first use (one pass over the data, a few seconds).
+Baseline = mean of the chosen pre-contrast frames (default 1-5). Maps 3-6 are computed on
+first use (one pass over the data, a few seconds). Every map works with Preview, Otsu,
+Keep: slice/3D, Grow from crosshair, All -> ROI and "Constrain brush/circle" (painting only
+adds in-window voxels). The line under the buttons shows how many voxels of the active ROI
+the current window keeps.
 
-Typical workflow: `+ Tumor`, draw a generous circle/sphere around the lesion, choose map
-3 or 5, press Otsu (or type Low/High), tick Preview (green = inside the window), then
-Keep: 3D (or Keep: slice). Alternatively tick "Constrain brush/circle" so painting only
-adds voxels inside the window. The line under the buttons shows how many ROI voxels the
-current window keeps.
+## Temporal binning
+
+**Average every n frames -> Apply binning** (or View > Temporal binning) lowers the temporal
+resolution: each frame becomes the mean signal intensity (magnitude) of n consecutive
+reconstructed frames, e.g. to compare an 8-spoke reconstruction binned x2 or x4 with the
+16- and 32-spoke reconstructions. Everything follows the binned series: views, slider,
+curves, maps, the subtraction map (last and first binned frames), NIfTI export (pixdim(4) =
+n x dt) and spreadsheets (frame times = bin centres). An incomplete last bin is dropped by
+default (reported in the status bar, the JSON sidecar and the spreadsheet Info sheet); the
+View menu dialog can keep it instead. n = 1 restores the original series. The current frame
+and the baseline frames are mapped to the same time points.
 
 ## Time-intensity curves
 
@@ -117,6 +158,7 @@ Mean +/- SD band, median [IQR] band, or mean only; Y as signal, relative enhance
 | Mask -> NIfTI | uint8 label map (value = ROI number), `<name>_labels.txt` (label, name, RGB, voxels, mL), `<name>_itksnap_labels.txt`; optionally one binary mask per ROI |
 | ROI voxel time series -> spreadsheet | `.xlsx`: sheets Info, Summary (per-ROI mean, SD, median, relative enhancement, n per frame) and one sheet per ROI with one row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn. `.csv`: `_voxels.csv` (all ROIs, ROI_ID/ROI_Name columns), `_summary.csv`, `_info.txt` |
 | File > Export enhancement maps | Baseline, Max, PeakEnh, RelEnh, TTP (s), AUC as NIfTI |
+| (binning) | binned series everywhere; JSON sidecar and Info sheet record bin size, raw frames per frame and dropped frames |
 | Save / Load ROIs | `.mat` session (ROI names, colors, voxels in native indices, geometry); reloads onto any reconstruction with the same matrix, e.g. the 8-, 16- and 32-spoke versions of one scan |
 | Import mask | label NIfTI from this tool or edited elsewhere; axis permutations/flips are corrected from the header; names/colors are read from `_labels.txt` if present |
 
@@ -135,17 +177,23 @@ f = dir('*.mat');
 for k = 1:numel(f)
     gdce_convert_mat2nifti(f(k).name, '', 'Voxel', [0.94 0.94 2], 'dt', 3.3);
 end
+gdce_convert_mat2nifti('recon_8spoke.mat', '', 'dt', 1.6, 'BinSize', 2);   % binned x2
 
 % data model only
 D = GraspData.fromFile('recon.mat');
 D.setOrientation('axial', false, [0 0 0]); D.VoxNative = [0.94 0.94 2]; D.dt = 3.3;
+D.setBinning(2);                   % optional: average frame pairs
 V  = D.canonVolume(40);            % 3D frame 40 (canonical order)
+S  = D.canonSubtraction(D.NT, 1);  % last - first
 TC = D.timecourses(find(mask));    % voxel x frame matrix for a canonical mask
 gdce_export_timeseries(D, {mask}, {'Tumor 1'}, 'tumor.csv', 'BaseFrames', 1:5);
 
 % drive the GUI
 app = GraspDCEViewer(D);
-app.setFrame(45); app.addTumor(); app.exportMaskNifti('mask.nii.gz');
+app.setFrame(45); app.addTumor();
+app.setThrSource('sub'); app.setThreshold(0.2, Inf);
+app.setPos([90 50 24]); app.growFromCrosshair();
+app.exportMaskNifti('mask.nii.gz');
 ```
 
 Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a GraspData.m -a gdce_*.m`.
@@ -163,6 +211,7 @@ Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a Gr
 | `gdce_reorient_to_ref.m` | mask import reorientation |
 | `gdce_convert_mat2nifti.m` | batch .mat -> NIfTI |
 | `gdce_app.m` | launcher / compiler entry point |
+| `docs/` | README screenshots |
 | `legacy/` | the original ReadData.m, CropImg.m and @TempPCASub (reference for validation) |
 | `tests/gdce_selftest.m` | synthetic end-to-end test (`gdce_selftest(true)` also drives the GUI) |
 | `tests/gdce_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
@@ -173,4 +222,7 @@ Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a Gr
   orientation and frame timing should be checked once per protocol.
 - Signal is the magnitude of the reconstruction (normalized to the global maximum when
   ReadData.m normalization is on); no T1 mapping or concentration conversion is done.
-- Fill holes is 2D (slice by slice); there is no connected-component tool yet.
+- Fill holes is 2D (slice by slice). Grow from crosshair is the connected-component tool
+  (6-connectivity, bounded by the max distance).
+- Binning averages magnitudes of reconstructed frames; it does not re-reconstruct with
+  more spokes per frame.
