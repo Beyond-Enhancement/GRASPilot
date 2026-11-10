@@ -79,7 +79,9 @@ classdef GraspData < handle
         t0 = 0;                     % s, time of frame 1
         SourceFile = '';
         SourceVars = '';
-        ParamOpts = struct('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1);
+        ParamOpts = struct('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1, ...
+            'WashInFrames', [], 'EndFrame', Inf, 'EndTime', Inf, 'EarlyTime', 60, 'LateTime', Inf, ...
+            'CurveTol', 10, 'RefSlopeFrac', 0.5);
     end
 
     % ------------------------------------------------------------------
@@ -630,11 +632,26 @@ classdef GraspData < handle
         end
 
         function setParamOptions(obj, varargin)
-            % 'WashIn' ('onset'|'max'), 'WashOut' ('regression'|'endpoints'),
-            % 'AUCWindow' (s after the baseline, Inf = to the end), 'OnsetFrac'
+            % 'WashIn' ('onset'|'max'|'sss'), 'WashOut' ('regression'|'endpoints'),
+            % 'AUCWindow' (s after the baseline, Inf = to the end), 'OnsetFrac',
+            % 'EndFrame' / 'EndTime' (analysis endpoint in frames / s; Inf = all),
+            % 'EarlyTime', 'LateTime' (s after the baseline), 'CurveTol' (%),
+            % 'WashInFrames' ([a b], set from the reference curve for 'sss'),
+            % 'RefSlopeFrac'. See gdce_curve_params.
             p = GraspData.parseOpts(varargin, obj.ParamOpts);
-            if isempty(p.AUCWindow) || ~(p.AUCWindow > 0), p.AUCWindow = Inf; end
+            for f = {'AUCWindow', 'EndFrame', 'EndTime', 'LateTime'}
+                v = p.(f{1});
+                if isempty(v) || ~(v > 0), p.(f{1}) = Inf; end
+            end
+            if isempty(p.EarlyTime) || ~(p.EarlyTime > 0), p.EarlyTime = 60; end
+            if isfinite(p.EndFrame), p.EndFrame = max(2, round(p.EndFrame)); end
+            p.WashInFrames = double(p.WashInFrames(:)');
             obj.ParamOpts = p;
+        end
+
+        function k = analysisEnd(obj)
+            % last frame used for the curve parameters (EndFrame / EndTime)
+            k = gdce_end_frame(obj.paramTimes(), obj.ParamOpts);
         end
 
         function computeMaps(obj, baseFrames, progress)
@@ -650,8 +667,9 @@ classdef GraspData < handle
             M.Key = obj.mapsKey();
             M.TimeUnit = 's';
             if ~obj.hasTiming(), M.TimeUnit = 'frame'; end
-            names = {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'};
-            src = {'S0', 'Smax', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'};
+            names = {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC', 'T90', 'REearly', ...
+                'SER', 'WashoutPct', 'Plateau', 'CurveType'};
+            src = names; src{1} = 'S0'; src{2} = 'Smax';
             for i = 1:numel(names)
                 M.(names{i}) = zeros(nx, ny, nz, 'single');
             end
@@ -717,8 +735,11 @@ classdef GraspData < handle
             end
             M = obj.Maps;
             switch name
-                case {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'}
+                case {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC', 'T90', 'REearly', ...
+                        'SER', 'WashoutPct', 'Plateau', 'CurveType'}
                     A = M.(name);
+                case 'MITR'
+                    A = (M.Max - M.Baseline) ./ M.TTP;
                 case 'PeakEnh'
                     A = M.Max - M.Baseline;
                 case 'RelEnh'

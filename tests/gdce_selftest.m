@@ -1,5 +1,5 @@
 function ok = gdce_selftest(doGUI)
-%GDCE_SELFTEST Synthetic end-to-end test of the GRASP DCE Viewer toolbox.
+%GDCE_SELFTEST Synthetic end-to-end test of the GRASPilot toolbox.
 %
 %   gdce_selftest          core tests (data model vs ReadData.m, orientation,
 %                          NIfTI round trip, mask reorientation, exports)
@@ -14,7 +14,7 @@ root = fileparts(here);
 addpath(root);
 addpath(fullfile(root, 'legacy'));
 out = tempname; mkdir(out);
-fprintf('GRASP DCE Viewer self-test (output in %s)\n', out);
+fprintf('GRASPilot self-test (output in %s)\n', out);
 nfail = 0;
 
 % ---------------------------------------------------------------- data
@@ -183,6 +183,26 @@ nfail = nfail + check('curve parameters, persistent curve (analytic)', ...
 P2 = gdce_curve_params(Sa, tt, 1:5, struct('WashIn', 'max', 'WashOut', 'endpoints', 'AUCWindow', 10));
 e = max(abs([P2.WashIn - 0.2, P2.WashOut + 0.05, P2.AUC - 10]));
 nfail = nfail + check('curve parameters, max slope / endpoints / IAUC10', e < 1e-9, e);
+% T90 at 4 + 9 s; MITR 2/10; early frame 10 s after baseline (t = 14, the peak), late = last:
+% SER = 2/1.2, RE early 200%, washout % = 100 (3 - 2.2)/3, plateau = mean(1.3 1.25 1.2), type 3
+P3 = gdce_curve_params([Sa; Sp], tt, 1:5, struct('EarlyTime', 10));
+e = max(abs([P3.T90(1) - 9, P3.MITR(1) - 0.2, P3.SER(1) - 2 / 1.2, P3.REearly(1) - 200, ...
+    P3.WashoutPct(1) - 100 * 0.8 / 3, P3.Plateau(1) - 1.25, P3.CurveType(1) - 3, P3.CurveType(2) - 1]));
+nfail = nfail + check('T90, MITR, SER, early RE, washout %, plateau, type', e < 1e-9, e);
+P4 = gdce_curve_params(Sa, tt, 1:5, struct('EndTime', 20));       % first 20 s: frames 1-21
+P5 = gdce_curve_params(Sa(1:21), tt(1:21), 1:5);
+P6 = gdce_curve_params(Sa, tt, 1:5, struct('EndFrame', 21));
+nfail = nfail + check('analysis endpoint (EndTime, EndFrame)', P4.EndFrame == 21 && isequal(P4.AUC, P5.AUC) && ...
+    isequal(P4.WashOut, P5.WashOut) && isequal(P6.AUC, P5.AUC) && abs(P4.AUC - (10 + 6 * (2 + 1.7) / 2)) < 1e-9, P4.AUC);
+% reference rising 0.1/s (t 4-6), 0.5/s (6-10), 0.3/s (10-12), 0.05/s (12-14), then falling
+Sr = ones(size(tt));
+Sr(tt > 4) = 1 + 0.1 * (tt(tt > 4) - 4); Sr(tt > 6) = 1.2 + 0.5 * (tt(tt > 6) - 6);
+Sr(tt > 10) = 3.2 + 0.3 * (tt(tt > 10) - 10); Sr(tt > 12) = 3.8 + 0.05 * (tt(tt > 12) - 12);
+Sr(tt > 14) = 3.9 - 0.02 * (tt(tt > 14) - 14);
+[wr, ir] = gdce_ref_window(Sr, tt, 1:5);
+Pw = gdce_curve_params([Sa; Sr], tt, 1:5, struct('WashIn', 'sss', 'WashInFrames', wr));
+nfail = nfail + check('SSS wash-in period and slopes within it', isequal(wr, [7 13]) && abs(ir.MaxSlope - 0.5) < 1e-9 && ...
+    abs(Pw.WashIn(1) - 0.2) < 1e-9 && abs(Pw.WashIn(2) - 0.5) < 1e-9, wr(1));
 Sn = [Sa; 2 * Sa; Sp] + 0.01 * randn(3, numel(tt));
 Pv = gdce_curve_params(Sn, tt, 1:5);
 e = 0;

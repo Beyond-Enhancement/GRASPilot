@@ -1,4 +1,4 @@
-# GRASP DCE Viewer (MATLAB)
+# GRASPilot (MATLAB)
 
 3-plane viewer and ROI analysis platform for dynamic GRASP DCE-MRI reconstructions
 stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_all`).
@@ -13,7 +13,7 @@ stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_a
 
 ![Auto SSS: ROI in the posterior superior sagittal sinus just above the torcula](docs/screenshot_sss.png)
 
-![Peak enhancement normalized to the SSS as a colour map](docs/screenshot_params.png)
+![Wash-in slope normalized to the SSS as a colour map](docs/screenshot_params.png)
 
 ![Parameters window: settings, colour scale and tumor ROI statistics](docs/screenshot_param_window.png)
 
@@ -23,14 +23,16 @@ subtraction map (frame 60 - frame 1), threshold preview in green and the enhanci
 from the crosshair (necrotic core excluded). Bottom: Auto SSS on a venous phantom - the ROI
 (red) sits in the posterior SSS just above the torcula; the straight sinus (anterior to it on
 the axial view), the transverse sinuses and a scalp vein are excluded. Last two: peak
-enhancement / SSS as a jet colour map (0-0.8) with the ROI outlines, and the Parameters
-window with the statistics of the tumor ROI.*
+wash-in slope / SSS as a jet colour map with the ROI outlines (analysis limited to the first
+100 s, orange line on the curves), and the Parameters window with the tumor ROI statistics.*
 
 ## Quick start
 
 ```matlab
 addpath('/path/to/GRASP_DCE_Viewer')
-GraspDCEViewer                          % then File > Open .mat (or the Open button)
+GRASPilot                               % then File > Open .mat (or the Open button)
+GRASPilot('recon.mat')                  % same arguments as GraspDCEViewer below
+GraspDCEViewer                          % the class behind GRASPilot (used for scripting)
 GraspDCEViewer('recon.mat')             % opens the load dialog for this file
 GraspDCEViewer(vk_all, basis_all)       % variables already in the workspace
 GraspDCEViewer(data1)                   % output of ReadData.m ([nx ny t nz])
@@ -260,8 +262,37 @@ frame, i.e. the injection; seconds if s/frame is set, otherwise frames):
 | Washout slope (WOS) | least-squares slope from the peak to the last frame (at least the last 3 frames, so a curve still rising at the end gets a positive slope). Option: 2-point (S_last - Smax)/(t_last - TP). Negative = washout | a.u./s |
 | Area under the curve (AUC) | trapezoidal area of S - S0 from the end of the baseline to the end, or over the first N s (AUC window 60 = IAUC60, 90 = IAUC90) | a.u. x s |
 | Time to peak (TTP) | TP measured from the end of the baseline | s |
+| Onset (bolus arrival) time | To measured from the end of the baseline | s |
+| Time to 90% of peak (T90) | first time the enhancement reaches 0.9 PE (interpolated between frames) | s |
+| Maximum intensity-time ratio (MITR) | PE / TTP | a.u./s |
+| Relative enhancement, early frame | 100 x (S_early - S0) / S0 at the early frame (default 60 s after the baseline) | % |
+| Signal enhancement ratio (SER) | (S_early - S0) / (S_late - S0); late frame = last analysed frame unless set. > 1 = washout | ratio |
+| Washout percentage | 100 x (Smax - S_last) / Smax, S_last = last analysed frame | % |
+| Plateau enhancement | mean S - S0 of the last 3 analysed frames | a.u. |
+| Curve type | 1 persistent, 2 plateau, 3 washout: change from the early to the late frame, 100 x (S_late - S_early)/S_early, above +10%, within +/-10%, below -10% | type |
 
-Onset To = last frame before the peak whose enhancement is below 10% of PE.
+Onset To = last frame before the peak whose enhancement is below 10% of PE. The early and
+late frames are the frames nearest to the entered times after the baseline. For the curve
+type the table also gives the percentage of ROI voxels of each type (the mean of the type
+number is not meaningful) and, under ROI curve, the type of the ROI mean curve.
+
+**Analysis endpoint.** "Analyze up to" limits every parameter to the first N seconds (from
+the time of frame 1) or the first N frames, e.g. the first 100 s; later frames are ignored
+(peak, slopes, AUC, late frame, plateau). The endpoint is marked by an orange dashed line
+on the curves and recorded in the exports. Images, curves and the time-series export still
+contain all frames.
+
+**Wash-in in the SSS wash-in period.** With "Max slope in SSS wash-in period" the wash-in
+period is defined on the SSS reference curve as its period of most rapid signal increase
+(Lee, Berger et al., Neurosurgery 2023;92:497): the consecutive frames around the steepest
+frame-to-frame rise of the SSS mean curve in which the slope stays at least 50% of the
+steepest (`RefSlopeFrac`). The wash-in slope of a voxel or ROI curve is its maximum
+frame-to-frame slope inside that period, so tissue and SSS slopes (and their ratio,
+wash-in / SSS) come from the same time window. The period is shown in the window and in
+the Settings sheet and is updated when the SSS ROI changes (then press Compute again).
+The paper states the definition of the period but not the slope formula, so the 50% rule
+and the maximum-slope rule are this tool's reading of it; set `RefSlopeFrac` to 1 to use
+only the single steepest SSS interval.
 
 **Normalization to the SSS.** "/SSS" parameters are the voxel value divided by the same
 parameter of the reference ROI mean curve, in line with the AUC ratio to a venous/vascular
@@ -297,18 +328,15 @@ Scripting:
 
 ```matlab
 app.computeParams('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', 60);
+app.computeParams('WashIn', 'sss', 'EndTime', 100);     % SSS wash-in period, first 100 s
+app.computeParams('EndTime', Inf, 'EndFrame', 100);     % or the first 100 frames
 [hdr, rows] = app.paramStatsTable();       % cell table as shown in the window
 app.setParamKey('WIS_SSS'); app.setParamDisplay(true); app.setParamCLim([0 2]);
 app.exportParams('tumor_parameters.xlsx');
 P = gdce_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 ```
 
-Other semi-quantitative descriptors used in DCE-MRI that are not (yet) included: bolus
-arrival / onset time, time to 90% of the peak (T90), maximum intensity-time ratio (MITR =
-PE / TTP), signal enhancement ratio (SER = (S1 - S0)/(S2 - S0), early vs late post-contrast
-frame), relative signal intensity at fixed times, plateau level and washout percentage
-((Smax - S_end)/Smax), and the curve-type classification (I persistent, II plateau, III
-washout). Several are one-line additions to `gdce_curve_params.m`.
+The parameter maps take about 50 MB of memory each for a 12-million-voxel volume (13 maps).
 
 ## Exports
 
@@ -317,7 +345,7 @@ washout). Several are one-line additions to `gdce_curve_params.m`.
 | Image -> NIfTI | 4D float32 `.nii.gz`/`.nii` (all frames, streamed frame by frame) or the current frame (3D), plus a JSON sidecar (frame times, source, geometry, normalization) |
 | Mask -> NIfTI | uint8 label map (value = ROI number), `<name>_labels.txt` (label, name, RGB, voxels, mL), `<name>_itksnap_labels.txt`; optionally one binary mask per ROI |
 | ROI voxel time series -> spreadsheet | `.xlsx`: sheets Info, Summary (per-ROI mean, SD, median, relative enhancement, n per frame) and one sheet per ROI with one row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn. `.csv`: `_voxels.csv` (all ROIs, ROI_ID/ROI_Name columns), `_summary.csv`, `_info.txt`. After binning the file name ends in `_<N>frames` |
-| File > Export enhancement maps / Parameters > Export parameter maps | Baseline, Max and every parameter (PE, RE, WIS, WOS, AUC, TTP; PE, WIS, WOS, AUC also /SSS) as NIfTI |
+| File > Export enhancement maps / Parameters > Export parameter maps | Baseline, Max and every parameter (PE, WIS, WOS, AUC also /SSS) as NIfTI |
 | Parameters > Export statistics + voxel values | parameter statistics per tumor ROI and voxel values (see above) |
 | (binning) | binned series everywhere; JSON sidecar and Info sheet record bin size, raw frames per frame and dropped frames |
 | Save / Load ROIs | `.mat` session (ROI names, colors, voxels in native indices, geometry); reloads onto any reconstruction with the same matrix, e.g. the 8-, 16- and 32-spoke versions of one scan |
@@ -371,7 +399,9 @@ Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a Gr
 | `gdce_nifti_write.m`, `gdce_nifti_read.m` | NIfTI-1 I/O (.nii/.nii.gz), streaming 4D writes |
 | `gdce_write_dce_nifti.m` | series -> NIfTI + JSON sidecar |
 | `gdce_export_timeseries.m` | voxel time series -> .xlsx/.csv |
+| `GRASPilot.m` | launcher (`GRASPilot(...)` = `GraspDCEViewer(...)`) |
 | `gdce_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
+| `gdce_ref_window.m`, `gdce_end_frame.m` | SSS wash-in period; analysis endpoint |
 | `gdce_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
 | `gdce_reorient_to_ref.m` | mask import reorientation |
 | `gdce_detect_sss.m` | automatic superior sagittal sinus ROI |

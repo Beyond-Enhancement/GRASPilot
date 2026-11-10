@@ -1,5 +1,5 @@
 function app = gdce_app(varargin)
-%GDCE_APP Launch the GRASP DCE Viewer (same arguments as GraspDCEViewer).
+%GDCE_APP Launch the GRASPilot (same arguments as GraspDCEViewer).
 %
 %   gdce_app
 %   gdce_app('recon.mat')

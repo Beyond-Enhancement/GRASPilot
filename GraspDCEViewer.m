@@ -108,10 +108,16 @@ classdef GraspDCEViewer < handle
         Palette = [1.00 0.85 0.10; 0.20 0.90 1.00; 1.00 0.35 0.95; 0.40 1.00 0.35; ...
             1.00 0.60 0.15; 0.55 0.55 1.00; 0.60 1.00 0.85; 1.00 0.55 0.55; 0.85 0.65 1.00];
         SSSColor = [1.00 0.22 0.22];
-        ParamKeys = {'PE', 'PE_SSS', 'RE', 'WIS', 'WIS_SSS', 'WOS', 'WOS_SSS', 'AUC', 'AUC_SSS', 'TTP'};
+        ParamKeys = {'PE', 'PE_SSS', 'RE', 'WIS', 'WIS_SSS', 'WOS', 'WOS_SSS', 'AUC', 'AUC_SSS', 'TTP', ...
+            'BAT', 'T90', 'MITR', 'REE', 'SER', 'WOP', 'PLAT', 'CT'};
         ParamLabels = {'Peak enhancement', 'Peak enhancement / SSS', 'Relative peak enhancement', ...
             'Wash-in slope', 'Wash-in slope / SSS', 'Washout slope', 'Washout slope / SSS', ...
-            'Area under curve', 'Area under curve / SSS', 'Time to peak'};
+            'Area under curve', 'Area under curve / SSS', 'Time to peak', ...
+            'Onset (bolus arrival) time', 'Time to 90% of peak', 'Max intensity-time ratio', ...
+            'Rel. enhancement, early frame', 'Signal enhancement ratio', 'Washout percentage', ...
+            'Plateau enhancement', 'Curve type (1 pers, 2 plat, 3 wash)'};
+        CurveTypeNames = {'Curve type I (persistent) fraction', 'Curve type II (plateau) fraction', ...
+            'Curve type III (washout) fraction'};
         CmapNames = {'jet', 'turbo', 'hot', 'gray'};
         CmapLabels = {'Jet (rainbow)', 'Turbo (rainbow)', 'Hot', 'Gray'};
         Col = struct('bg', [0.11 0.11 0.13], 'panel', [0.16 0.16 0.18], 'fg', [0.90 0.90 0.92], ...
@@ -272,7 +278,7 @@ classdef GraspDCEViewer < handle
             obj.updateThrSliderRange();
             obj.Modified = keep;
             [~, nm] = fileparts(D.SourceFile);
-            set(obj.Fig, 'Name', ['GRASP DCE Viewer - ' nm]);
+            set(obj.Fig, 'Name', ['GRASPilot - ' nm]);
             obj.setStatus(sprintf('Loaded %s. %s', nm, D.describe()));
             obj.checkOrientation();
         end
@@ -863,9 +869,27 @@ classdef GraspDCEViewer < handle
             obj.setStatus(sprintf('Filled %d voxels (2D, %s slices).', numel(add), lower(obj.ViewNames{obj.ActiveView})));
         end
 
+        function ok = syncRefWindow(obj)
+            % WashIn = 'sss': the wash-in period is that of the steepest rise
+            % of the reference (SSS) ROI mean curve; keep it up to date
+            ok = true;
+            D = obj.Data;
+            if isempty(D) || ~strcmpi(D.ParamOpts.WashIn, 'sss'), return; end
+            w = [];
+            r = obj.refIndex();
+            if r > 0 && any(obj.Masks{r}(:))
+                if obj.ROIs(r).Dirty || isempty(obj.ROIs(r).Stats), obj.computeStats(r); end
+                w = gdce_ref_window(obj.ROIs(r).Stats.mean, D.paramTimes(), ...
+                    obj.BaseFrames(1):obj.BaseFrames(2), D.ParamOpts);
+            end
+            ok = ~isempty(w);
+            if ~isequal(w, D.ParamOpts.WashInFrames), D.setParamOptions('WashInFrames', w); end
+        end
+
         function ok = ensureMaps(obj, force)
             ok = true;
             if isempty(obj.Data), ok = false; return; end
+            obj.syncRefWindow();
             bf = obj.BaseFrames(1):obj.BaseFrames(2);
             if ~force && obj.Data.hasMaps(bf), return; end
             wb = obj.wbOpen('Computing enhancement maps...');
@@ -893,6 +917,11 @@ classdef GraspDCEViewer < handle
             ok = false;
             if ~obj.requireData(), return; end
             if ~isempty(varargin), obj.Data.setParamOptions(varargin{:}); end
+            if ~obj.syncRefWindow()
+                obj.inform(['Wash-in in the SSS wash-in period needs a reference ROI in the superior ' ...
+                    'sagittal sinus with a rising curve: press Auto SSS (or draw an ROI whose name ' ...
+                    'contains SSS). Wash-in slopes are empty until then.'], 'Parameters');
+            end
             ok = obj.ensureMaps(false);
         end
 
@@ -958,11 +987,13 @@ classdef GraspDCEViewer < handle
             ts = 's';
             if ~obj.Data.hasTiming(), ts = 'frame'; end
             switch key
-                case 'PE', u = 'a.u.';
-                case 'RE', u = '%';
-                case {'WIS', 'WOS'}, u = ['a.u./' ts];
+                case {'PE', 'PLAT'}, u = 'a.u.';
+                case {'RE', 'REE', 'WOP'}, u = '%';
+                case {'WIS', 'WOS', 'MITR'}, u = ['a.u./' ts];
                 case 'AUC', u = ['a.u.*' ts];
-                case 'TTP', u = ts;
+                case {'TTP', 'BAT', 'T90'}, u = ts;
+                case 'SER', u = 'ratio';
+                case 'CT', u = 'type';
             end
         end
 
@@ -1106,6 +1137,13 @@ classdef GraspDCEViewer < handle
                     rows(end + 1, :) = {obj.ROIs(r).Name, obj.ParamLabels{k}, obj.paramUnit(key), d.n, d.mean, ...
                         d.sd, d.median, d.q1, d.q3, d.p10, d.p90, d.min, d.max, cval}; %#ok<AGROW>
                 end
+                ct = obj.paramValues('CT', lin);
+                nct = nnz(isfinite(ct));
+                for c = 1:3                      % voxel fractions of the curve types
+                    rows(end + 1, :) = {obj.ROIs(r).Name, obj.CurveTypeNames{c}, '%', nct, ...
+                        100 * nnz(ct == c) / max(1, nct), NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, ...
+                        100 * double(cp.CurveType == c)}; %#ok<AGROW>
+                end
             end
         end
 
@@ -1139,9 +1177,29 @@ classdef GraspDCEViewer < handle
         function S = paramSettings(obj)
             D = obj.Data;
             o = D.ParamOpts;
+            switch lower(o.WashIn)
+                case 'max', wis = 'maximum up-slope between consecutive frames';
+                case 'sss'
+                    wis = 'maximum up-slope within the period of most rapid SSS signal increase: no reference ROI';
+                    if numel(o.WashInFrames) == 2
+                        tt = D.paramTimes();
+                        wis = sprintf(['maximum up-slope within the period of most rapid SSS signal increase ' ...
+                            '(frames %d-%d, %.4g-%.4g on the time axis; Lee, Berger et al., Neurosurgery 2023)'], ...
+                            o.WashInFrames, tt(o.WashInFrames));
+                    end
+                otherwise, wis = 'dS/(TP - To): onset to peak (onset = last frame below 10% of dS)';
+            end
+            ke = D.analysisEnd(); tt = D.paramTimes();
             S = {'Baseline frames', sprintf('%d-%d', obj.BaseFrames);
-                'Wash-in slope', GraspDCEViewer.ternaryStr(strcmpi(o.WashIn, 'max'), 'maximum up-slope between consecutive frames', ...
-                'dS/(TP - To): onset to peak (onset = last frame below 10% of dS)');
+                'Analysis endpoint', sprintf('frames 1-%d of %d (last frame at %.4g %s); later frames ignored', ...
+                ke, D.NT, tt(ke), GraspDCEViewer.ternaryStr(D.hasTiming(), 's', 'frames'));
+                'Early / late frame (after end of baseline)', sprintf('%g / %g (nearest frames; Inf = last analysed frame)', ...
+                o.EarlyTime, o.LateTime);
+                'Curve type', sprintf(['1 persistent, 2 plateau, 3 washout: change early -> late frame ' ...
+                '> +%g%%, within, < -%g%% of the early signal'], o.CurveTol, o.CurveTol);
+                'Other definitions', ['T90 = time to 90% of PE; MITR = PE/TTP; SER = (S_early - S0)/(S_late - S0); ' ...
+                'washout % = 100 (Smax - S_last)/Smax; plateau = mean S - S0 of the last 3 analysed frames'];
+                'Wash-in slope', wis;
                 'Washout slope', GraspDCEViewer.ternaryStr(strcmpi(o.WashOut, 'endpoints'), '(S_last - S_peak)/(t_last - t_peak)', ...
                 'least-squares slope from the peak (at least the last 3 frames) to the end; negative = washout');
                 'AUC window (s after end of baseline)', num2str(o.AUCWindow);
@@ -1411,7 +1469,7 @@ classdef GraspDCEViewer < handle
                 cnt = cnt + uint8(obj.Masks{r});
             end
             hdr = struct('Dim', n, 'Vox', D.canonVox(), 'Affine', D.affine(), 'Datatype', cls, ...
-                'Descrip', 'GRASP DCE Viewer ROI labels', 'CalRange', [0 nR]);
+                'Descrip', 'GRASPilot ROI labels', 'CalRange', [0 nR]);
             gdce_nifti_write(file, L, hdr);
             base = regexprep(file, '(\.nii\.gz|\.nii)$', '', 'ignorecase');
             obj.writeLabelTables(base);
@@ -1450,7 +1508,7 @@ classdef GraspDCEViewer < handle
             if ~obj.ensureMaps(false), return; end
             D = obj.Data;
             hdr = struct('Dim', D.canonSize(), 'Vox', D.canonVox(), 'Affine', D.affine(), ...
-                'Datatype', 'float32', 'Descrip', 'GRASP DCE Viewer map');
+                'Datatype', 'float32', 'Descrip', 'GRASPilot map');
             if D.BinSize > 1, base = sprintf('%s_%dframes', base, D.NT); end
             nw = 0;
             for nm = {'Baseline', 'Max'}
@@ -1504,7 +1562,7 @@ classdef GraspDCEViewer < handle
             D = obj.Data;
             S = load(file);
             if ~isfield(S, 'ROIIndexNative')
-                error('GraspDCEViewer:session', 'Not a GRASP DCE Viewer ROI file.');
+                error('GraspDCEViewer:session', 'Not a GRASPilot ROI file.');
             end
             if ~isequal(S.NativeSize(:)', D.NativeSize)
                 error('GraspDCEViewer:session', 'ROI file is for a %s matrix; data is %s.', ...
@@ -1611,7 +1669,7 @@ classdef GraspDCEViewer < handle
         function close(obj, force)
             if nargin < 2, force = false; end
             if ~force && ~obj.Quiet && obj.Modified && ~isempty(obj.Masks) && any(cellfun(@(m) any(m(:)), obj.Masks))
-                b = obj.ask('Save ROIs before closing?', 'GRASP DCE Viewer', {'Save', 'Discard', 'Cancel'}, 'Save');
+                b = obj.ask('Save ROIs before closing?', 'GRASPilot', {'Save', 'Discard', 'Cancel'}, 'Save');
                 if isempty(b) || strcmp(b, 'Cancel'), return; end
                 if strcmp(b, 'Save') && ~obj.onSaveROIs(), return; end
             end
@@ -1635,7 +1693,7 @@ classdef GraspDCEViewer < handle
             W = min(1720, max(1200, ss(3) - 80));
             Hh = min(1020, max(770, ss(4) - 110));
             pos = [max(1, round((ss(3) - W) / 2)), max(30, round((ss(4) - Hh) / 2)), W, Hh];
-            obj.Fig = figure('Name', 'GRASP DCE Viewer', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+            obj.Fig = figure('Name', 'GRASPilot', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                 'ToolBar', 'none', 'Color', C.bg, 'Units', 'pixels', 'Position', pos, 'Visible', 'off', ...
                 'CloseRequestFcn', @(s, e) obj.close(), ...
                 'WindowButtonDownFcn', @(s, e) obj.onMouseDown(), ...
@@ -1746,7 +1804,7 @@ classdef GraspDCEViewer < handle
             uimenu(m, 'Label', 'Export parameter statistics and voxel values...', 'Callback', @(s, e) obj.onExportParams());
             m = uimenu(obj.Fig, 'Label', 'Help');
             uimenu(m, 'Label', 'Mouse and keyboard...', 'Callback', @(s, e) obj.showHelp());
-            uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.inform(sprintf(['GRASP DCE Viewer %s\n' ...
+            uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.inform(sprintf(['GRASPilot %s\n' ...
                 'Frames are synthesized from the subspace coefficients exactly as in ReadData.m ' ...
                 '(TempPCASub adjoint, CropImg, global-max normalization).\nNo toolboxes required; ' ...
                 'runs offline.'], obj.Version), 'About'));
@@ -2612,6 +2670,11 @@ classdef GraspDCEViewer < handle
             fl = line('Parent', ax, 'XData', [xf xf], 'YData', yl, 'Color', [1 1 1] * 0.85, ...
                 'LineStyle', ':', 'LineWidth', 1, 'HitTest', 'off');
             items(end + 1) = fl;
+            ke = obj.Data.analysisEnd();
+            if ke < obj.Data.NT                 % analysis endpoint
+                items(end + 1) = line('Parent', ax, 'XData', [x(ke) x(ke)], 'YData', yl, ...
+                    'Color', [1 0.6 0.2], 'LineStyle', '--', 'LineWidth', 1, 'HitTest', 'off');
+            end
             obj.Tic.FrameLine = fl;
             obj.Tic.Items = items;
             if obj.TicX == 1 && obj.Data.hasTiming(), xs = 'Time (s)'; else, xs = 'Frame'; end
@@ -2943,7 +3006,7 @@ classdef GraspDCEViewer < handle
             end
             obj.Layout = obj.Layout(arrayfun(@(L) ishghandle(L.h), obj.Layout));
             C = obj.Col;
-            W = 1220; Hh = 700;
+            W = 1220; Hh = 860;
             ss = get(0, 'ScreenSize');
             f = figure('Name', 'Semi-quantitative DCE parameters', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                 'ToolBar', 'none', 'Units', 'pixels', 'Color', C.bg, ...
@@ -2962,7 +3025,10 @@ classdef GraspDCEViewer < handle
             obj.PW.base2 = obj.ctl(P, x1 + 174, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
             obj.ctl(P, x1, 64, 96, 18, 'text', 'Wash-in slope');
             obj.PW.washIn = obj.ctl(P, x1 + 100, 62, 240, 22, 'popupmenu', ...
-                {'dS / (TP - To), onset to peak', 'Maximum up-slope'}, 'Callback', @(s, e) obj.onParamOptions());
+                {'dS / (TP - To), onset to peak', 'Maximum up-slope', 'Max slope in SSS wash-in period'}, ...
+                'TooltipString', ['SSS wash-in period: frames around the steepest rise of the SSS reference curve ' ...
+                '(Lee, Berger et al. 2023); the tumor slope is its maximum slope in that period'], ...
+                'Callback', @(s, e) obj.onParamOptions());
             obj.ctl(P, x1, 92, 96, 18, 'text', 'Washout slope');
             obj.PW.washOut = obj.ctl(P, x1 + 100, 90, 240, 22, 'popupmenu', ...
                 {'Regression, peak to end', 'Peak to last frame (2 points)'}, 'Callback', @(s, e) obj.onParamOptions());
@@ -2971,12 +3037,27 @@ classdef GraspDCEViewer < handle
                 'TooltipString', 'Seconds after the end of the baseline; blank = whole curve; 60 or 90 = IAUC60/IAUC90', ...
                 'Callback', @(s, e) obj.onParamOptions());
             obj.ctl(P, x1 + 156, 120, 220, 18, 'text', 'blank = whole curve; 60 = IAUC60', 'ForegroundColor', C.dim);
-            obj.ctl(P, x1, 148, 96, 18, 'text', 'SSS reference');
-            obj.PW.ref = obj.ctl(P, x1 + 100, 146, 240, 22, 'popupmenu', {'(auto)'}, ...
+            obj.ctl(P, x1, 148, 100, 18, 'text', 'Analyze up to');
+            obj.PW.endV = obj.ctl(P, x1 + 100, 146, 50, 22, 'edit', '', ...
+                'TooltipString', 'Analysis endpoint: later frames are ignored for all parameters; blank = all frames', ...
+                'Callback', @(s, e) obj.onParamOptions());
+            obj.PW.endU = obj.ctl(P, x1 + 156, 146, 80, 22, 'popupmenu', {'s', 'frames'}, ...
+                'Callback', @(s, e) obj.onParamOptions());
+            obj.ctl(P, x1 + 242, 148, 130, 18, 'text', 'blank = all frames', 'ForegroundColor', C.dim);
+            obj.ctl(P, x1, 176, 100, 18, 'text', 'Early / late (s)');
+            obj.PW.early = obj.ctl(P, x1 + 100, 174, 50, 22, 'edit', '', ...
+                'TooltipString', 'Early frame, time after the end of the baseline (SER, early enhancement, curve type)', ...
+                'Callback', @(s, e) obj.onParamOptions());
+            obj.PW.late = obj.ctl(P, x1 + 156, 174, 50, 22, 'edit', '', ...
+                'TooltipString', 'Late frame, time after the end of the baseline; blank = last analysed frame', ...
+                'Callback', @(s, e) obj.onParamOptions());
+            obj.ctl(P, x1 + 212, 176, 160, 18, 'text', 'late blank = last frame', 'ForegroundColor', C.dim);
+            obj.ctl(P, x1, 204, 96, 18, 'text', 'SSS reference');
+            obj.PW.ref = obj.ctl(P, x1 + 100, 202, 240, 22, 'popupmenu', {'(auto)'}, ...
                 'Callback', @(s, e) obj.onParamRef());
-            obj.ctl(P, x1, 178, 170, 28, 'pushbutton', 'Compute parameters', 'FontWeight', 'bold', ...
+            obj.ctl(P, x1, 232, 170, 28, 'pushbutton', 'Compute parameters', 'FontWeight', 'bold', ...
                 'Callback', @(s, e) obj.onParamCompute());
-            obj.PW.info = obj.ctl(P, x1, 210, 376, 34, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
+            obj.PW.info = obj.ctl(P, x1, 264, 376, 58, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
             % parameter map
             hdr(x2, 'PARAMETER MAP');
             obj.ctl(P, x2, 36, 70, 18, 'text', 'Parameter');
@@ -3028,7 +3109,7 @@ classdef GraspDCEViewer < handle
                 'ColumnName', {'ROI', 'Parameter', 'Unit', 'N', 'Mean', 'SD', 'Median', 'Q1', 'Q3', 'P10', ...
                 'P90', 'Min', 'Max', 'ROI curve'}, 'RowName', [], 'Data', cell(0, 14), 'FontSize', 9, ...
                 'ColumnWidth', {110, 195, 55, 50, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78});
-            obj.reg(obj.PW.table, P, 12, 250, -12, -12);
+            obj.reg(obj.PW.table, P, 12, 328, -12, -12);
             set(f, 'SizeChangedFcn', @(s, e) obj.layoutParamWindow());
             obj.layoutParamWindow();
             obj.refreshParamWindow();
@@ -3064,7 +3145,17 @@ classdef GraspDCEViewer < handle
             set(obj.PW.base1, 'String', num2str(obj.BaseFrames(1)));
             set(obj.PW.base2, 'String', num2str(obj.BaseFrames(2)));
             o = D.ParamOpts;
-            set(obj.PW.washIn, 'Value', 1 + strcmpi(o.WashIn, 'max'));
+            set(obj.PW.washIn, 'Value', max(1, find(strcmpi({'onset', 'max', 'sss'}, o.WashIn))));
+            if isfinite(o.EndFrame)
+                set(obj.PW.endV, 'String', num2str(o.EndFrame)); set(obj.PW.endU, 'Value', 2);
+            elseif isfinite(o.EndTime)
+                set(obj.PW.endV, 'String', num2str(o.EndTime)); set(obj.PW.endU, 'Value', 1);
+            else
+                set(obj.PW.endV, 'String', '');
+            end
+            set(obj.PW.early, 'String', num2str(o.EarlyTime));
+            if isfinite(o.LateTime), set(obj.PW.late, 'String', num2str(o.LateTime));
+            else, set(obj.PW.late, 'String', ''); end
             set(obj.PW.washOut, 'Value', 1 + strcmpi(o.WashOut, 'endpoints'));
             if isfinite(o.AUCWindow), set(obj.PW.aucW, 'String', num2str(o.AUCWindow));
             else, set(obj.PW.aucW, 'String', ''); end
@@ -3090,6 +3181,15 @@ classdef GraspDCEViewer < handle
                         ref.PE, ref.WashIn, ref.WashOut, ref.AUC)};
                 end
             end
+            ke = D.analysisEnd(); tp = D.paramTimes();
+            if ke < D.NT
+                msgI{end + 1} = sprintf('Analysis limited to frames 1-%d of %d (last at %.4g %s).', ke, D.NT, ...
+                    tp(ke), GraspDCEViewer.ternaryStr(D.hasTiming(), 's', 'frames'));
+            end
+            if strcmpi(o.WashIn, 'sss') && numel(o.WashInFrames) == 2
+                msgI{end + 1} = sprintf('SSS wash-in period: frames %d-%d (%.4g-%.4g).', o.WashInFrames, ...
+                    tp(o.WashInFrames));
+            end
             set(obj.PW.info, 'String', msgI);
             [~, rows] = obj.paramStatsTable();
             dsp = rows;
@@ -3100,6 +3200,7 @@ classdef GraspDCEViewer < handle
                     else
                         dsp{i, j} = sprintf('%.4g', rows{i, j});
                         if numel(dsp{i, j}) > 9, dsp{i, j} = sprintf('%.3g', rows{i, j}); end
+                        if isnan(rows{i, j}), dsp{i, j} = ''; end
                     end
                 end
             end
@@ -3132,11 +3233,25 @@ classdef GraspDCEViewer < handle
         end
 
         function onParamOptions(obj)
-            wi = {'onset', 'max'}; wo = {'regression', 'endpoints'};
+            wi = {'onset', 'max', 'sss'}; wo = {'regression', 'endpoints'};
+            ev = str2double(get(obj.PW.endV, 'String'));
+            ef = Inf; et = Inf;
+            if isfinite(ev) && ev > 0
+                if get(obj.PW.endU, 'Value') == 2 || ~obj.Data.hasTiming()
+                    ef = ev;                      % no timing: the endpoint is in frames
+                else
+                    et = ev;
+                end
+            end
+            obj.Data.setParamOptions('EndFrame', ef, 'EndTime', et, ...
+                'EarlyTime', str2double(get(obj.PW.early, 'String')), ...
+                'LateTime', str2double(get(obj.PW.late, 'String')));
             aw = str2double(get(obj.PW.aucW, 'String'));
             if ~isfinite(aw) || aw <= 0, aw = Inf; end
             obj.Data.setParamOptions('WashIn', wi{get(obj.PW.washIn, 'Value')}, ...
                 'WashOut', wo{get(obj.PW.washOut, 'Value')}, 'AUCWindow', aw);
+            obj.syncRefWindow();
+            obj.refreshTIC();
             obj.refreshParamWindow();
             if obj.ParamOn, obj.refreshParamDisplay(); end
         end
@@ -3496,6 +3611,8 @@ classdef GraspDCEViewer < handle
                 '  (transverse and straight sinuses excluded); check and edit as needed'
                 ''
                 'SEMI-QUANTITATIVE PARAMETERS (Analysis menu or Parameters... button)'
+                '  Analyze up to: limit the analysis to the first N s or frames'
+                '  (orange dashed line on the curves)'
                 '  Peak enhancement, wash-in and washout slopes, AUC, TTP, absolute and'
                 '  normalized to the SSS ROI mean curve; colour maps (M), ROI statistics,'
                 '  export of statistics and voxel values'
@@ -3653,6 +3770,7 @@ classdef GraspDCEViewer < handle
             obj.Modified = true;
             obj.RefCache = [];
             obj.ParamCache = struct('key', '', 'V', []);
+            obj.syncRefWindow();
             obj.refreshROIList();
             if obj.ParamOn
                 [~, ~, nrm] = GraspDCEViewer.paramInfo(obj.ParamKey);
@@ -3706,7 +3824,7 @@ classdef GraspDCEViewer < handle
         function writeLabelTables(obj, base)
             vmL = prod(obj.Data.canonVox()) / 1000;
             fid = fopen([base '_labels.txt'], 'w');
-            fprintf(fid, '# GRASP DCE Viewer label table\n# label\tname\tR\tG\tB\tvoxels\tvolume_mL\n');
+            fprintf(fid, '# GRASPilot label table\n# label\tname\tR\tG\tB\tvoxels\tvolume_mL\n');
             for r = 1:numel(obj.ROIs)
                 c = round(255 * obj.ROIs(r).Color);
                 k = nnz(obj.Masks{r});
@@ -3745,14 +3863,14 @@ classdef GraspDCEViewer < handle
 
         function ok = requireData(obj)
             ok = ~isempty(obj.Data);
-            if ~ok, obj.inform('Open a reconstruction first.', 'GRASP DCE Viewer'); end
+            if ~ok, obj.inform('Open a reconstruction first.', 'GRASPilot'); end
         end
 
         function ok = requireROIs(obj)
             ok = obj.requireData();
             if ok
                 ok = ~isempty(obj.Masks) && any(cellfun(@(m) any(m(:)), obj.Masks));
-                if ~ok, obj.inform('There are no ROI voxels yet.', 'GRASP DCE Viewer'); end
+                if ~ok, obj.inform('There are no ROI voxels yet.', 'GRASPilot'); end
             end
         end
 
@@ -3783,7 +3901,7 @@ classdef GraspDCEViewer < handle
                 fprintf(2, '    at %s (line %d)\n', err.stack(k).name, err.stack(k).line);
             end
             if obj.Quiet, return; end
-            errordlg(sprintf('%s:\n\n%s', ttl, err.message), 'GRASP DCE Viewer', 'modal');
+            errordlg(sprintf('%s:\n\n%s', ttl, err.message), 'GRASPilot', 'modal');
         end
 
         function setStatus(obj, s)
@@ -3797,7 +3915,7 @@ classdef GraspDCEViewer < handle
             wb = [];
             if obj.Quiet, return; end
             try
-                wb = waitbar(0, msg, 'Name', 'GRASP DCE Viewer');
+                wb = waitbar(0, msg, 'Name', 'GRASPilot');
                 set(findall(wb, 'Type', 'text'), 'Interpreter', 'none');
             catch
                 wb = [];
@@ -3888,6 +4006,14 @@ classdef GraspDCEViewer < handle
                 case 'WOS', name = 'WashOut'; fld = 'WashOut';
                 case 'AUC', name = 'AUC';     fld = 'AUC';
                 case 'TTP', name = 'TTP';     fld = 'TTP';
+                case 'BAT', name = 'Onset';   fld = 'Onset';
+                case 'T90', name = 'T90';     fld = 'T90';
+                case 'MITR', name = 'MITR';   fld = 'MITR';
+                case 'REE', name = 'REearly'; fld = 'REearly';
+                case 'SER', name = 'SER';     fld = 'SER';
+                case 'WOP', name = 'WashoutPct'; fld = 'WashoutPct';
+                case 'PLAT', name = 'Plateau'; fld = 'Plateau';
+                case 'CT',  name = 'CurveType'; fld = 'CurveType';
                 otherwise
                     error('GraspDCEViewer:param', 'Unknown parameter %s.', key);
             end

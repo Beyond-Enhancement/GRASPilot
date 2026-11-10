@@ -17,12 +17,12 @@ else
 end
 hdr.Affine = D.affine();
 hdr.Datatype = 'float32';
-hdr.Descrip = 'GRASP DCE Viewer';
+hdr.Descrip = 'GRASPilot';
 gdce_nifti_write(outFile, @(i) D.canonVolume(frames(i)), hdr, progress);
 
 % JSON sidecar
 J = struct();
-J.CreatedBy = 'GRASP DCE Viewer';
+J.CreatedBy = 'GRASPilot';
 J.Created = datestr(now, 'yyyy-mm-ddTHH:MM:SS');
 J.SourceFile = D.SourceFile;
 J.SourceVariables = D.SourceVars;

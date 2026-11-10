@@ -88,7 +88,7 @@ end
 
 % info block
 info = {
-    'Created by', 'GRASP DCE Viewer (gdce_export_timeseries)';
+    'Created by', 'GRASPilot (gdce_export_timeseries)';
     'Date', datestr(now, 'yyyy-mm-dd HH:MM:SS');
     'Source file', D.SourceFile;
     'Source variables', D.SourceVars;

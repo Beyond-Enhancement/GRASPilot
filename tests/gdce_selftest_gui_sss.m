@@ -58,7 +58,7 @@ ir = find(strcmp(rows(:, 2), 'Peak enhancement / SSS'));
 d = GraspDCEViewer.describeVals(P.PE / R.PE);
 app.computeStats(t);
 cm = gdce_curve_params(app.ROIs(t).Stats.mean, D.paramTimes(), bf, D.ParamOpts);
-okT = size(rows, 1) == numel(app.ParamKeys) && all(strcmp(rows(:, 1), app.ROIs(t).Name)) && numel(ir) == 1 && ...
+okT = size(rows, 1) == numel(app.ParamKeys) + 3 && all(strcmp(rows(:, 1), app.ROIs(t).Name)) && numel(ir) == 1 && ...
     abs(rows{ir, 5} - mean(P.PE / R.PE)) < 1e-5 && abs(rows{ir, 7} - median(P.PE / R.PE)) < 1e-5 && ...
     rows{ir, 4} == numel(lin) && abs(rows{ir, 6} - std(P.PE / R.PE)) < 1e-5 && ...
     abs(rows{ir, end} - cm.PE / R.PE) < 1e-6 && abs(d.p90 - rows{ir, 11}) < 1e-6 && strcmp(hdr{end}, 'ROI mean curve');
@@ -66,7 +66,7 @@ nfail = nfail + check('tumor statistics table (SSS excluded)', okT, size(rows, 1
 app.IncludeRefStats = true;
 [~, rows2] = app.paramStatsTable();
 app.IncludeRefStats = false;
-nfail = nfail + check('statistics include the SSS when asked', size(rows2, 1) == 2 * numel(app.ParamKeys), size(rows2, 1));
+nfail = nfail + check('statistics include the SSS when asked', size(rows2, 1) == 2 * (numel(app.ParamKeys) + 3), size(rows2, 1));
 
 % colour map overlay and colour bar
 app.setPos(round([43 43 52]));
@@ -88,7 +88,7 @@ nfail = nfail + check('key M toggles the map', ~app.ParamOn && isempty(app.Param
 app.onKey(struct('Key', 'm', 'Modifier', {{}}, 'Character', 'm'));
 app.openParamWindow();
 tb = get(app.PW.table, 'Data');
-okW = ishghandle(app.PW.Fig) && size(tb, 1) == numel(app.ParamKeys) && ...
+okW = ishghandle(app.PW.Fig) && size(tb, 1) == numel(app.ParamKeys) + 3 && ...
     strcmp(get(app.PW.cmin, 'String'), sprintf('%.4g', c(1)));
 set(app.PW.cmap, 'Value', 2); app.onParamCmap(2);
 set(app.PW.washIn, 'Value', 2); app.onParamOptions(); app.onParamCompute();
@@ -111,7 +111,7 @@ okE = numel(files) == 3 && all(cellfun(@(f) exist(f, 'file') == 2, files)) && nu
 fid = fopen(fullfile(out, 'params_param_stats.csv')); nl = 0;
 while ischar(fgetl(fid)), nl = nl + 1; end
 fclose(fid);
-nfail = nfail + check('parameter export (stats + voxel values csv)', okE && nl == 1 + numel(app.ParamKeys), nl);
+nfail = nfail + check('parameter export (stats + voxel values csv)', okE && nl == 4 + numel(app.ParamKeys), nl);
 if exist('writecell', 'file') == 2
     fx = app.exportParams(fullfile(out, 'params.xlsx'));
     nfail = nfail + check('parameter export (xlsx)', exist(fx{1}, 'file') == 2, 0);
@@ -121,6 +121,45 @@ app.exportMaps(out, 'pmaps');
 Wm = double(D.canonMap('WashOut')) / R.WashOut;
 e = max(abs(double(V(lin)) - Wm(lin)));
 nfail = nfail + check('parameter maps NIfTI (WOS / SSS)', e < 1e-4 && isequal(hv.Dim(1:3), n), e);
+
+% ---- new descriptors, analysis endpoint, wash-in in the SSS wash-in period
+TC = double(D.timecourses(lin)); tt = D.paramTimes();
+e = 0;
+for q = {'BAT', 'Onset'; 'T90', 'T90'; 'REE', 'REearly'; 'SER', 'SER'; 'WOP', 'WashoutPct'; 'PLAT', 'Plateau'; 'CT', 'CurveType'}'
+    v = app.paramValues(q{1}, lin); w = P.(q{2});
+    okn = isequal(isnan(v), isnan(w));
+    e = max(e, max(abs(v(~isnan(w)) - w(~isnan(w)))) / max(1e-6, max(abs(w(~isnan(w))))) + ~okn);
+end
+v = app.paramValues('MITR', lin);
+e = max(e, max(abs(v - P.PE ./ P.TTP)) / max(abs(P.PE ./ P.TTP)));
+nfail = nfail + check('onset, T90, MITR, early RE, SER, washout %, plateau, type', e < 1e-4, e);
+[~, rows] = app.paramStatsTable();
+ic = find(strncmp(rows(:, 2), 'Curve type I', 12));
+fr = [rows{ic, 5}];
+nfail = nfail + check('curve-type fractions sum to 100%', numel(ic) == 3 && abs(sum(fr) - 100) < 1e-9 && ...
+    abs(fr(1) - 100 * mean(P.CurveType == 1)) < 1e-9, fr(1));
+app.computeParams('EndTime', 30);                    % frames at 2, 6, ..., 30 s -> 8 frames
+ke = D.analysisEnd();
+P8 = gdce_curve_params(TC(:, 1:ke), tt(1:ke), bf);
+v = app.paramValues('AUC', lin); v2 = app.paramValues('WOS', lin);
+e = max(max(abs(v - P8.AUC)) / max(abs(P8.AUC)), max(abs(v2 - P8.WashOut)) / max(abs(P8.WashOut)));
+nfail = nfail + check('analysis endpoint in seconds (first 30 s)', tt(ke) <= 30 && tt(ke + 1) > 30 && e < 1e-4, ke);
+app.computeParams('EndTime', Inf, 'EndFrame', 9);
+v = app.paramValues('PE', lin);
+P9 = gdce_curve_params(TC(:, 1:9), tt(1:9), bf);
+nfail = nfail + check('analysis endpoint in frames (first 9)', D.analysisEnd() == 9 && ...
+    max(abs(v - P9.PE)) / max(abs(P9.PE)) < 1e-4, D.analysisEnd());
+app.computeParams('EndFrame', Inf, 'WashIn', 'sss');
+sm = app.ROIs(k).Stats.mean;
+w = D.ParamOpts.WashInFrames;
+ds = diff(sm) ./ diff(tt);
+[mx, im] = max(ds(bf(end):end)); im = im + bf(end) - 1;
+dT = diff(TC(:, w(1):w(2)), 1, 2) ./ repmat(diff(tt(w(1):w(2))), size(TC, 1), 1);
+v = app.paramValues('WIS', lin); vn = app.paramValues('WIS_SSS', lin);
+okS = numel(w) == 2 && w(1) <= im && w(2) >= im + 1 && all(ds(w(1):w(2) - 1) >= 0.5 * mx - 1e-12) && ...
+    max(abs(v - max(dT, [], 2))) < 1e-6 && max(abs(vn - max(dT, [], 2) / mx)) < 1e-5;
+nfail = nfail + check('wash-in = max slope in the SSS wash-in period', okS, w(1));
+app.computeParams('WashIn', 'onset');
 
 % normalization needs the reference ROI
 app.ROIs(k).Name = 'vein';
