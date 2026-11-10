@@ -40,6 +40,7 @@ J.RawFramesPerFrame = D.BinIdx(frames);
 J.DroppedRawFrames = D.droppedFrames();
 J.VoxelSize_mm = D.canonVox();
 J.NativeSize = D.NativeSize;
+J.NativeAxisCodes = D.AxisCodes;
 J.NativePlane = D.Plane;
 J.SwapInPlane = D.SwapInPlane;
 J.UserFlip_LR_AP_SI = D.UserFlip;

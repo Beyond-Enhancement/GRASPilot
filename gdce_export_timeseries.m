@@ -17,6 +17,8 @@ function files = gdce_export_timeseries(D, masks, names, file, varargin)
 %           voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn.
 %   .csv  : <base>_voxels.csv (all ROIs, ROI_ID and ROI_Name columns),
 %           <base>_summary.csv and <base>_info.txt.
+%   After temporal binning, _<N>frames is appended to the base name (unless
+%   already present), e.g. case_roi_timeseries_65frames.xlsx.
 %
 %   i, j, k are 1-based indices into the arrays exported to NIfTI by the
 %   viewer (canonical LPS voxel order); x, y, z are RAS mm from the NIfTI
@@ -35,6 +37,12 @@ end
 if isempty(folder), folder = pwd; end
 ext = lower(ext);
 T = D.NT;
+if D.BinSize > 1
+    % binned series: put the number of frames in the file name
+    tag = sprintf('_%dframes', T);
+    if isempty(strfind(base, tag)), base = [base tag]; end
+    file = fullfile(folder, [base ext]);
+end
 ft = D.frameTimes();
 n = D.canonSize();
 A = D.affine();

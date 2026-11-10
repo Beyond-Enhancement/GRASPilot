@@ -105,6 +105,59 @@ end
 nfail = nfail + check('canonical slices/volumes/TCs, 48 orientations', e < tol, e);
 nfail = nfail + check('canon2native/native2canon inverse', ec == 0, ec);
 
+% ---------------------------------------------------------------- 3b. axis codes
+e = 0;
+for ip = 1:3
+    for sw = 0:1
+        for fl = 0:7
+            f = logical(bitget(fl, 1:3));
+            D.setOrientation(planes{ip}, sw, f);
+            P0 = D.Perm; F0 = D.Flip; c0 = D.AxisCodes;
+            D.setAxisCodes(c0);
+            e = e + ~isequal(D.Perm, P0) + ~isequal(D.Flip, F0) + ~strcmp(D.AxisCodes, c0);
+        end
+    end
+end
+nfail = nfail + check('axis codes <-> plane/swap/flip (48 combos)', e == 0, e);
+D.setAxisCodes('LPS');
+e = max(abs(reshape(D.canonVolume(3) - ref(:, :, :, 3), [], 1)));
+nfail = nfail + check('LPS = stored array order (identity)', isequal(D.Perm, [1 2 3]) && ~any(D.Flip) && e < tol, e);
+e = 0;
+cs = {'LPS', 'PLS', 'RAS', 'ALI', 'ILP', 'SRA'};
+for ic = 1:numel(cs)
+    D.setAxisCodes(cs{ic});
+    a0 = D.canonSlice(3, 2, 4).';                     % axial screen image
+    D.setAxisCodes(GraspData.rotateCodesCW(cs{ic}));
+    a1 = D.canonSlice(3, 2, 4).';
+    e = e + ~isequal(a1, rot90(a0, -1));
+end
+nfail = nfail + check('Rotate axial 90 CW == rot90(screen, -1)', e == 0, e);
+D.setAxisCodes('PLS');
+nfail = nfail + check('flip L-R code', strcmp(GraspData.flipCodes('LPS', 'LR'), 'RPS'), 0);
+bad = 0;
+try, D.setAxisCodes('LLS'); catch, bad = 1; end
+nfail = nfail + check('invalid axis codes rejected', bad == 1, 0);
+
+% ---------------------------------------------------------------- 3c. SSS detection (venous phantom)
+[Dp, tr] = gdce_sss_phantom();
+[linS, infoS] = gdce_detect_sss(Dp);
+np = Dp.canonSize();
+M = false(np); M(linS) = true;
+[~, ~, kk] = ind2sub(np, linS);
+ok = numel(linS) > 50 && all(tr.SSS(linS)) && ~any(M(:) & (tr.TS(:) | tr.SS(:) | tr.SV(:) | tr.AR(:)));
+nfail = nfail + check('SSS ROI only in SSS (not TS/straight/scalp/artery)', ok, numel(linS));
+ok = abs(infoS.TorculaSlice - tr.TorculaZ) <= 2 && min(kk) >= infoS.TorculaSlice + 5 && max(kk) <= tr.TorculaZ + 30 ...
+    && abs(infoS.Centroid(1) - 50) < 2;
+nfail = nfail + check('SSS ROI just above torcula, midline', ok, infoS.TorculaSlice);
+[Dp2, tr2] = gdce_sss_phantom(25);
+[lin2, info2] = gdce_detect_sss(Dp2);
+ok = numel(lin2) > 50 && all(tr2.SSS(lin2)) && isnan(info2.TorculaSlice);
+nfail = nfail + check('SSS detection without torcula in slab', ok, numel(lin2));
+Dp2.setAxisCodes('PLS');
+[lin3, info3] = gdce_detect_sss(Dp2);
+nfail = nfail + check('SSS detection reports failure, wrong orientation', ...
+    isempty(lin3) || ~all(tr2.SSS(Dp2.canon2nativeLin(lin3))), numel(lin3));
+
 % ---------------------------------------------------------------- 4. enhancement maps
 D.setOrientation('axial', false, [0 0 0]);
 D.computeMaps(1:3);
@@ -224,6 +277,7 @@ end
 % ---------------------------------------------------------------- 8. GUI
 if doGUI
     nfail = nfail + gdce_selftest_gui(D, ref, out);
+    nfail = nfail + gdce_selftest_gui_sss(out);
 end
 
 ok = nfail == 0;

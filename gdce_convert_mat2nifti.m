@@ -5,9 +5,10 @@ function outFile = gdce_convert_mat2nifti(matFile, outFile, varargin)
 %   gdce_convert_mat2nifti('recon.mat', 'out.nii.gz', 'Name', Value, ...)
 %
 %   Options (in addition to all GraspData.fromFile options):
-%   'Plane'      'axial' | 'coronal' | 'sagittal'     ('axial')
-%   'SwapInPlane' logical                              (false)
-%   'Flip'       [LR AP SI] logical flips              ([0 0 0])
+%   'AxisCodes'  direction of increasing rows, cols, slices ('LPS' =
+%                scanner order of the GRASP reconstructions; 'PLS' = data1
+%                slices already radiological; see GraspData)    ('LPS')
+%   'Plane', 'SwapInPlane', 'Flip'  older alternative to AxisCodes
 %   'Voxel'      [row col slice] mm                    ([1 1 1])
 %   'dt'         s per frame                           (NaN)
 %   't0'         s, time of frame 1                    (0)
@@ -28,7 +29,7 @@ if nargin < 2 || isempty(outFile)
     [p, b] = fileparts(matFile);
     outFile = fullfile(p, [b '_dce.nii.gz']);
 end
-g = struct('Plane', 'axial', 'SwapInPlane', false, 'Flip', [false false false], ...
+g = struct('AxisCodes', 'LPS', 'Plane', '', 'SwapInPlane', false, 'Flip', [false false false], ...
     'Voxel', [1 1 1], 'dt', NaN, 't0', 0, 'Frames', [], 'BinSize', 1);
 pass = {};
 for i = 1:2:numel(varargin)
@@ -43,7 +44,11 @@ end
 prog = @(f, msg) fprintf('  %5.1f%%  %s\n', 100 * f, msg);
 fprintf('Loading %s\n', matFile);
 D = GraspData.fromFile(matFile, pass{:});
-D.setOrientation(g.Plane, g.SwapInPlane, g.Flip);
+if ~isempty(g.Plane)
+    D.setOrientation(g.Plane, g.SwapInPlane, g.Flip);
+else
+    D.setAxisCodes(g.AxisCodes);
+end
 D.VoxNative = g.Voxel;
 D.dt = g.dt;
 D.setBinning(g.BinSize);

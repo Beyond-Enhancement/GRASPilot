@@ -229,8 +229,20 @@ app.exportImageNifti(fB);
 e = max(abs(reshape(imB(:, :, :, 3) - D.canonVolume(3), [], 1)));
 nfail = nfail + check('binned NIfTI: 11 frames, dt = 2 x 2.5 s', e < tol && hB.Dim(4) == 11 && ...
     abs(hB.dt - 5) < 1e-6, hB.dt);
+fT = app.exportTimeseries(fullfile(out, 'gui_ts_binned.csv'));
+[~, fb] = fileparts(fT{1});
+nfail = nfail + check('binned spreadsheet name carries frame count', strcmp(fb, 'gui_ts_binned_11frames_voxels'), 0);
 app.applyBinning(1);
 nfail = nfail + check('binning reset to 1', D.NT == 23 && app.Frame == 9, app.Frame);
+fT = app.exportTimeseries(fullfile(out, 'gui_ts_unbinned.csv'));
+[~, fb] = fileparts(fT{1});
+nfail = nfail + check('unbinned spreadsheet name unchanged', strcmp(fb, 'gui_ts_unbinned_voxels'), 0);
+app.setTemporalResolution(NaN);
+nfail = nfail + check('temporal resolution unset -> frames', isnan(D.dt) && ~D.hasTiming() && ...
+    strcmp(get(app.H.dtEdit, 'String'), ''), 0);
+app.setTemporalResolution(2.5);
+nfail = nfail + check('temporal resolution set from time strip', D.dt == 2.5 && ...
+    strcmp(get(app.H.dtEdit, 'String'), '2.5'), D.dt);
 
 % ---- exports
 masksBefore = app.Masks;

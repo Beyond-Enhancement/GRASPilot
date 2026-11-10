@@ -26,8 +26,14 @@ classdef GraspData < handle
 %     native    : [rows cols partitions] = data1(:,:,t,z) of ReadData.m
 %     canonical : array used by the viewer and every export. Axis 1 runs
 %                 patient Right->Left, axis 2 Anterior->Posterior, axis 3
-%                 Inferior->Superior (LPS+ voxel order). setOrientation()
-%                 defines the native->canonical permutation/flips.
+%                 Inferior->Superior (LPS+ voxel order).
+%
+%   Orientation is given by 3-letter axis codes (setAxisCodes): the
+%   direction in which native rows, cols and slices increase, e.g.
+%     'LPS'  rows R->L, cols A->P, slices I->S (scanner x,y,z order; the
+%            deep-learning GRASP reconstructions are stored this way)
+%     'PLS'  rows A->P, cols R->L: data1(:,:,t,z) already radiological axial
+%     'ILP'  coronal slices,  'IPL'  sagittal slices
 %
 %   Options (fromFile / fromSubspace / fromDense)
 %     'Format'     'auto' | 'subspace' | 'dense'        (fromFile)
@@ -57,6 +63,7 @@ classdef GraspData < handle
         CropFactor = 1;
         Normalized = false;
         Plane = 'axial';
+        AxisCodes = 'PLS';          % direction of increasing native rows/cols/slices
         SwapInPlane = false;
         UserFlip = [false false false];
         Perm = [2 1 3];             % canonical axis a <- native dim Perm(a)
@@ -288,6 +295,58 @@ classdef GraspData < handle
             end
         end
 
+        function [perm, flp] = codesToPermFlip(codes)
+            if ~ischar(codes) || numel(codes) ~= 3
+                error('GraspData:codes', 'Axis codes must be 3 letters, e.g. ''LPS''.');
+            end
+            codes = upper(codes);
+            perm = zeros(1, 3); flp = false(1, 3);
+            for d = 1:3
+                switch codes(d)
+                    case 'L', a = 1; f = false;
+                    case 'R', a = 1; f = true;
+                    case 'P', a = 2; f = false;
+                    case 'A', a = 2; f = true;
+                    case 'S', a = 3; f = false;
+                    case 'I', a = 3; f = true;
+                    otherwise
+                        error('GraspData:codes', 'Invalid axis code ''%s'' in %s (use L R A P S I).', codes(d), codes);
+                end
+                if perm(a) ~= 0
+                    error('GraspData:codes', 'Axis codes %s use the same anatomical axis twice.', codes);
+                end
+                perm(a) = d; flp(a) = f;
+            end
+        end
+
+        function codes = permFlipToCodes(perm, flp)
+            pos = 'LPS'; neg = 'RAI';
+            codes = '   ';
+            for a = 1:3
+                if flp(a), codes(perm(a)) = neg(a); else, codes(perm(a)) = pos(a); end
+            end
+        end
+
+        function codes = rotateCodesCW(codes)
+            % rotate the axial display 90 degrees clockwise
+            m = 'LPRA'; r = 'PRAL';
+            for d = 1:3
+                k = find(m == codes(d), 1);
+                if ~isempty(k), codes(d) = r(k); end
+            end
+        end
+
+        function codes = flipCodes(codes, which)
+            % which: 'LR', 'AP' or 'SI'
+            for d = 1:3
+                if codes(d) == which(1)
+                    codes(d) = which(2);
+                elseif codes(d) == which(2)
+                    codes(d) = which(1);
+                end
+            end
+        end
+
         function [perm, flp] = presetOrientation(plane, swapInPlane, userFlip)
             % native dims: 1 = rows (top->bottom), 2 = cols (left->right), 3 = partitions
             switch lower(plane)
@@ -318,7 +377,27 @@ classdef GraspData < handle
             obj.Plane = lower(plane);
             obj.SwapInPlane = logical(swapInPlane);
             obj.UserFlip = logical(userFlip(:)');
+            obj.AxisCodes = GraspData.permFlipToCodes(obj.Perm, obj.Flip);
             obj.CanonMapCache = struct();
+        end
+
+        function setAxisCodes(obj, codes)
+            % codes: direction of increasing native rows, cols, slices,
+            % one of L/R, A/P, S/I each, e.g. 'LPS' or 'PLS'
+            [perm, flp] = GraspData.codesToPermFlip(codes);
+            planes = {'sagittal', 'coronal', 'axial'};
+            plane = planes{find(perm == 3)};                       % anatomical axis of the slices
+            for sw = 0:1
+                for f = 0:7
+                    uf = logical(bitget(f, 1:3));
+                    [p2, f2] = GraspData.presetOrientation(plane, sw, uf);
+                    if isequal(p2, perm) && isequal(f2, flp)
+                        obj.setOrientation(plane, sw, uf);
+                        return
+                    end
+                end
+            end
+            error('GraspData:codes', 'Could not represent axis codes %s.', codes);
         end
 
         function n = canonSize(obj)

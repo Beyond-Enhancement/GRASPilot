@@ -92,11 +92,24 @@ end
 y = y - 34;
 txt(12, y, 300, 'Acquisition geometry', 'FontWeight', 'bold');
 y = y - 30;
-txt(12, y, 160, 'Native (slice) plane');
-planes = {'axial', 'coronal', 'sagittal'};
-hPlane = pop(178, y + 2, 120, {'Axial', 'Coronal', 'Sagittal'}, pickIdx(planes, opts.Plane, 1));
+txt(12, y, 160, 'Voxel orientation');
+codes = {'LPS', 'PLS', 'ILP', 'IPL'};
+olabels = {'LPS: axial, rows R->L, cols A->P (scanner order, GRASP recon)', ...
+    'PLS: axial, rows A->P, cols R->L (data1 already radiological)', ...
+    'ILP: coronal slices, rows S->I, cols R->L', ...
+    'IPL: sagittal slices, rows S->I, cols A->P'};
+cur = '';
+if isfield(opts, 'AxisCodes'), cur = upper(opts.AxisCodes); end
+if isempty(cur)
+    [pm, fl] = GraspData.presetOrientation(opts.Plane, opts.SwapInPlane, opts.Flip);
+    cur = GraspData.permFlipToCodes(pm, fl);
+end
+if ~any(strcmp(codes, cur))
+    codes{end + 1} = cur;
+    olabels{end + 1} = sprintf('%s: as set last time (View > Geometry)', cur);
+end
+hPlane = pop(178, y + 2, W - 190, olabels, find(strcmp(codes, cur), 1));
 set(hPlane, 'Callback', []);
-txt(310, y, 318, 'Slices = partitions of the stack-of-stars', 'ForegroundColor', [0.4 0.4 0.4]);
 y = y - 30;
 txt(12, y, 160, 'Pixel spacing (mm)');
 txt(178, y, 34, 'rows');
@@ -107,11 +120,13 @@ txt(376, y, 100, 'slice spacing');
 hVs = edt(478, y + 2, 55, num2str(opts.Voxel(3)));
 y = y - 30;
 txt(12, y, 166, 'Temporal resolution (s)');
-hDt = edt(178, y + 2, 70, num2str(opts.dt));
+dts = '';
+if isfinite(opts.dt), dts = num2str(opts.dt); end
+hDt = edt(178, y + 2, 70, dts);
 txt(262, y, 140, 'Time of frame 1 (s)');
 hT0 = edt(400, y + 2, 60, num2str(opts.t0));
 y = y - 30;
-txt(12, y, W - 24, 'Temporal resolution NaN = unknown (curves are plotted per frame).', ...
+txt(12, y, W - 24, 'Temporal resolution = seconds per reconstructed frame; leave blank if unknown.', ...
     'ForegroundColor', [0.4 0.4 0.4]);
 txt(12, y - 18, W - 24, 'Geometry can be changed later under View > Geometry.', ...
     'ForegroundColor', [0.4 0.4 0.4]);
@@ -224,7 +239,10 @@ uiwait(d);
             end
             o.Normalize = logical(get(hNorm, 'Value'));
         end
-        o.Plane = planes{get(hPlane, 'Value')};
+        o.AxisCodes = codes{get(hPlane, 'Value')};
+        [pm, ~] = GraspData.codesToPermFlip(o.AxisCodes);
+        pl = {'sagittal', 'coronal', 'axial'};
+        o.Plane = pl{find(pm == 3)};
         v = [str2double(get(hVr, 'String')) str2double(get(hVc, 'String')) str2double(get(hVs, 'String'))];
         if any(~isfinite(v)) || any(v <= 0)
             errordlg('Voxel sizes must be positive numbers.', 'Load', 'modal');

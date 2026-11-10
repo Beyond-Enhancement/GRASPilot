@@ -8,8 +8,10 @@ classdef GraspDCEViewer < handle
 %   GraspDCEViewer(D)                    GraspData object
 %   app = GraspDCEViewer(...)            handle for scripting
 %
-%   Name/value options: 'Plane' ('axial'|'coronal'|'sagittal'), 'Voxel'
-%   [row col slice] mm, 'dt' s/frame, 't0' s, 'DimOrder' (dense input,
+%   Name/value options: 'AxisCodes' (direction of increasing rows, cols,
+%   slices; default 'LPS' = scanner x,y,z order of the GRASP reconstructions,
+%   'PLS' = data1 slices already radiological), 'Voxel' [row col slice] mm,
+%   'dt' s/frame, 't0' s, 'DimOrder' (dense input,
 %   default 'xytz'), 'CropFactor', 'Normalize', 'CoefVar', 'BasisVar',
 %   'ImageVar', 'BinSize' (average n consecutive frames), 'NoDialog'
 %   (true skips the load dialog).
@@ -180,14 +182,19 @@ classdef GraspDCEViewer < handle
         end
 
         function applyLoadGeometry(obj, D, opts)
-            D.setOrientation(opts.Plane, opts.SwapInPlane, opts.Flip);
+            if isfield(opts, 'AxisCodes') && ~isempty(opts.AxisCodes)
+                D.setAxisCodes(opts.AxisCodes);
+            else
+                D.setOrientation(opts.Plane, opts.SwapInPlane, opts.Flip);
+            end
             D.VoxNative = opts.Voxel(:)';
             D.dt = opts.dt;
             D.t0 = opts.t0;
             if isfield(opts, 'BinSize') && ~isempty(opts.BinSize) && opts.BinSize > 1
                 D.setBinning(opts.BinSize);
             end
-            obj.LoadOpts.Plane = opts.Plane;
+            obj.LoadOpts.AxisCodes = D.AxisCodes;
+            obj.LoadOpts.Plane = D.Plane;
             obj.LoadOpts.Voxel = opts.Voxel(:)';
             obj.LoadOpts.dt = opts.dt;
             obj.LoadOpts.t0 = opts.t0;
@@ -239,6 +246,31 @@ classdef GraspDCEViewer < handle
             [~, nm] = fileparts(D.SourceFile);
             set(obj.Fig, 'Name', ['GRASP DCE Viewer - ' nm]);
             obj.setStatus(sprintf('Loaded %s. %s', nm, D.describe()));
+            obj.checkOrientation();
+        end
+
+        function ok = checkOrientation(obj)
+            % Heads are longer front-to-back than left-to-right: warn when the
+            % canonical L-R extent exceeds the A-P extent (view rotated 90 deg).
+            ok = true;
+            V = obj.Data.canonVolume(obj.Frame);
+            step = max(1, floor(numel(V) / 200000));
+            sv = sort(double(V(1:step:end)));
+            m = V > 0.15 * sv(max(1, round(0.99 * numel(sv))));
+            if nnz(m) < 100, return; end
+            vox = obj.Data.canonVox();
+            ext = zeros(1, 2);
+            for a = 1:2
+                prof = squeeze(any(any(m, 3), 3 - a));
+                idx = find(prof);
+                ext(a) = (idx(end) - idx(1) + 1) * vox(a);
+            end
+            if ext(1) > 1.08 * ext(2)
+                ok = false;
+                obj.setStatus(sprintf(['Orientation check: the head is wider left-right (%.0f mm) than ' ...
+                    'front-back (%.0f mm), so the views are probably rotated 90 degrees. ' ...
+                    'Use View > Geometry (axis codes, Rotate 90).'], ext(1), ext(2)));
+            end
         end
 
         % ------------------------------------------------------------ frame / position
@@ -757,7 +789,11 @@ classdef GraspDCEViewer < handle
             obj.updateThrSliderRange();
             dr = D.droppedFrames();
             note = '';
-            if ~isempty(dr), note = sprintf(' Raw frames %d-%d dropped (incomplete bin).', dr(1), dr(end)); end
+            if numel(dr) == 1
+                note = sprintf(' Raw frame %d dropped (incomplete bin).', dr);
+            elseif ~isempty(dr)
+                note = sprintf(' Raw frames %d-%d dropped (incomplete bin).', dr(1), dr(end));
+            end
             if D.hasTiming()
                 ts = sprintf(', %.3g s/frame', D.effectiveDt());
             else
@@ -864,53 +900,80 @@ classdef GraspDCEViewer < handle
         function geometryDialog(obj)
             if ~obj.requireData(), return; end
             D = obj.Data;
-            W = 470; Hh = 330;
+            W = 560; Hh = 420;
             ss = get(0, 'ScreenSize');
-            d = figure('Name', 'Geometry and orientation', 'NumberTitle', 'off', 'MenuBar', 'none', ...
-                'ToolBar', 'none', 'Resize', 'off', 'Units', 'pixels', 'Color', [0.94 0.94 0.94], ...
-                'Position', [(ss(3) - W) / 2, (ss(4) - Hh) / 2, W, Hh], 'WindowStyle', 'modal');
             bg = [0.94 0.94 0.94];
+            d = figure('Name', 'Geometry and orientation', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+                'ToolBar', 'none', 'Resize', 'off', 'Units', 'pixels', 'Color', bg, ...
+                'Position', [(ss(3) - W) / 2, (ss(4) - Hh) / 2, W, Hh], 'WindowStyle', 'modal');
             t = @(x, y, w, s) uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [x y w 18], ...
                 'String', s, 'HorizontalAlignment', 'left', 'BackgroundColor', bg);
             e = @(x, y, w, s) uicontrol(d, 'Style', 'edit', 'Units', 'pixels', 'Position', [x y w 22], ...
                 'String', s, 'BackgroundColor', 'w');
-            planes = {'axial', 'coronal', 'sagittal'};
-            t(12, Hh - 34, 160, 'Native (slice) plane');
-            hP = uicontrol(d, 'Style', 'popupmenu', 'Units', 'pixels', 'Position', [175 Hh - 32 120 22], ...
-                'String', {'Axial', 'Coronal', 'Sagittal'}, 'Value', find(strcmp(planes, D.Plane)), ...
-                'BackgroundColor', 'w');
-            hS = uicontrol(d, 'Style', 'checkbox', 'Units', 'pixels', 'Position', [305 Hh - 32 160 20], ...
-                'String', 'Swap rows/cols', 'Value', D.SwapInPlane, 'BackgroundColor', bg);
-            hF = GraspDCEViewer.handleArray(3);
-            lab = {'Flip L-R', 'Flip A-P', 'Flip S-I'};
-            for i = 1:3
-                hF(i) = uicontrol(d, 'Style', 'checkbox', 'Units', 'pixels', ...
-                    'Position', [12 + (i - 1) * 110, Hh - 62, 105, 20], 'String', lab{i}, ...
-                    'Value', D.UserFlip(i), 'BackgroundColor', bg);
+            b = @(x, y, w, s, cb) uicontrol(d, 'Style', 'pushbutton', 'Units', 'pixels', ...
+                'Position', [x y w 26], 'String', s, 'Callback', cb);
+            letters = 'LRPASI';
+            opts = {'L  (R -> L)', 'R  (L -> R)', 'P  (A -> P)', 'A  (P -> A)', 'S  (I -> S)', 'I  (S -> I)'};
+            y = Hh - 30;
+            t(12, y, W - 24, 'Direction in which the stored array index increases (axis codes):');
+            y = y - 30;
+            lab = {'Rows', 'Columns', 'Slices'};
+            hC = GraspDCEViewer.handleArray(3);
+            for k = 1:3
+                t(12 + (k - 1) * 180, y, 56, lab{k});
+                hC(k) = uicontrol(d, 'Style', 'popupmenu', 'Units', 'pixels', 'Position', [68 + (k - 1) * 180, y + 2, 110, 22], ...
+                    'String', opts, 'Value', find(letters == D.AxisCodes(k)), 'BackgroundColor', 'w');
             end
-            t(12, Hh - 98, 160, 'Pixel spacing rows (mm)');
-            hVr = e(175, Hh - 96, 60, num2str(D.VoxNative(1)));
-            t(245, Hh - 98, 40, 'cols');
-            hVc = e(285, Hh - 96, 60, num2str(D.VoxNative(2)));
-            t(12, Hh - 126, 160, 'Slice spacing (mm)');
-            hVs = e(175, Hh - 124, 60, num2str(D.VoxNative(3)));
-            t(12, Hh - 162, 160, 'Temporal resolution (s)');
-            hDt = e(175, Hh - 160, 60, num2str(D.dt));
-            t(245, Hh - 162, 100, 'Frame 1 at (s)');
-            hT0 = e(345, Hh - 160, 60, num2str(D.t0));
-            uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [12 60 W - 24 70], ...
-                'HorizontalAlignment', 'left', 'BackgroundColor', [1 1 0.92], 'String', ...
-                ['Check against anatomy: the axial view should show anterior at the top and the ' ...
-                'patient''s right on the left (radiological), coronal and sagittal superior at the top. ' ...
-                'Use the flips to correct. ROIs follow the change. Exports use this geometry.']);
-            uicontrol(d, 'Style', 'pushbutton', 'Units', 'pixels', 'Position', [W - 300 14 90 30], ...
-                'String', 'Apply', 'Callback', @(s, ev) apply(false));
+            y = y - 36;
+            t(12, y + 4, 60, 'Presets');
+            b(72, y, 150, 'LPS  scanner order', @(s, ev) setCodes('LPS', true));
+            b(226, y, 110, 'PLS  as stored', @(s, ev) setCodes('PLS', true));
+            b(340, y, 100, 'ILP  coronal', @(s, ev) setCodes('ILP', true));
+            b(444, y, 100, 'IPL  sagittal', @(s, ev) setCodes('IPL', true));
+            y = y - 32;
+            t(12, y + 4, 60, 'Adjust');
+            b(72, y, 150, 'Rotate axial 90 CW', @(s, ev) setCodes(GraspData.rotateCodesCW(getCodes()), true));
+            b(226, y, 110, 'Flip L-R', @(s, ev) setCodes(GraspData.flipCodes(getCodes(), 'LR'), true));
+            b(340, y, 100, 'Flip A-P', @(s, ev) setCodes(GraspData.flipCodes(getCodes(), 'AP'), true));
+            b(444, y, 100, 'Flip S-I', @(s, ev) setCodes(GraspData.flipCodes(getCodes(), 'SI'), true));
+            y = y - 40;
+            t(12, y, 170, 'Pixel spacing rows (mm)');
+            hVr = e(185, y + 2, 60, num2str(D.VoxNative(1)));
+            t(255, y, 40, 'cols');
+            hVc = e(295, y + 2, 60, num2str(D.VoxNative(2)));
+            t(365, y, 50, 'slices');
+            hVs = e(415, y + 2, 60, num2str(D.VoxNative(3)));
+            y = y - 32;
+            t(12, y, 170, 'Time per frame (s)');
+            hDt = e(185, y + 2, 60, GraspDCEViewer.num2s(D.dt));
+            t(255, y, 110, 'Frame 1 at (s)');
+            hT0 = e(365, y + 2, 60, num2str(D.t0));
+            uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [12 56 W - 24 84], ...
+                'HorizontalAlignment', 'left', 'BackgroundColor', [1 1 0.92], 'String', { ...
+                'Target: axial view anterior up, patient right on the left (radiological);', ...
+                'coronal and sagittal views superior up. Presets and Adjust apply at once.', ...
+                'Left-right cannot be judged from symmetric anatomy: confirm it once with a', ...
+                'lateralized finding on the clinical images. Remembered for the next files.'});
+            b(W - 300, 14, 90, 'Apply', @(s, ev) apply(false));
             uicontrol(d, 'Style', 'pushbutton', 'Units', 'pixels', 'Position', [W - 200 14 90 30], ...
                 'String', 'OK', 'FontWeight', 'bold', 'Callback', @(s, ev) apply(true));
-            uicontrol(d, 'Style', 'pushbutton', 'Units', 'pixels', 'Position', [W - 100 14 88 30], ...
-                'String', 'Close', 'Callback', @(s, ev) delete(d));
+            b(W - 100, 14, 88, 'Close', @(s, ev) delete(d));
 
+            function c = getCodes()
+                c = letters([get(hC(1), 'Value') get(hC(2), 'Value') get(hC(3), 'Value')]);
+            end
+            function setCodes(c, doApply)
+                for kk = 1:3, set(hC(kk), 'Value', find(letters == c(kk))); end
+                if doApply, apply(false); end
+            end
             function apply(closeAfter)
+                c = getCodes();
+                try
+                    GraspData.codesToPermFlip(c);
+                catch err
+                    errordlg(err.message, 'Geometry', 'modal');
+                    return
+                end
                 vox = [str2double(get(hVr, 'String')) str2double(get(hVc, 'String')) str2double(get(hVs, 'String'))];
                 if any(~isfinite(vox)) || any(vox <= 0)
                     errordlg('Voxel sizes must be positive numbers.', 'Geometry', 'modal');
@@ -918,20 +981,28 @@ classdef GraspDCEViewer < handle
                 end
                 t0v = str2double(get(hT0, 'String'));
                 if ~isfinite(t0v), t0v = 0; end
-                fl = logical([get(hF(1), 'Value') get(hF(2), 'Value') get(hF(3), 'Value')]);
-                obj.applyGeometry(planes{get(hP, 'Value')}, logical(get(hS, 'Value')), fl, vox, ...
-                    str2double(get(hDt, 'String')), t0v);
+                obj.applyGeometry(c, vox, str2double(get(hDt, 'String')), t0v);
                 if closeAfter, delete(d); end
             end
         end
 
-        function applyGeometry(obj, plane, swap, flips, vox, dt, t0)
+        function applyGeometry(obj, varargin)
+            % applyGeometry(codes, vox, dt, t0)  or
+            % applyGeometry(plane, swap, flips, vox, dt, t0)
             D = obj.Data;
-            orientChanged = ~strcmp(D.Plane, lower(plane)) || D.SwapInPlane ~= logical(swap) || ...
-                any(D.UserFlip ~= logical(flips(:)'));
-            if orientChanged
+            if numel(varargin) == 6
+                [pm, fl] = GraspData.presetOrientation(varargin{1}, varargin{2}, varargin{3});
+                codes = GraspData.permFlipToCodes(pm, fl);
+                varargin = varargin(4:6);
+            else
+                codes = upper(varargin{1});
+                varargin = varargin(2:4);
+            end
+            [vox, dt, t0] = deal(varargin{:});
+            if ~isfinite(dt) || dt <= 0, dt = NaN; end
+            if ~strcmp(D.AxisCodes, codes)
                 nat = cellfun(@(m) D.canon2native(m), obj.Masks, 'UniformOutput', false);
-                D.setOrientation(plane, swap, flips);
+                D.setAxisCodes(codes);
                 obj.Masks = cellfun(@(m) D.native2canon(m), nat, 'UniformOutput', false);
                 obj.UndoStack = {}; obj.RedoStack = {};
                 obj.Pos = max(1, round((D.canonSize() + 1) / 2));
@@ -939,6 +1010,7 @@ classdef GraspDCEViewer < handle
             D.VoxNative = vox(:)';
             D.dt = dt;
             D.t0 = t0;
+            obj.LoadOpts.AxisCodes = D.AxisCodes;
             obj.LoadOpts.Plane = D.Plane;
             obj.LoadOpts.Voxel = D.VoxNative;
             obj.LoadOpts.dt = dt;
@@ -949,6 +1021,58 @@ classdef GraspDCEViewer < handle
             obj.updateTimeWidgets();
             obj.refreshROIList();
             obj.refreshAll();
+            if obj.checkOrientation()
+                obj.setStatus(sprintf('Orientation %s (rows, cols, slices point %s, %s, %s).', D.AxisCodes, ...
+                    D.AxisCodes(1), D.AxisCodes(2), D.AxisCodes(3)));
+            end
+        end
+
+        function setTemporalResolution(obj, dt)
+            if ~obj.requireData(), return; end
+            if ~isfinite(dt) || dt <= 0, dt = NaN; end
+            obj.Data.dt = dt;
+            obj.LoadOpts.dt = dt;
+            obj.savePrefs();
+            obj.updateDataInfo();
+            obj.updateTimeWidgets();
+            obj.refreshTIC();
+        end
+
+        function r = autoSSS(obj)
+            % detect the posterior superior sagittal sinus above the torcula
+            % and put it in the ROI "SSS (auto)" (replaced on each run)
+            r = 0;
+            if ~obj.requireData(), return; end
+            wb = obj.wbOpen('Detecting the superior sagittal sinus...');
+            try
+                [lin, info] = gdce_detect_sss(obj.Data, 'BaseFrames', obj.BaseFrames(1):obj.BaseFrames(2), ...
+                    'Progress', @(f, m) obj.wbUpdate(wb, f, m));
+            catch err
+                obj.wbClose(wb);
+                obj.showError(err, 'SSS detection failed');
+                return
+            end
+            obj.wbClose(wb);
+            if isempty(lin)
+                obj.inform(info.Message, 'Auto SSS');
+                return
+            end
+            k = find(strcmp({obj.ROIs.Name}, 'SSS (auto)'), 1);
+            if isempty(k)
+                k = obj.addROI('SSS (auto)', obj.SSSColor);
+            else
+                obj.setActiveROI(k);
+                obj.ROIs(k).Visible = true;
+            end
+            obj.beginAction();
+            obj.setVoxels(k, find(obj.Masks{k}), false);
+            obj.addVoxels(k, lin);
+            obj.commitAction('Auto SSS');
+            obj.setPos(round(info.Centroid));
+            obj.afterMaskChange();
+            if obj.ShowCursorTIC, obj.updateCursorTC(false); end
+            obj.setStatus([info.Message ' Check it on the three views; edit or undo as needed.']);
+            r = k;
         end
 
         % ------------------------------------------------------------ export / import
@@ -1039,6 +1163,7 @@ classdef GraspDCEViewer < handle
             S.Saved = datestr(now, 'yyyy-mm-dd HH:MM:SS');
             S.SourceFile = D.SourceFile;
             S.NativeSize = D.NativeSize;
+            S.AxisCodes = D.AxisCodes;
             S.Plane = D.Plane;
             S.SwapInPlane = D.SwapInPlane;
             S.UserFlip = D.UserFlip;
@@ -1077,8 +1202,13 @@ classdef GraspDCEViewer < handle
                     {'Replace', 'Append', 'Cancel'}, 'Replace');
                 if isempty(mode) || strcmp(mode, 'Cancel'), return; end
             end
-            geoDiff = ~strcmp(S.Plane, D.Plane) || logical(S.SwapInPlane) ~= D.SwapInPlane || ...
-                any(logical(S.UserFlip(:)') ~= D.UserFlip) || any(abs(S.VoxNative(:)' - D.VoxNative) > 1e-6) ...
+            if isfield(S, 'AxisCodes')
+                sCodes = S.AxisCodes;
+            else
+                [pm, fl] = GraspData.presetOrientation(S.Plane, logical(S.SwapInPlane), logical(S.UserFlip(:)'));
+                sCodes = GraspData.permFlipToCodes(pm, fl);
+            end
+            geoDiff = ~strcmp(sCodes, D.AxisCodes) || any(abs(S.VoxNative(:)' - D.VoxNative) > 1e-6) ...
                 || ~isequaln(S.dt, D.dt);
             sBin = 1;
             if isfield(S, 'BinSize'), sBin = S.BinSize; end
@@ -1090,8 +1220,7 @@ classdef GraspDCEViewer < handle
                     'Load ROIs', {'Apply', 'Keep current'}, 'Apply');
                 applied = strcmp(b, 'Apply');
                 if applied && geoDiff
-                    obj.applyGeometry(S.Plane, logical(S.SwapInPlane), logical(S.UserFlip(:)'), ...
-                        S.VoxNative, S.dt, S.t0);
+                    obj.applyGeometry(sCodes, S.VoxNative, S.dt, S.t0);
                 end
                 if applied && binDiff
                     kp = false;
@@ -1268,7 +1397,9 @@ classdef GraspDCEViewer < handle
             uimenu(m, 'Label', 'Clear active ROI on slice', 'Separator', 'on', 'Callback', @(s, e) obj.clearROI('slice'));
             uimenu(m, 'Label', 'Clear active ROI (all slices)', 'Callback', @(s, e) obj.clearROI('all'));
             uimenu(m, 'Label', 'Fill holes in active ROI', 'Callback', @(s, e) obj.fillHoles());
-            uimenu(m, 'Label', 'Grow from crosshair   (G)', 'Separator', 'on', 'Callback', @(s, e) obj.growFromCrosshair());
+            uimenu(m, 'Label', 'Detect superior sagittal sinus (auto ROI)', 'Separator', 'on', ...
+                'Callback', @(s, e) obj.autoSSS());
+            uimenu(m, 'Label', 'Grow from crosshair   (G)', 'Callback', @(s, e) obj.growFromCrosshair());
             uimenu(m, 'Label', 'All voxels in threshold window -> active ROI', 'Callback', @(s, e) obj.windowToROI());
             m = uimenu(obj.Fig, 'Label', 'View');
             uimenu(m, 'Label', 'Geometry and orientation...', 'Callback', @(s, e) obj.geometryDialog());
@@ -1446,21 +1577,26 @@ classdef GraspDCEViewer < handle
                 'Callback', @(s, e) obj.setFrame(1));
             obj.ctl(P, 38, 7, 30, 22, 'pushbutton', '<', 'TooltipString', 'Previous frame (Left)', ...
                 'Callback', @(s, e) obj.setFrame(obj.Frame - 1));
-            obj.H.slider = obj.ctl(P, 72, 9, -466, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', 0, ...
+            obj.H.slider = obj.ctl(P, 72, 9, -552, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', 0, ...
                 'Callback', @(s, e) obj.onSlider());
             try
                 addlistener(obj.H.slider, 'ContinuousValueChange', @(s, e) obj.onSlider());
             catch
             end
-            obj.ctl(P, -460, 7, 30, 22, 'pushbutton', '>', 'TooltipString', 'Next frame (Right)', ...
+            obj.ctl(P, -546, 7, 30, 22, 'pushbutton', '>', 'TooltipString', 'Next frame (Right)', ...
                 'Callback', @(s, e) obj.setFrame(obj.Frame + 1));
-            obj.ctl(P, -428, 7, 30, 22, 'pushbutton', '>|', 'TooltipString', 'Last frame (End)', ...
+            obj.ctl(P, -514, 7, 30, 22, 'pushbutton', '>|', 'TooltipString', 'Last frame (End)', ...
                 'Callback', @(s, e) obj.setFrame(Inf));
-            obj.ctl(P, -394, 9, 48, 18, 'text', 'Frame', 'HorizontalAlignment', 'right');
-            obj.H.frameEdit = obj.ctl(P, -342, 7, 46, 22, 'edit', '1', ...
+            obj.ctl(P, -480, 9, 48, 18, 'text', 'Frame', 'HorizontalAlignment', 'right');
+            obj.H.frameEdit = obj.ctl(P, -428, 7, 46, 22, 'edit', '1', ...
                 'Callback', @(s, e) obj.setFrame(str2double(get(s, 'String')), true));
-            obj.H.frameTotal = obj.ctl(P, -292, 9, 44, 18, 'text', '/ 0');
-            obj.H.timeText = obj.ctl(P, -246, 9, 120, 18, 'text', '', 'ForegroundColor', obj.Col.accent, ...
+            obj.H.frameTotal = obj.ctl(P, -378, 9, 44, 18, 'text', '/ 0');
+            obj.ctl(P, -332, 9, 48, 18, 'text', 's/frame', 'HorizontalAlignment', 'right');
+            obj.H.dtEdit = obj.ctl(P, -282, 7, 46, 22, 'edit', '', ...
+                'TooltipString', ['Temporal resolution of the reconstructed frames in seconds ' ...
+                '(spokes per frame x TR). Blank = unknown: curves are plotted per frame.'], ...
+                'Callback', @(s, e) obj.setTemporalResolution(str2double(get(s, 'String'))));
+            obj.H.timeText = obj.ctl(P, -232, 9, 106, 18, 'text', '', 'ForegroundColor', obj.Col.accent, ...
                 'FontWeight', 'bold');
             obj.H.btnPlay = obj.ctl(P, -122, 7, 54, 22, 'togglebutton', 'Play', 'Callback', @(s, e) obj.togglePlay());
             obj.ctl(P, -66, 9, 24, 18, 'text', 'fps');
@@ -1501,10 +1637,15 @@ classdef GraspDCEViewer < handle
         function buildROIPanel(obj)
             P = obj.H.roiPanel; C = obj.Col;
             obj.ctl(P, 8, 7, 40, 18, 'text', 'ROIs', 'FontWeight', 'bold', 'ForegroundColor', C.accent);
-            obj.ctl(P, 50, 5, 92, 22, 'pushbutton', '+ SSS control', ...
-                'TooltipString', 'Add a superior sagittal sinus control ROI', 'Callback', @(s, e) obj.addSSS());
-            obj.ctl(P, 146, 5, 80, 22, 'pushbutton', '+ Tumor', 'Callback', @(s, e) obj.addTumor());
-            obj.ctl(P, 230, 5, 122, 22, 'pushbutton', '+ Custom...', 'Callback', @(s, e) obj.addCustom());
+            obj.ctl(P, 50, 5, 76, 22, 'pushbutton', 'Auto SSS', ...
+                'TooltipString', ['Detect the posterior superior sagittal sinus above the torcula ' ...
+                '(excludes transverse and straight sinuses) and place the ROI "SSS (auto)"'], ...
+                'Callback', @(s, e) obj.autoSSS());
+            obj.ctl(P, 130, 5, 64, 22, 'pushbutton', '+ SSS', ...
+                'TooltipString', 'Add an empty superior sagittal sinus control ROI to draw by hand', ...
+                'Callback', @(s, e) obj.addSSS());
+            obj.ctl(P, 198, 5, 70, 22, 'pushbutton', '+ Tumor', 'Callback', @(s, e) obj.addTumor());
+            obj.ctl(P, 272, 5, 80, 22, 'pushbutton', '+ Custom...', 'Callback', @(s, e) obj.addCustom());
             obj.ctl(P, 8, 35, 44, 18, 'text', 'Active');
             obj.H.swatch = obj.ctl(P, 54, 35, 18, 18, 'text', '', 'BackgroundColor', [0.3 0.3 0.3]);
             obj.H.roiPop = obj.ctl(P, 78, 33, -8, 22, 'popupmenu', {'(none)'}, ...
@@ -2563,8 +2704,10 @@ classdef GraspDCEViewer < handle
 
         function onExportTS(obj)
             if ~obj.requireROIs(), return; end
+            suf = '_roi_timeseries.xlsx';
+            if obj.Data.BinSize > 1, suf = sprintf('_roi_timeseries_%dframes.xlsx', obj.Data.NT); end
             file = obj.putFile({'*.xlsx', 'Excel workbook (*.xlsx)'; '*.csv', 'CSV files (*.csv)'}, ...
-                'Save ROI voxel time series', '_roi_timeseries.xlsx');
+                'Save ROI voxel time series', suf);
             if isempty(file), return; end
             [~, ~, ext] = fileparts(file);
             if isempty(ext), file = [file '.xlsx']; end
@@ -2673,6 +2816,14 @@ classdef GraspDCEViewer < handle
                 '     voxels within max mm), or draw a sphere and press Keep: 3D'
                 '  All -> ROI adds every in-window voxel (includes vessels).'
                 ''
+                'ORIENTATION'
+                '  View > Geometry: axis codes (direction of increasing rows, cols, slices),'
+                '  presets (LPS = scanner order of the GRASP recon), Rotate 90 / Flip buttons'
+                ''
+                'SSS CONTROL ROI'
+                '  Auto SSS: posterior superior sagittal sinus just above the torcula'
+                '  (transverse and straight sinuses excluded); check and edit as needed'
+                ''
                 'TEMPORAL BINNING'
                 '  Average every n frames + Apply binning: each frame becomes the mean'
                 '  signal of n consecutive frames; curves, maps and exports follow.'};
@@ -2764,8 +2915,10 @@ classdef GraspDCEViewer < handle
             if obj.Data.hasTiming()
                 ft = obj.Data.frameTimes();
                 set(obj.H.timeText, 'String', sprintf('t = %.2f s', ft(obj.Frame)));
+                set(obj.H.dtEdit, 'String', sprintf('%.4g', obj.Data.dt));
             else
-                set(obj.H.timeText, 'String', '(dt not set)');
+                set(obj.H.timeText, 'String', '(time unknown)');
+                set(obj.H.dtEdit, 'String', '');
             end
         end
 
@@ -2774,15 +2927,15 @@ classdef GraspDCEViewer < handle
             [~, nm, ext] = fileparts(D.SourceFile);
             v = D.VoxNative;
             n = D.NativeSize;
-            if D.hasTiming(), dts = sprintf('%.3g s/frame', D.effectiveDt()); else, dts = 'dt not set'; end
+            if D.hasTiming(), dts = sprintf('%.3g s/frame', D.effectiveDt()); else, dts = 's/frame unknown'; end
             if strcmp(D.Mode, 'subspace'), md = sprintf('subspace K=%d', D.NK); else, md = 'dense'; end
             if D.BinSize > 1
                 ts = sprintf('%d frames (%dx binned from %d)', D.NT, D.BinSize, D.NTRaw);
             else
                 ts = sprintf('%d frames', D.NT);
             end
-            s = sprintf('%s%s\n%dx%dx%d %s, %.3gx%.3gx%.3g mm, %s\n%s, %s, %.0f MB', nm, ext, n(1), n(2), n(3), ...
-                D.Plane, v(1), v(2), v(3), md, ts, dts, D.memoryBytes() / 2^20);
+            s = sprintf('%s%s\n%dx%dx%d %s (%s), %.3gx%.3gx%.3g mm, %s\n%s, %s, %.0f MB', nm, ext, n(1), n(2), n(3), ...
+                D.Plane, D.AxisCodes, v(1), v(2), v(3), md, ts, dts, D.memoryBytes() / 2^20);
             set(obj.H.info, 'String', s);
         end
 
@@ -2985,12 +3138,18 @@ classdef GraspDCEViewer < handle
             if mod(numel(nv), 2) ~= 0
                 error('GraspDCEViewer:opts', 'Options must be name/value pairs.');
             end
+            given = {};
             for i = 1:2:numel(nv)
                 m = find(strcmpi(fn, nv{i}), 1);
                 if isempty(m)
                     error('GraspDCEViewer:opts', 'Unknown option "%s".', nv{i});
                 end
                 o.(fn{m}) = nv{i + 1};
+                given{end + 1} = fn{m}; %#ok<AGROW>
+            end
+            % an explicit Plane/SwapInPlane/Flip (old style) overrides the axis codes
+            if ~any(strcmp(given, 'AxisCodes')) && any(ismember({'Plane', 'SwapInPlane', 'Flip'}, given))
+                o.AxisCodes = '';
             end
         end
 
@@ -2998,7 +3157,7 @@ classdef GraspDCEViewer < handle
             try
                 if ispref('GraspDCEViewer', 'Geometry')
                     g = getpref('GraspDCEViewer', 'Geometry');
-                    f = {'Plane', 'Voxel', 'dt', 't0'};
+                    f = {'AxisCodes', 'Voxel', 'dt', 't0'};
                     for i = 1:numel(f)
                         if isfield(g, f{i}), obj.LoadOpts.(f{i}) = g.(f{i}); end
                     end
@@ -3013,7 +3172,7 @@ classdef GraspDCEViewer < handle
         function savePrefs(obj)
             if obj.Quiet, return; end
             try
-                g = struct('Plane', obj.LoadOpts.Plane, 'Voxel', obj.LoadOpts.Voxel, ...
+                g = struct('AxisCodes', obj.LoadOpts.AxisCodes, 'Voxel', obj.LoadOpts.Voxel, ...
                     'dt', obj.LoadOpts.dt, 't0', obj.LoadOpts.t0);
                 setpref('GraspDCEViewer', 'Geometry', g);
                 setpref('GraspDCEViewer', 'LastDir', obj.LastDir);
@@ -3028,7 +3187,7 @@ classdef GraspDCEViewer < handle
             o = struct('Format', 'auto', 'CoefVar', 'vk_all', 'BasisVar', 'basis_all', 'ImageVar', '', ...
                 'DimOrder', 'xytz', 'CropFactor', [], 'Normalize', [], 'Plane', 'axial', ...
                 'SwapInPlane', false, 'Flip', [false false false], 'Voxel', [1 1 1], 'dt', NaN, ...
-                't0', 0, 'NoDialog', false, 'BinSize', 1);
+                't0', 0, 'NoDialog', false, 'BinSize', 1, 'AxisCodes', 'LPS');
         end
 
         function h = handleArray(n)
