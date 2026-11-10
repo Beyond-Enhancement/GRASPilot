@@ -161,10 +161,57 @@ nfail = nfail + check('SSS detection reports failure, wrong orientation', ...
 % ---------------------------------------------------------------- 4. enhancement maps
 D.setOrientation('axial', false, [0 0 0]);
 D.computeMaps(1:3);
-b = mean(ref(:, :, :, 1:3), 4); mx = max(ref, [], 4);
+b = mean(ref(:, :, :, 1:3), 4); mx = max(ref(:, :, :, 4:end), [], 4);   % peak after the baseline
 e = max(abs(reshape(D.Maps.Baseline - b, [], 1)));
 e = max(e, max(abs(reshape(D.Maps.Max - mx, [], 1))));
 nfail = nfail + check('enhancement maps', e < tol, e);
+
+% ---------------------------------------------------------------- 4a. curve parameters (analytic)
+% baseline 1 (frames 1-5, t = 0-4 s), linear rise 0.2/s to 3 at 14 s,
+% linear washout -0.05/s to 2.2 at 30 s
+tt = 0:30;
+Sa = ones(size(tt));
+up = tt > 4 & tt <= 14; Sa(up) = 1 + 0.2 * (tt(up) - 4);
+dn = tt > 14; Sa(dn) = 3 - 0.05 * (tt(dn) - 14);
+Sp = Sa; Sp(dn) = 3 + 0.05 * (tt(dn) - 14);            % persistent: keeps rising
+P = gdce_curve_params([Sa; Sp], tt, 1:5, struct('OnsetFrac', 0.05));   % onset = end of baseline
+e = max(abs([P.PE(1) - 2, P.RE(1) - 200, P.TTP(1) - 10, P.Onset(1), P.WashIn(1) - 0.2, ...
+    P.WashOut(1) + 0.05, P.AUC(1) - 35.6]));
+nfail = nfail + check('curve parameters, washout curve (analytic)', e < 1e-9, e);
+nfail = nfail + check('curve parameters, persistent curve (analytic)', ...
+    abs(P.WashOut(2) - 0.05) < 1e-9 && abs(P.TTP(2) - 26) < 1e-9, P.WashOut(2));
+P2 = gdce_curve_params(Sa, tt, 1:5, struct('WashIn', 'max', 'WashOut', 'endpoints', 'AUCWindow', 10));
+e = max(abs([P2.WashIn - 0.2, P2.WashOut + 0.05, P2.AUC - 10]));
+nfail = nfail + check('curve parameters, max slope / endpoints / IAUC10', e < 1e-9, e);
+Sn = [Sa; 2 * Sa; Sp] + 0.01 * randn(3, numel(tt));
+Pv = gdce_curve_params(Sn, tt, 1:5);
+e = 0;
+for r = 1:3
+    Pr = gdce_curve_params(Sn(r, :), tt, 1:5);
+    for fn = {'S0', 'PE', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'}
+        e = max(e, abs(Pr.(fn{1}) - Pv.(fn{1})(r)));
+    end
+end
+nfail = nfail + check('curve parameters, vectorized == per curve', e < 1e-12, e);
+
+% ---------------------------------------------------------------- 4a2. parameter maps == curve parameters
+D.dt = 2.5; D.t0 = 0;
+D.computeMaps(1:3);
+nc = prod(D.canonSize());
+Pm = gdce_curve_params(double(D.timecourses((1:nc)')), D.paramTimes(), 1:3, D.ParamOpts);
+e = mapErr(D, Pm, {'Baseline', 'S0'; 'PeakEnh', 'PE'; 'RelEnh', 'RE'; 'TTP', 'TTP'; 'Onset', 'Onset'; ...
+    'WashIn', 'WashIn'; 'WashOut', 'WashOut'; 'AUC', 'AUC'});
+nfail = nfail + check('parameter maps == gdce_curve_params (s)', e < 1e-4, e);
+D.setParamOptions('WashIn', 'max', 'WashOut', 'endpoints', 'AUCWindow', 20);
+stale = ~D.hasMaps(1:3);
+D.computeMaps(1:3);
+Pm = gdce_curve_params(double(D.timecourses((1:nc)')), D.paramTimes(), 1:3, D.ParamOpts);
+e = mapErr(D, Pm, {'WashIn', 'WashIn'; 'WashOut', 'WashOut'; 'AUC', 'AUC'});
+nfail = nfail + check('parameter options invalidate and recompute maps', stale && e < 1e-4, e);
+D.setParamOptions('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf);
+D.dt = NaN;
+nfail = nfail + check('timing change invalidates maps', ~D.hasMaps(1:3) && isequal(D.paramTimes(), 1:T), 0);
+D.dt = 2.5;
 
 % ---------------------------------------------------------------- 4b. temporal binning
 % each binned frame = mean magnitude of n consecutive ReadData.m frames
@@ -201,7 +248,7 @@ for mode = 1:2
         e < tol && okn && okt, e);
     Db.computeMaps(1:2);
     e = max(abs(reshape(Db.Maps.Baseline - mean(refB(:, :, :, 1:2), 4), [], 1)));
-    e = max(e, max(abs(reshape(Db.Maps.Max - max(refB, [], 4), [], 1))));
+    e = max(e, max(abs(reshape(Db.Maps.Max - max(refB(:, :, :, 3:end), [], 4), [], 1))));
     nfail = nfail + check(sprintf('maps on binned series (%s)', lab), e < tol, e);
 end
 Db.setBinning(5, true);                                % keep partial last bin (frames 21-23)
@@ -285,6 +332,20 @@ if ok
     fprintf('ALL TESTS PASSED\n');
 else
     fprintf('%d TEST(S) FAILED\n', nfail);
+end
+end
+
+function e = mapErr(D, P, pairs)
+% max relative error between maps and curve parameters (NaN must match)
+n = D.canonSize();
+e = 0;
+for k = 1:size(pairs, 1)
+    A = double(D.canonMap(pairs{k, 1}));
+    B = reshape(P.(pairs{k, 2}), n);
+    if ~isequal(isnan(A), isnan(B)), e = Inf; return; end
+    ok = ~isnan(A);
+    sc = max(1e-6, max(abs(B(ok))));
+    e = max(e, max(abs(A(ok) - B(ok))) / sc);
 end
 end
 

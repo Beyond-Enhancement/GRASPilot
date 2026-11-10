@@ -21,6 +21,7 @@ classdef GraspDCEViewer < handle
 %   Keys:   Left/Right frame -/+1 (Shift: 10), Up/Down slice, Home/End,
 %           Space play, N/C/B/E tools, [ ] brush size, D toggle 3D,
 %           P preview, S subtraction view, G grow from crosshair,
+%           M parameter map overlay,
 %           Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo.
 %
 %   No toolboxes are required. Nothing is written except files you export.
@@ -45,6 +46,20 @@ classdef GraspDCEViewer < handle
         ViewMode = 'frame';     % 'frame' or 'sub' (views show the subtraction map)
         CLimStore = struct('frame', [], 'sub', []);
         GrowR = 40;             % mm, max distance for grow-from-crosshair
+        ParamKey = 'PE';        % parameter shown as a colour map
+        ParamOn = false;        % parameter map overlay on the images
+        ParamCmap = 'jet';
+        ParamCLims = struct();  % colour range per parameter
+        ParamAlpha = 0.65;
+        ParamHideBelow = true;
+        ParamHeadOnly = true;
+        RefROIName = '';        % reference ROI for /SSS normalization ('' = first ROI named SSS*)
+        IncludeRefStats = false;
+        PW = struct();          % parameter window handles
+        CB = struct();          % colour bar in the sagittal panel
+        ParamCache = struct('key', '', 'V', []);
+        RefCache = [];
+        HeadCache = struct('ver', -1, 'M', []);
         ThrLo = -Inf;
         ThrHi = Inf;
         BaseFrames = [1 5];
@@ -74,6 +89,8 @@ classdef GraspDCEViewer < handle
         OvlRGB = cell(1, 3);
         OvlA = cell(1, 3);
         PrevA = cell(1, 3);
+        ParamRGB = cell(1, 3);
+        ParamA = cell(1, 3);
         LoadOpts = struct();
         Busy = false;
         Quiet = false;          % true: dialogs auto-answer with defaults (scripting/tests)
@@ -87,10 +104,16 @@ classdef GraspDCEViewer < handle
         ThrKeys = {'frame', 'sub', 'frameSub', 'frameRE', 'peakEnh', 'peakRE'};
         ThrNames = {'Signal at current frame', 'Subtraction: post - pre frame', ...
             'Current frame - baseline', 'Current frame rel. enhancement (%)', ...
-            'Peak - baseline (max over time)', 'Peak rel. enhancement (%)'};
+            'Peak - baseline (max after baseline)', 'Peak rel. enhancement (%)'};
         Palette = [1.00 0.85 0.10; 0.20 0.90 1.00; 1.00 0.35 0.95; 0.40 1.00 0.35; ...
             1.00 0.60 0.15; 0.55 0.55 1.00; 0.60 1.00 0.85; 1.00 0.55 0.55; 0.85 0.65 1.00];
         SSSColor = [1.00 0.22 0.22];
+        ParamKeys = {'PE', 'PE_SSS', 'RE', 'WIS', 'WIS_SSS', 'WOS', 'WOS_SSS', 'AUC', 'AUC_SSS', 'TTP'};
+        ParamLabels = {'Peak enhancement', 'Peak enhancement / SSS', 'Relative peak enhancement', ...
+            'Wash-in slope', 'Wash-in slope / SSS', 'Washout slope', 'Washout slope / SSS', ...
+            'Area under curve', 'Area under curve / SSS', 'Time to peak'};
+        CmapNames = {'jet', 'turbo', 'hot', 'gray'};
+        CmapLabels = {'Jet (rainbow)', 'Turbo (rainbow)', 'Hot', 'Gray'};
         Col = struct('bg', [0.11 0.11 0.13], 'panel', [0.16 0.16 0.18], 'fg', [0.90 0.90 0.92], ...
             'accent', [0.40 0.72 1.00], 'dim', [0.62 0.62 0.66], 'cross', [0.25 0.75 1.00], ...
             'sel', [0.30 0.55 0.85], 'prev', [0.20 1.00 0.30]);
@@ -235,6 +258,11 @@ classdef GraspDCEViewer < handle
             obj.ViewMode = 'frame';
             set(obj.H.btnSub, 'Value', 0);
             obj.CLimStore = struct('frame', [], 'sub', []);
+            obj.ParamOn = false;
+            obj.ParamCLims = struct();
+            obj.ParamCache = struct('key', '', 'V', []);
+            obj.RefCache = [];
+            obj.updateColorbar();
             obj.setupTimeSlider();
             obj.resetViewsGeometry();
             obj.autoContrast(false);
@@ -850,8 +878,288 @@ classdef GraspDCEViewer < handle
                 return
             end
             obj.wbClose(wb);
+            obj.ParamCache = struct('key', '', 'V', []);
+            obj.RefCache = [];
             obj.updateThrSliderRange();
             obj.refreshPreviews();
+            if obj.ParamOn, obj.refreshParamDisplay(); end
+            obj.refreshParamWindow();
+        end
+
+        % ------------------------------------------------------------ semi-quantitative parameters
+        function ok = computeParams(obj, varargin)
+            % (Re)compute the curve-parameter maps. Options as in
+            % GraspData.setParamOptions: 'WashIn', 'WashOut', 'AUCWindow'.
+            ok = false;
+            if ~obj.requireData(), return; end
+            if ~isempty(varargin), obj.Data.setParamOptions(varargin{:}); end
+            ok = obj.ensureMaps(false);
+        end
+
+        function V = paramVolume(obj, key)
+            % canonical map of a parameter (key from ParamKeys); [] if not available
+            V = [];
+            if isempty(obj.Data) || ~obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)), return; end
+            [name, fld, norm] = GraspDCEViewer.paramInfo(key);
+            ck = sprintf('%s_%d', key, obj.Data.MapsVersion);
+            ref = [];
+            if norm
+                [ref, r] = obj.refParams();
+                if isempty(ref), return; end
+                ck = sprintf('%s_%d', ck, r);
+            end
+            if strcmp(obj.ParamCache.key, ck)
+                V = obj.ParamCache.V;
+                return
+            end
+            V = obj.Data.canonMap(name);
+            if norm
+                rv = ref.(fld);
+                if isfinite(rv) && rv ~= 0
+                    V = V / single(rv);
+                else
+                    V = NaN(size(V), 'single');
+                end
+            end
+            obj.ParamCache = struct('key', ck, 'V', V);
+        end
+
+        function r = refIndex(obj)
+            % reference ROI: RefROIName if set, else the first ROI whose name contains SSS
+            r = 0;
+            if isempty(obj.ROIs), return; end
+            names = {obj.ROIs.Name};
+            if ~isempty(obj.RefROIName)
+                r = find(strcmp(names, obj.RefROIName), 1);
+                if isempty(r), r = 0; end
+                return
+            end
+            k = find(~cellfun(@isempty, regexpi(names, 'sss', 'once')), 1);
+            if ~isempty(k), r = k; end
+        end
+
+        function [ref, r] = refParams(obj)
+            % curve parameters of the reference (SSS) ROI mean curve
+            ref = []; r = obj.refIndex();
+            if r == 0 || ~any(obj.Masks{r}(:)), return; end
+            if ~isempty(obj.RefCache) && obj.RefCache.r == r && obj.RefCache.ver == obj.Data.MapsVersion
+                ref = obj.RefCache.P;
+                return
+            end
+            if obj.ROIs(r).Dirty || isempty(obj.ROIs(r).Stats), obj.computeStats(r); end
+            ref = gdce_curve_params(obj.ROIs(r).Stats.mean, obj.Data.paramTimes(), ...
+                obj.BaseFrames(1):obj.BaseFrames(2), obj.Data.ParamOpts);
+            obj.RefCache = struct('r', r, 'ver', obj.Data.MapsVersion, 'P', ref);
+        end
+
+        function u = paramUnit(obj, key)
+            [~, ~, norm] = GraspDCEViewer.paramInfo(key);
+            if norm, u = 'ratio'; return; end
+            ts = 's';
+            if ~obj.Data.hasTiming(), ts = 'frame'; end
+            switch key
+                case 'PE', u = 'a.u.';
+                case 'RE', u = '%';
+                case {'WIS', 'WOS'}, u = ['a.u./' ts];
+                case 'AUC', u = ['a.u.*' ts];
+                case 'TTP', u = ts;
+            end
+        end
+
+        function [vals, cval] = paramValues(obj, key, lin, cp)
+            % voxel values of a parameter at canonical indices lin, and the value
+            % from an ROI mean curve (cp = gdce_curve_params output)
+            vals = []; cval = NaN;
+            [name, fld, norm] = GraspDCEViewer.paramInfo(key);
+            A = obj.Data.canonMap(name);
+            vals = double(A(lin(:)));
+            if nargin > 3 && ~isempty(cp), cval = cp.(fld); end
+            if norm
+                ref = obj.refParams();
+                if isempty(ref) || ~isfinite(ref.(fld)) || ref.(fld) == 0
+                    vals = NaN(size(vals)); cval = NaN;
+                    return
+                end
+                vals = vals / ref.(fld);
+                cval = cval / ref.(fld);
+            end
+        end
+
+        function M = headMask(obj)
+            if obj.HeadCache.ver == obj.Data.MapsVersion && ~isempty(obj.HeadCache.M)
+                M = obj.HeadCache.M;
+                return
+            end
+            B = obj.Data.canonMap('Baseline');
+            step = max(1, floor(numel(B) / 300000));
+            M = B > GraspDCEViewer.otsu(double(B(1:step:end)));
+            obj.HeadCache = struct('ver', obj.Data.MapsVersion, 'M', M);
+        end
+
+        function setParamDisplay(obj, on)
+            on = logical(on);
+            if on
+                if ~obj.ensureMaps(false), on = false; end
+            end
+            if on && isempty(obj.paramVolume(obj.ParamKey))
+                obj.inform(['Normalized maps need a reference ROI in the superior sagittal sinus: press ' ...
+                    'Auto SSS (or draw an ROI whose name contains SSS).'], 'Parameter map');
+                on = false;
+            end
+            obj.ParamOn = on;
+            obj.refreshParamDisplay();
+            obj.refreshOverlays();
+            if on
+                obj.setStatus(sprintf('Showing %s [%s] as a colour map (%.4g to %.4g). M toggles it.', ...
+                    obj.ParamLabels{strcmp(obj.ParamKeys, obj.ParamKey)}, obj.paramUnit(obj.ParamKey), ...
+                    obj.paramCLim()));
+            end
+        end
+
+        function setParamKey(obj, key)
+            if isnumeric(key), key = obj.ParamKeys{key}; end
+            obj.ParamKey = key;
+            if obj.ParamOn && isempty(obj.paramVolume(key))
+                obj.setParamDisplay(false);
+            end
+            obj.refreshParamDisplay();
+        end
+
+        function c = paramCLim(obj, key)
+            if nargin < 2, key = obj.ParamKey; end
+            if isfield(obj.ParamCLims, key)
+                c = obj.ParamCLims.(key);
+            else
+                c = obj.autoParamCLim('head', key, false);
+            end
+        end
+
+        function setParamCLim(obj, c, key)
+            if nargin < 3, key = obj.ParamKey; end
+            if numel(c) ~= 2 || any(~isfinite(c)), return; end
+            if c(2) <= c(1), c(2) = c(1) + max(abs(c(1)) * 1e-3, 1e-6); end
+            obj.ParamCLims.(key) = c;
+            obj.refreshParamDisplay();
+        end
+
+        function c = autoParamCLim(obj, scope, key, apply)
+            % 1st-99.5th percentile inside the head ('head': keeps small
+            % enhancing lesions in range) or 2nd-98th inside the tumor ROIs ('rois')
+            if nargin < 3 || isempty(key), key = obj.ParamKey; end
+            if nargin < 4, apply = true; end
+            c = [0 1];
+            V = obj.paramVolume(key);
+            if isempty(V), return; end
+            if strcmp(scope, 'rois')
+                m = false(size(V));
+                rr = obj.refIndex();
+                for r = 1:numel(obj.Masks)
+                    if r ~= rr, m = m | obj.Masks{r}; end
+                end
+                if ~any(m(:)), m = obj.headMask(); end
+            else
+                m = obj.headMask();
+            end
+            v = double(V(m));
+            v = sort(v(isfinite(v)));
+            pr = [0.02 0.98];
+            if ~strcmp(scope, 'rois'), pr = [0.01 0.995]; end
+            if numel(v) >= 2
+                c = [v(max(1, round(pr(1) * numel(v)))) v(max(1, round(pr(2) * numel(v))))];
+                if c(2) <= c(1), c = [v(1) v(end)]; end
+                if c(2) <= c(1), c = c(1) + [-0.5 0.5]; end
+            end
+            if apply
+                obj.ParamCLims.(key) = c;
+                obj.refreshParamDisplay();
+            end
+        end
+
+        function refreshParamDisplay(obj)
+            if isempty(obj.Data), return; end
+            for v = 1:3
+                obj.computeParamOverlay(v);
+                obj.composeView(v);
+            end
+            obj.updateColorbar();
+            obj.syncParamWindow();
+        end
+
+        function [hdr, rows] = paramStatsTable(obj)
+            % descriptive statistics of every parameter in each (tumor) ROI
+            hdr = {'ROI', 'Parameter', 'Unit', 'N', 'Mean', 'SD', 'Median', 'Q1', 'Q3', 'P10', 'P90', ...
+                'Min', 'Max', 'ROI mean curve'};
+            rows = cell(0, numel(hdr));
+            if isempty(obj.Data) || ~obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)), return; end
+            rr = obj.refIndex();
+            for r = 1:numel(obj.ROIs)
+                if r == rr && ~obj.IncludeRefStats, continue; end
+                lin = find(obj.Masks{r});
+                if isempty(lin), continue; end
+                if obj.ROIs(r).Dirty || isempty(obj.ROIs(r).Stats), obj.computeStats(r); end
+                cp = gdce_curve_params(obj.ROIs(r).Stats.mean, obj.Data.paramTimes(), ...
+                    obj.BaseFrames(1):obj.BaseFrames(2), obj.Data.ParamOpts);
+                for k = 1:numel(obj.ParamKeys)
+                    key = obj.ParamKeys{k};
+                    [vals, cval] = obj.paramValues(key, lin, cp);
+                    d = GraspDCEViewer.describeVals(vals);
+                    rows(end + 1, :) = {obj.ROIs(r).Name, obj.ParamLabels{k}, obj.paramUnit(key), d.n, d.mean, ...
+                        d.sd, d.median, d.q1, d.q3, d.p10, d.p90, d.min, d.max, cval}; %#ok<AGROW>
+                end
+            end
+        end
+
+        function files = exportParams(obj, file)
+            % parameter statistics and voxel values of the (tumor) ROIs -> .xlsx / .csv
+            files = {};
+            if ~obj.computeParams(), return; end
+            [hdr, rows] = obj.paramStatsTable();
+            if isempty(rows)
+                obj.inform('There are no tumor ROI voxels to export.', 'Parameter export');
+                return
+            end
+            rr = obj.refIndex();
+            blocks = struct('id', {}, 'name', {}, 'lin', {}, 'values', {});
+            for r = 1:numel(obj.ROIs)
+                if r == rr && ~obj.IncludeRefStats, continue; end
+                lin = find(obj.Masks{r});
+                if isempty(lin), continue; end
+                X = zeros(numel(lin), numel(obj.ParamKeys));
+                for k = 1:numel(obj.ParamKeys)
+                    X(:, k) = obj.paramValues(obj.ParamKeys{k}, lin);
+                end
+                blocks(end + 1) = struct('id', r, 'name', obj.ROIs(r).Name, 'lin', lin, 'values', X); %#ok<AGROW>
+            end
+            units = cellfun(@(k) obj.paramUnit(k), obj.ParamKeys, 'UniformOutput', false);
+            files = gdce_export_params(file, obj.Data, hdr, rows, blocks, obj.ParamKeys, units, ...
+                obj.paramSettings());
+            obj.setStatus(['Wrote ' strjoin(files, ', ')]);
+        end
+
+        function S = paramSettings(obj)
+            D = obj.Data;
+            o = D.ParamOpts;
+            S = {'Baseline frames', sprintf('%d-%d', obj.BaseFrames);
+                'Wash-in slope', GraspDCEViewer.ternaryStr(strcmpi(o.WashIn, 'max'), 'maximum up-slope between consecutive frames', ...
+                'dS/(TP - To): onset to peak (onset = last frame below 10% of dS)');
+                'Washout slope', GraspDCEViewer.ternaryStr(strcmpi(o.WashOut, 'endpoints'), '(S_last - S_peak)/(t_last - t_peak)', ...
+                'least-squares slope from the peak (at least the last 3 frames) to the end; negative = washout');
+                'AUC window (s after end of baseline)', num2str(o.AUCWindow);
+                'Time origin', 'end of the baseline frames (TTP and onset are measured from it)';
+                'Time unit', GraspDCEViewer.ternaryStr(D.hasTiming(), 's', 'frame (temporal resolution not set)')};
+            [ref, r] = obj.refParams();
+            if isempty(ref)
+                S(end + 1, :) = {'Reference ROI', 'none (normalized values are NaN)'};
+            else
+                S(end + 1, :) = {'Reference ROI', sprintf('%s (%d voxels); ROI mean curve', obj.ROIs(r).Name, ...
+                    nnz(obj.Masks{r}))};
+                S(end + 1, :) = {'Reference PE', ref.PE};
+                S(end + 1, :) = {'Reference wash-in slope', ref.WashIn};
+                S(end + 1, :) = {'Reference washout slope', ref.WashOut};
+                S(end + 1, :) = {'Reference AUC', ref.AUC};
+            end
+            S(end + 1, :) = {'Normalized (/SSS)', 'parameter divided by the same parameter of the reference ROI mean curve'};
+            S(end + 1, :) = {'ROI mean curve column', 'parameter computed from the ROI mean time-intensity curve'};
         end
 
         % ------------------------------------------------------------ display
@@ -1141,17 +1449,21 @@ classdef GraspDCEViewer < handle
         function exportMaps(obj, folder, base)
             if ~obj.ensureMaps(false), return; end
             D = obj.Data;
-            names = {'Baseline', 'Max', 'PeakEnh', 'RelEnh', 'TTP', 'AUC'};
             hdr = struct('Dim', D.canonSize(), 'Vox', D.canonVox(), 'Affine', D.affine(), ...
                 'Datatype', 'float32', 'Descrip', 'GRASP DCE Viewer map');
-            for i = 1:numel(names)
-                A = D.canonMap(names{i});
-                if strcmp(names{i}, 'TTP') && D.hasTiming()
-                    A = D.t0 + (A - 1) * D.dt;
-                end
-                gdce_nifti_write(fullfile(folder, sprintf('%s_%s.nii.gz', base, names{i})), single(A), hdr);
+            if D.BinSize > 1, base = sprintf('%s_%dframes', base, D.NT); end
+            nw = 0;
+            for nm = {'Baseline', 'Max'}
+                gdce_nifti_write(fullfile(folder, sprintf('%s_%s.nii.gz', base, nm{1})), single(D.canonMap(nm{1})), hdr);
+                nw = nw + 1;
             end
-            obj.setStatus(sprintf('Wrote %d maps to %s (baseline frames %d-%d).', numel(names), folder, ...
+            for k = 1:numel(obj.ParamKeys)
+                V = obj.paramVolume(obj.ParamKeys{k});
+                if isempty(V), continue; end
+                gdce_nifti_write(fullfile(folder, sprintf('%s_%s.nii.gz', base, obj.ParamKeys{k})), single(V), hdr);
+                nw = nw + 1;
+            end
+            obj.setStatus(sprintf('Wrote %d maps to %s (baseline frames %d-%d).', nw, folder, ...
                 obj.BaseFrames(1), obj.BaseFrames(2)));
         end
 
@@ -1174,6 +1486,8 @@ classdef GraspDCEViewer < handle
             S.BinSize = D.BinSize;
             S.BinKeepPartial = D.BinKeepPartial;
             S.SubFrames = obj.SubFrames;
+            S.ParamOpts = D.ParamOpts;
+            S.RefROIName = obj.RefROIName;
             S.ROINames = {obj.ROIs.Name};
             S.ROIColors = reshape([obj.ROIs.Color], 3, [])';
             S.ROIVisible = [obj.ROIs.Visible];
@@ -1250,6 +1564,8 @@ classdef GraspDCEViewer < handle
             if isfield(S, 'SubFrames') && (applied || ~binDiff)
                 obj.setSubFrames(S.SubFrames(1), S.SubFrames(2), false);
             end
+            if isfield(S, 'ParamOpts'), D.setParamOptions(S.ParamOpts); end
+            if isfield(S, 'RefROIName'), obj.RefROIName = S.RefROIName; end
             obj.UndoStack = {}; obj.RedoStack = {};
             obj.afterMaskChange();
             obj.Modified = false;
@@ -1304,6 +1620,7 @@ classdef GraspDCEViewer < handle
                 if ~isempty(obj.PlayTimer) && isvalid(obj.PlayTimer), delete(obj.PlayTimer); end
             catch
             end
+            if isfield(obj.PW, 'Fig') && ishghandle(obj.PW.Fig), delete(obj.PW.Fig); end
             if ~isempty(obj.Fig) && ishghandle(obj.Fig), delete(obj.Fig); end
         end
     end
@@ -1358,6 +1675,21 @@ classdef GraspDCEViewer < handle
                         'ForegroundColor', [0.95 0.75 0.30], 'FontSize', 9, 'FontWeight', 'bold');
                 end
                 obj.V(v).Lbl = lb;
+                if v == 3
+                    obj.CB.Ax = axes('Parent', P, 'Units', 'pixels', 'Position', [10 10 12 100], 'Visible', 'off', ...
+                        'YDir', 'normal', 'XTick', [], 'YTick', []);
+                    obj.CB.Img = image('Parent', obj.CB.Ax, 'CData', zeros(2, 1, 3), 'XData', [1 1], ...
+                        'YData', [1 128], 'Visible', 'off', 'HitTest', 'off');
+                    obj.CB.Hi = uicontrol(P, 'Style', 'text', 'Units', 'pixels', 'Position', [1 1 60 14], ...
+                        'BackgroundColor', [0 0 0], 'ForegroundColor', [1 1 1], 'FontSize', 8, ...
+                        'HorizontalAlignment', 'right', 'Visible', 'off');
+                    obj.CB.Lo = uicontrol(P, 'Style', 'text', 'Units', 'pixels', 'Position', [1 1 60 14], ...
+                        'BackgroundColor', [0 0 0], 'ForegroundColor', [1 1 1], 'FontSize', 8, ...
+                        'HorizontalAlignment', 'right', 'Visible', 'off');
+                    obj.CB.Title = uicontrol(P, 'Style', 'text', 'Units', 'pixels', 'Position', [1 1 120 14], ...
+                        'BackgroundColor', [0 0 0], 'ForegroundColor', [1 1 1], 'FontSize', 8, ...
+                        'HorizontalAlignment', 'right', 'Visible', 'off');
+                end
             end
             obj.H.time = uipanel('Parent', obj.Fig, 'Units', 'pixels', 'BorderType', 'none', 'BackgroundColor', C.panel);
             obj.H.ticPanel = uipanel('Parent', obj.Fig, 'Units', 'pixels', 'BorderType', 'none', 'BackgroundColor', C.panel);
@@ -1407,6 +1739,11 @@ classdef GraspDCEViewer < handle
             uimenu(m, 'Label', 'Temporal binning...', 'Callback', @(s, e) obj.onBinningDialog());
             uimenu(m, 'Label', 'Auto contrast', 'Separator', 'on', 'Callback', @(s, e) obj.autoContrast(true));
             uimenu(m, 'Label', 'Reset zoom', 'Callback', @(s, e) obj.resetZoom());
+            m = uimenu(obj.Fig, 'Label', 'Analysis');
+            uimenu(m, 'Label', 'Semi-quantitative parameters (wash-in, washout, AUC, PE)...', ...
+                'Callback', @(s, e) obj.openParamWindow());
+            uimenu(m, 'Label', 'Show / hide parameter map   (M)', 'Callback', @(s, e) obj.setParamDisplay(~obj.ParamOn));
+            uimenu(m, 'Label', 'Export parameter statistics and voxel values...', 'Callback', @(s, e) obj.onExportParams());
             m = uimenu(obj.Fig, 'Label', 'Help');
             uimenu(m, 'Label', 'Mouse and keyboard...', 'Callback', @(s, e) obj.showHelp());
             uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.inform(sprintf(['GRASP DCE Viewer %s\n' ...
@@ -1616,6 +1953,9 @@ classdef GraspDCEViewer < handle
             obj.ctl(P, 362, 7, 12, 18, 'text', 'X');
             obj.H.ticX = obj.ctl(P, 376, 5, 78, 22, 'popupmenu', {'Time (s)', 'Frame'}, ...
                 'Callback', @(s, e) obj.setFlag('TicX', get(s, 'Value')));
+            obj.ctl(P, -176, 5, 98, 22, 'pushbutton', 'Parameters...', ...
+                'TooltipString', 'Wash-in/washout slopes, AUC, peak enhancement: maps, ROI statistics, export', ...
+                'Callback', @(s, e) obj.openParamWindow());
             obj.ctl(P, -74, 5, 66, 22, 'pushbutton', 'PNG...', 'TooltipString', 'Save the plot as PNG', ...
                 'Callback', @(s, e) obj.onSavePNG());
             ax = axes('Parent', P, 'Units', 'pixels', 'Position', [60 36 300 120], 'Color', [0.07 0.07 0.08], ...
@@ -1691,6 +2031,14 @@ classdef GraspDCEViewer < handle
                 set(L(2), 'Position', [max(3, pw - 17), mid - 8, 14, 16]);
                 set(L(3), 'Position', [max(3, pw / 2 - 7), 0.91 * ph - 17, 14, 16]);
                 set(L(4), 'Position', [max(3, pw / 2 - 7), 3, 14, 16]);
+                if v == 3 && isfield(obj.CB, 'Ax') && ishghandle(obj.CB.Ax)
+                    h0 = max(40, round(0.45 * ph));
+                    y0 = round(0.25 * ph);
+                    set(obj.CB.Ax, 'Position', [max(1, pw - 34), y0, 12, h0]);
+                    set(obj.CB.Hi, 'Position', [max(1, pw - 98), y0 + h0 - 12, 60, 14]);
+                    set(obj.CB.Lo, 'Position', [max(1, pw - 98), y0 - 2, 60, 14]);
+                    set(obj.CB.Title, 'Position', [max(1, pw - 158), y0 + h0 + 6, 150, 14]);
+                end
             end
             set(obj.H.time, 'Position', [rx, SB + bottomH + 1, rw, timeH]);
             set(obj.H.ticPanel, 'Position', [rx, SB + 1, max(60, rw - roiW - 2), bottomH]);
@@ -1862,6 +2210,7 @@ classdef GraspDCEViewer < handle
                     obj.ViewImg{v} = obj.FrameImg{v};
                 end
                 obj.computePreview(v);
+                obj.computeParamOverlay(v);
                 comp = true;
             end
             if any(strcmp(what, {'all', 'overlay'}))
@@ -1905,12 +2254,14 @@ classdef GraspDCEViewer < handle
                     ch(m) = col(k);
                     rgb(:, :, k) = ch;
                 end
-                if obj.ShowOutline
+                fa = obj.Alpha;
+                if obj.ParamOn, fa = 0; end      % outlines only over a parameter map
+                if obj.ShowOutline || obj.ParamOn
                     e = GraspDCEViewer.maskEdge(m);
-                    A(m) = obj.Alpha;
+                    A(m) = fa;
                     A(e) = 1;
                 else
-                    A(m) = obj.Alpha;
+                    A(m) = fa;
                 end
             end
             obj.OvlRGB{v} = rgb;
@@ -1936,6 +2287,43 @@ classdef GraspDCEViewer < handle
             obj.PrevA{v} = 0.38 * double(obj.inWindow(M));
         end
 
+        function computeParamOverlay(obj, v)
+            obj.ParamA{v} = []; obj.ParamRGB{v} = [];
+            if ~obj.ParamOn || isempty(obj.Data), return; end
+            V = obj.paramVolume(obj.ParamKey);
+            if isempty(V), return; end
+            M = double(obj.screenSliceOf(v, V));
+            c = obj.paramCLim();
+            ok = isfinite(M);
+            if obj.ParamHideBelow, ok = ok & M >= c(1); end
+            if obj.ParamHeadOnly, ok = ok & obj.screenSliceOf(v, obj.headMask()); end
+            u = (M - c(1)) / (c(2) - c(1));
+            u(~isfinite(u)) = 0;
+            u = min(1, max(0, u));
+            cm = GraspDCEViewer.colormapByName(obj.ParamCmap, 256);
+            idx = 1 + round(u * 255);
+            obj.ParamRGB{v} = reshape(cm(idx(:), :), [size(M) 3]);
+            obj.ParamA{v} = obj.ParamAlpha * double(ok);
+        end
+
+        function updateColorbar(obj)
+            if ~isfield(obj.CB, 'Ax') || ~ishghandle(obj.CB.Ax), return; end
+            if ~obj.ParamOn || isempty(obj.Data)
+                set([obj.CB.Ax obj.CB.Img], 'Visible', 'off');
+                set([obj.CB.Hi obj.CB.Lo obj.CB.Title], 'Visible', 'off');
+                return
+            end
+            cm = GraspDCEViewer.colormapByName(obj.ParamCmap, 128);
+            set(obj.CB.Img, 'CData', reshape(cm, [128 1 3]), 'Visible', 'on');
+            set(obj.CB.Ax, 'Visible', 'off', 'XLim', [0.5 1.5], 'YLim', [0.5 128.5]);
+            c = obj.paramCLim();
+            k = find(strcmp(obj.ParamKeys, obj.ParamKey));
+            set(obj.CB.Hi, 'String', sprintf('%.3g', c(2)), 'Visible', 'on');
+            set(obj.CB.Lo, 'String', sprintf('%.3g', c(1)), 'Visible', 'on');
+            set(obj.CB.Title, 'String', sprintf('%s [%s]', obj.ParamKeys{k}, obj.paramUnit(obj.ParamKey)), ...
+                'Visible', 'on');
+        end
+
         function composeView(obj, v)
             % grayscale (window/level) + threshold preview + ROI overlay -> one RGB image
             S = obj.ViewImg{v};
@@ -1945,6 +2333,13 @@ classdef GraspDCEViewer < handle
             g(~isfinite(g)) = 0;
             g = min(1, max(0, g));
             rgb = cat(3, g, g, g);
+            pa = obj.ParamA{v};
+            if obj.ParamOn && ~isempty(pa) && isequal(size(pa), size(g)) && any(pa(:))
+                PR = obj.ParamRGB{v};
+                for k = 1:3
+                    rgb(:, :, k) = rgb(:, :, k) .* (1 - pa) + PR(:, :, k) .* pa;
+                end
+            end
             a = obj.PrevA{v};
             if ~isempty(a) && isequal(size(a), size(g)) && any(a(:))
                 pc = obj.Col.prev;
@@ -2458,8 +2853,13 @@ classdef GraspDCEViewer < handle
             end
             lab = 'S';
             if strcmp(obj.ViewMode, 'sub'), lab = sprintf('Sub(%d-%d)', obj.SubFrames); end
-            obj.setStatus(sprintf('%s  [i j k] = [%d %d %d]   %s = %.4g   frame %d%s%s', obj.ViewNames{v}, ...
-                c(1), c(2), c(3), lab, val, obj.Frame, tl, rs));
+            ps = '';
+            if obj.ParamOn
+                PV = obj.paramVolume(obj.ParamKey);
+                if ~isempty(PV), ps = sprintf('   %s = %.4g %s', obj.ParamKey, PV(lin), obj.paramUnit(obj.ParamKey)); end
+            end
+            obj.setStatus(sprintf('%s  [i j k] = [%d %d %d]   %s = %.4g   frame %d%s%s%s', obj.ViewNames{v}, ...
+                c(1), c(2), c(3), lab, val, obj.Frame, tl, ps, rs));
         end
 
         function c = cursorColor(obj)
@@ -2527,12 +2927,282 @@ classdef GraspDCEViewer < handle
                 case 'p', if ~ctrl, obj.setPreview(~obj.Preview); end
                 case 's', if ~ctrl, obj.toggleSubView(); end
                 case 'g', if ~ctrl, obj.growFromCrosshair(); end
+                case 'm', if ~ctrl, obj.setParamDisplay(~obj.ParamOn); end
                 case 'leftbracket', obj.setBrushR(obj.BrushR / 1.25);
                 case 'rightbracket', obj.setBrushR(obj.BrushR * 1.25);
             end
         end
 
         % ------------------------------------------------------------ control callbacks
+        function openParamWindow(obj)
+            if ~obj.requireData(), return; end
+            if isfield(obj.PW, 'Fig') && ishghandle(obj.PW.Fig)
+                figure(obj.PW.Fig);
+                obj.refreshParamWindow();
+                return
+            end
+            obj.Layout = obj.Layout(arrayfun(@(L) ishghandle(L.h), obj.Layout));
+            C = obj.Col;
+            W = 1220; Hh = 700;
+            ss = get(0, 'ScreenSize');
+            f = figure('Name', 'Semi-quantitative DCE parameters', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+                'ToolBar', 'none', 'Units', 'pixels', 'Color', C.bg, ...
+                'Position', [max(1, round((ss(3) - W) / 2)), max(40, round((ss(4) - Hh) / 2)), W, Hh], ...
+                'KeyPressFcn', @(s, e) obj.onKey(e));
+            P = uipanel('Parent', f, 'Units', 'pixels', 'Position', [1 1 W Hh], 'BorderType', 'none', ...
+                'BackgroundColor', C.panel);
+            obj.PW = struct('Fig', f, 'Panel', P);
+            hdr = @(x, s) obj.ctl(P, x, 10, 340, 18, 'text', s, 'FontWeight', 'bold', 'ForegroundColor', C.accent);
+            x1 = 12; x2 = 400; x3 = 788;
+            % curve parameters
+            hdr(x1, 'CURVE PARAMETERS');
+            obj.ctl(P, x1, 36, 104, 18, 'text', 'Baseline frames');
+            obj.PW.base1 = obj.ctl(P, x1 + 108, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
+            obj.ctl(P, x1 + 152, 36, 20, 18, 'text', 'to');
+            obj.PW.base2 = obj.ctl(P, x1 + 174, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
+            obj.ctl(P, x1, 64, 96, 18, 'text', 'Wash-in slope');
+            obj.PW.washIn = obj.ctl(P, x1 + 100, 62, 240, 22, 'popupmenu', ...
+                {'dS / (TP - To), onset to peak', 'Maximum up-slope'}, 'Callback', @(s, e) obj.onParamOptions());
+            obj.ctl(P, x1, 92, 96, 18, 'text', 'Washout slope');
+            obj.PW.washOut = obj.ctl(P, x1 + 100, 90, 240, 22, 'popupmenu', ...
+                {'Regression, peak to end', 'Peak to last frame (2 points)'}, 'Callback', @(s, e) obj.onParamOptions());
+            obj.ctl(P, x1, 120, 100, 18, 'text', 'AUC window (s)');
+            obj.PW.aucW = obj.ctl(P, x1 + 100, 118, 50, 22, 'edit', '', ...
+                'TooltipString', 'Seconds after the end of the baseline; blank = whole curve; 60 or 90 = IAUC60/IAUC90', ...
+                'Callback', @(s, e) obj.onParamOptions());
+            obj.ctl(P, x1 + 156, 120, 220, 18, 'text', 'blank = whole curve; 60 = IAUC60', 'ForegroundColor', C.dim);
+            obj.ctl(P, x1, 148, 96, 18, 'text', 'SSS reference');
+            obj.PW.ref = obj.ctl(P, x1 + 100, 146, 240, 22, 'popupmenu', {'(auto)'}, ...
+                'Callback', @(s, e) obj.onParamRef());
+            obj.ctl(P, x1, 178, 170, 28, 'pushbutton', 'Compute parameters', 'FontWeight', 'bold', ...
+                'Callback', @(s, e) obj.onParamCompute());
+            obj.PW.info = obj.ctl(P, x1, 210, 376, 34, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
+            % parameter map
+            hdr(x2, 'PARAMETER MAP');
+            obj.ctl(P, x2, 36, 70, 18, 'text', 'Parameter');
+            obj.PW.key = obj.ctl(P, x2 + 74, 34, 292, 22, 'popupmenu', obj.ParamLabels, ...
+                'Callback', @(s, e) obj.setParamKey(get(s, 'Value')));
+            obj.PW.show = obj.ctl(P, x2, 62, 160, 24, 'togglebutton', 'Show on images (M)', ...
+                'Callback', @(s, e) obj.setParamDisplay(get(s, 'Value')));
+            obj.PW.cmap = obj.ctl(P, x2 + 170, 63, 196, 22, 'popupmenu', obj.CmapLabels, ...
+                'Callback', @(s, e) obj.onParamCmap(get(s, 'Value')));
+            obj.ctl(P, x2, 94, 30, 18, 'text', 'Min');
+            obj.PW.cmin = obj.ctl(P, x2 + 32, 92, 70, 22, 'edit', '', 'Callback', @(s, e) obj.onParamCLimEdit());
+            obj.ctl(P, x2 + 106, 94, 32, 18, 'text', 'Max');
+            obj.PW.cmax = obj.ctl(P, x2 + 140, 92, 70, 22, 'edit', '', 'Callback', @(s, e) obj.onParamCLimEdit());
+            obj.ctl(P, x2 + 214, 92, 74, 22, 'pushbutton', 'Auto head', ...
+                'TooltipString', '1st-99.5th percentile inside the head', 'Callback', @(s, e) obj.autoParamCLim('head'));
+            obj.ctl(P, x2 + 292, 92, 74, 22, 'pushbutton', 'Auto ROIs', ...
+                'TooltipString', '2nd-98th percentile inside the tumor ROIs', 'Callback', @(s, e) obj.autoParamCLim('rois'));
+            ax = axes('Parent', P, 'Units', 'pixels', 'Position', [x2 100 366 14], 'Visible', 'off');
+            obj.PW.cbImg = image('Parent', ax, 'CData', zeros(1, 2, 3), 'HitTest', 'off');
+            obj.PW.cbAx = ax;
+            obj.reg(ax, P, x2, 122, 366, 14);
+            obj.PW.cbLo = obj.ctl(P, x2, 138, 110, 16, 'text', '', 'FontSize', 8);
+            obj.PW.cbHi = obj.ctl(P, x2 + 216, 138, 150, 16, 'text', '', 'FontSize', 8, 'HorizontalAlignment', 'right');
+            obj.ctl(P, x2, 162, 60, 18, 'text', 'Opacity');
+            obj.PW.alpha = obj.ctl(P, x2 + 64, 162, 302, 18, 'slider', '', 'Min', 0, 'Max', 1, 'Value', obj.ParamAlpha, ...
+                'Callback', @(s, e) obj.onParamFlag('ParamAlpha', get(s, 'Value')));
+            obj.PW.hide = obj.ctl(P, x2, 188, 150, 20, 'checkbox', 'Hide below min', 'Value', obj.ParamHideBelow, ...
+                'Callback', @(s, e) obj.onParamFlag('ParamHideBelow', get(s, 'Value')));
+            obj.PW.head = obj.ctl(P, x2 + 160, 188, 180, 20, 'checkbox', 'Inside head only', 'Value', obj.ParamHeadOnly, ...
+                'Callback', @(s, e) obj.onParamFlag('ParamHeadOnly', get(s, 'Value')));
+            % statistics and export
+            hdr(x3, 'TUMOR ROI STATISTICS');
+            obj.PW.inclRef = obj.ctl(P, x3, 36, 300, 20, 'checkbox', 'Include the reference (SSS) ROI', ...
+                'Value', obj.IncludeRefStats, 'Callback', @(s, e) obj.onParamFlag('IncludeRefStats', get(s, 'Value')));
+            obj.ctl(P, x3, 62, 80, 24, 'pushbutton', 'Refresh', 'Callback', @(s, e) obj.refreshParamWindow());
+            obj.ctl(P, x3 + 86, 62, 334, 24, 'pushbutton', 'Export statistics + voxel values...', ...
+                'Callback', @(s, e) obj.onExportParams());
+            obj.ctl(P, x3, 92, 420, 24, 'pushbutton', 'Export parameter maps (NIfTI)...', ...
+                'Callback', @(s, e) obj.onExportMaps());
+            obj.ctl(P, x3, 124, 420, 112, 'text', { ...
+                'S0 = mean of the baseline frames; times from the end of the baseline', ...
+                'PE = Smax - S0;  relative PE = 100 PE / S0', ...
+                'Wash-in = PE / (TP - To), or the maximum up-slope', ...
+                'Washout = slope from the peak to the end (negative = washout)', ...
+                'AUC = area of S - S0 after the baseline (window)', ...
+                '/SSS = divided by the value of the SSS ROI mean curve', ...
+                'ROI mean curve = parameter of the ROI mean TIC'}, 'FontSize', 8, 'ForegroundColor', C.dim);
+            obj.PW.table = uitable('Parent', P, 'Units', 'pixels', 'Position', [12 12 W - 24 400], ...
+                'ColumnName', {'ROI', 'Parameter', 'Unit', 'N', 'Mean', 'SD', 'Median', 'Q1', 'Q3', 'P10', ...
+                'P90', 'Min', 'Max', 'ROI curve'}, 'RowName', [], 'Data', cell(0, 14), 'FontSize', 9, ...
+                'ColumnWidth', {110, 195, 55, 50, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78});
+            obj.reg(obj.PW.table, P, 12, 250, -12, -12);
+            set(f, 'SizeChangedFcn', @(s, e) obj.layoutParamWindow());
+            obj.layoutParamWindow();
+            obj.refreshParamWindow();
+        end
+
+        function layoutParamWindow(obj)
+            if ~isfield(obj.PW, 'Fig') || ~ishghandle(obj.PW.Fig), return; end
+            fp = get(obj.PW.Fig, 'Position');
+            set(obj.PW.Panel, 'Position', [1 1 fp(3) fp(4)]);
+            obj.layoutRecords(obj.PW.Panel);
+        end
+
+        function layoutRecords(obj, panel)
+            for i = 1:numel(obj.Layout)
+                L = obj.Layout(i);
+                if ~ishghandle(L.h) || ~ishghandle(L.panel), continue; end
+                if nargin > 1 && ~isequal(L.panel, panel), continue; end
+                pp = get(L.panel, 'Position');
+                pw = pp(3); ph = pp(4);
+                x = L.x;
+                if x < 0, x = pw + x; end
+                w = L.w;
+                if w <= 0, w = pw - x + w; end
+                ht = L.ht;
+                if ht <= 0, ht = ph - L.top + ht; end
+                set(L.h, 'Position', [max(1, x), ph - L.top - ht, max(w, 4), max(ht, 4)]);
+            end
+        end
+
+        function refreshParamWindow(obj)
+            if ~isfield(obj.PW, 'Fig') || ~ishghandle(obj.PW.Fig) || isempty(obj.Data), return; end
+            D = obj.Data;
+            set(obj.PW.base1, 'String', num2str(obj.BaseFrames(1)));
+            set(obj.PW.base2, 'String', num2str(obj.BaseFrames(2)));
+            o = D.ParamOpts;
+            set(obj.PW.washIn, 'Value', 1 + strcmpi(o.WashIn, 'max'));
+            set(obj.PW.washOut, 'Value', 1 + strcmpi(o.WashOut, 'endpoints'));
+            if isfinite(o.AUCWindow), set(obj.PW.aucW, 'String', num2str(o.AUCWindow));
+            else, set(obj.PW.aucW, 'String', ''); end
+            names = {obj.ROIs.Name};
+            r = obj.refIndex();
+            items = [{'(auto: first ROI named SSS)'}, names];
+            val = 1;
+            if ~isempty(obj.RefROIName) && r > 0, val = r + 1; end
+            set(obj.PW.ref, 'String', items, 'Value', val);
+            ready = D.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2));
+            if ~ready
+                msgI = {'Parameters not computed for the current settings:', 'press Compute parameters.'};
+            else
+                ts = 's';
+                if ~D.hasTiming(), ts = 'frames (enter s/frame for seconds)'; end
+                [ref, rr] = obj.refParams();
+                if isempty(ref)
+                    msgI = {sprintf('Computed (time unit: %s).', ts), ...
+                        'No SSS reference ROI: /SSS values unavailable (press Auto SSS).'};
+                else
+                    msgI = {sprintf('Computed (time unit: %s). Reference: %s (%d voxels)', ts, ...
+                        obj.ROIs(rr).Name, nnz(obj.Masks{rr})), sprintf('PE %.3g, wash-in %.3g, washout %.3g, AUC %.3g', ...
+                        ref.PE, ref.WashIn, ref.WashOut, ref.AUC)};
+                end
+            end
+            set(obj.PW.info, 'String', msgI);
+            [~, rows] = obj.paramStatsTable();
+            dsp = rows;
+            for i = 1:size(rows, 1)
+                for j = 4:size(rows, 2)
+                    if j == 4
+                        dsp{i, j} = sprintf('%d', rows{i, j});
+                    else
+                        dsp{i, j} = sprintf('%.4g', rows{i, j});
+                        if numel(dsp{i, j}) > 9, dsp{i, j} = sprintf('%.3g', rows{i, j}); end
+                    end
+                end
+            end
+            set(obj.PW.table, 'Data', dsp);
+            obj.syncParamWindow();
+        end
+
+        function syncParamWindow(obj)
+            if ~isfield(obj.PW, 'Fig') || ~ishghandle(obj.PW.Fig) || isempty(obj.Data), return; end
+            k = find(strcmp(obj.ParamKeys, obj.ParamKey));
+            set(obj.PW.key, 'Value', k);
+            set(obj.PW.show, 'Value', double(obj.ParamOn));
+            set(obj.PW.cmap, 'Value', find(strcmp(obj.CmapNames, obj.ParamCmap)));
+            c = obj.paramCLim();
+            set(obj.PW.cmin, 'String', sprintf('%.4g', c(1)));
+            set(obj.PW.cmax, 'String', sprintf('%.4g', c(2)));
+            cm = GraspDCEViewer.colormapByName(obj.ParamCmap, 128);
+            set(obj.PW.cbImg, 'CData', reshape(cm, [1 128 3]), 'XData', [1 128], 'YData', [1 1]);
+            set(obj.PW.cbAx, 'XLim', [0.5 128.5], 'YLim', [0.5 1.5]);
+            u = obj.paramUnit(obj.ParamKey);
+            set(obj.PW.cbLo, 'String', sprintf('%.4g %s', c(1), u));
+            set(obj.PW.cbHi, 'String', sprintf('%.4g %s', c(2), u));
+        end
+
+        function onParamBaseline(obj)
+            set(obj.H.base1, 'String', get(obj.PW.base1, 'String'));
+            set(obj.H.base2, 'String', get(obj.PW.base2, 'String'));
+            obj.onBaseline();
+            obj.refreshParamWindow();
+        end
+
+        function onParamOptions(obj)
+            wi = {'onset', 'max'}; wo = {'regression', 'endpoints'};
+            aw = str2double(get(obj.PW.aucW, 'String'));
+            if ~isfinite(aw) || aw <= 0, aw = Inf; end
+            obj.Data.setParamOptions('WashIn', wi{get(obj.PW.washIn, 'Value')}, ...
+                'WashOut', wo{get(obj.PW.washOut, 'Value')}, 'AUCWindow', aw);
+            obj.refreshParamWindow();
+            if obj.ParamOn, obj.refreshParamDisplay(); end
+        end
+
+        function onParamRef(obj)
+            v = get(obj.PW.ref, 'Value');
+            if v == 1
+                obj.RefROIName = '';
+            else
+                obj.RefROIName = obj.ROIs(v - 1).Name;
+            end
+            obj.RefCache = [];
+            obj.ParamCache = struct('key', '', 'V', []);
+            obj.refreshParamDisplay();
+            obj.refreshParamWindow();
+        end
+
+        function onParamCompute(obj)
+            obj.onParamOptions();
+            if obj.computeParams()
+                obj.refreshParamDisplay();
+                obj.refreshParamWindow();
+            end
+        end
+
+        function onParamCmap(obj, k)
+            obj.ParamCmap = obj.CmapNames{k};
+            obj.refreshParamDisplay();
+        end
+
+        function onParamCLimEdit(obj)
+            c = [str2double(get(obj.PW.cmin, 'String')) str2double(get(obj.PW.cmax, 'String'))];
+            if all(isfinite(c)), obj.setParamCLim(c); else, obj.syncParamWindow(); end
+        end
+
+        function onParamFlag(obj, name, val)
+            switch name
+                case 'ParamAlpha', obj.ParamAlpha = val;
+                otherwise, obj.(name) = logical(val);
+            end
+            if strcmp(name, 'IncludeRefStats')
+                obj.refreshParamWindow();
+            else
+                obj.refreshParamDisplay();
+            end
+        end
+
+        function onExportParams(obj)
+            if ~obj.requireData(), return; end
+            suf = '_dce_parameters.xlsx';
+            file = obj.putFile({'*.xlsx', 'Excel workbook (*.xlsx)'; '*.csv', 'CSV files (*.csv)'}, ...
+                'Export parameter statistics and voxel values', suf);
+            if isempty(file), return; end
+            [~, ~, ext] = fileparts(file);
+            if isempty(ext), file = [file '.xlsx']; end
+            try
+                files = obj.exportParams(file);
+            catch err
+                obj.showError(err, 'Parameter export failed');
+                return
+            end
+            if ~isempty(files)
+                obj.inform(sprintf('Wrote:\n%s', strjoin(files, char(10))), 'Parameter export');
+            end
+        end
+
         function toggleSubView(obj)
             if strcmp(obj.ViewMode, 'sub')
                 obj.setViewMode('frame');
@@ -2806,6 +3476,7 @@ classdef GraspDCEViewer < handle
                 '  P                toggle threshold preview'
                 '  S                show subtraction map (post - pre frame)'
                 '  G                grow from crosshair (threshold window)'
+                '  M                parameter colour map on / off'
                 '  Ctrl+Z / Ctrl+Y  undo / redo (Ctrl+Shift+Z also redoes)'
                 ''
                 'ENHANCING TUMOR FROM THE SUBTRACTION MAP (last - first frame)'
@@ -2823,6 +3494,11 @@ classdef GraspDCEViewer < handle
                 'SSS CONTROL ROI'
                 '  Auto SSS: posterior superior sagittal sinus just above the torcula'
                 '  (transverse and straight sinuses excluded); check and edit as needed'
+                ''
+                'SEMI-QUANTITATIVE PARAMETERS (Analysis menu or Parameters... button)'
+                '  Peak enhancement, wash-in and washout slopes, AUC, TTP, absolute and'
+                '  normalized to the SSS ROI mean curve; colour maps (M), ROI statistics,'
+                '  export of statistics and voxel values'
                 ''
                 'TEMPORAL BINNING'
                 '  Average every n frames + Apply binning: each frame becomes the mean'
@@ -2975,10 +3651,17 @@ classdef GraspDCEViewer < handle
 
         function afterMaskChange(obj)
             obj.Modified = true;
+            obj.RefCache = [];
+            obj.ParamCache = struct('key', '', 'V', []);
             obj.refreshROIList();
+            if obj.ParamOn
+                [~, ~, nrm] = GraspDCEViewer.paramInfo(obj.ParamKey);
+                if nrm, obj.refreshParamDisplay(); end
+            end
             obj.refreshOverlays();
             obj.refreshTIC();
             obj.updateThrInfo();
+            obj.refreshParamWindow();
         end
 
         function applyChanges(obj, ch, inverse)
@@ -3188,6 +3871,59 @@ classdef GraspDCEViewer < handle
                 'DimOrder', 'xytz', 'CropFactor', [], 'Normalize', [], 'Plane', 'axial', ...
                 'SwapInPlane', false, 'Flip', [false false false], 'Voxel', [1 1 1], 'dt', NaN, ...
                 't0', 0, 'NoDialog', false, 'BinSize', 1, 'AxisCodes', 'LPS');
+        end
+
+        function s = ternaryStr(c, a, b)
+            if c, s = a; else, s = b; end
+        end
+
+        function [name, fld, norm] = paramInfo(key)
+            % map name in GraspData, field of gdce_curve_params, normalized flag
+            norm = numel(key) > 4 && strcmp(key(end - 3:end), '_SSS');
+            if norm, key = key(1:end - 4); end
+            switch key
+                case 'PE',  name = 'PeakEnh'; fld = 'PE';
+                case 'RE',  name = 'RelEnh';  fld = 'RE';
+                case 'WIS', name = 'WashIn';  fld = 'WashIn';
+                case 'WOS', name = 'WashOut'; fld = 'WashOut';
+                case 'AUC', name = 'AUC';     fld = 'AUC';
+                case 'TTP', name = 'TTP';     fld = 'TTP';
+                otherwise
+                    error('GraspDCEViewer:param', 'Unknown parameter %s.', key);
+            end
+        end
+
+        function d = describeVals(v)
+            v = sort(double(v(isfinite(v))));
+            n = numel(v);
+            d = struct('n', n, 'mean', NaN, 'sd', NaN, 'median', NaN, 'q1', NaN, 'q3', NaN, ...
+                'p10', NaN, 'p90', NaN, 'min', NaN, 'max', NaN);
+            if n == 0, return; end
+            v = v(:);
+            d.mean = mean(v);
+            if n > 1, d.sd = std(v); else, d.sd = 0; end
+            q = @(p) GraspDCEViewer.quant(v, p);
+            d.median = q(0.5); d.q1 = q(0.25); d.q3 = q(0.75); d.p10 = q(0.1); d.p90 = q(0.9);
+            d.min = v(1); d.max = v(end);
+        end
+
+        function cm = colormapByName(name, n)
+            x = linspace(0, 1, n)';
+            switch lower(name)
+                case 'turbo'      % polynomial approximation of Google's Turbo
+                    r = 0.13572138 + x .* (4.61539260 + x .* (-42.66032258 + x .* (132.13108234 + x .* (-152.94239396 + x * 59.28637943))));
+                    g = 0.09140261 + x .* (2.19418839 + x .* (4.84296658 + x .* (-14.18503333 + x .* (4.27729857 + x * 2.82956604))));
+                    b = 0.10667330 + x .* (12.64194608 + x .* (-60.58204836 + x .* (110.36276771 + x .* (-89.90310912 + x * 27.34824973))));
+                case 'hot'
+                    r = 3 * x; g = 3 * x - 1; b = 3 * x - 2;
+                case 'gray'
+                    r = x; g = x; b = x;
+                otherwise         % jet
+                    r = min(4 * x - 1.5, -4 * x + 4.5);
+                    g = min(4 * x - 0.5, -4 * x + 3.5);
+                    b = min(4 * x + 0.5, -4 * x + 2.5);
+            end
+            cm = min(1, max(0, [r g b]));
         end
 
         function h = handleArray(n)

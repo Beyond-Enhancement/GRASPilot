@@ -70,6 +70,7 @@ classdef GraspData < handle
         Flip = [false false false]; % flip along canonical axis a
         Maps = [];                  % native-space enhancement maps
         CanonMapCache = struct();
+        MapsVersion = 0;            % incremented whenever maps or orientation change
     end
 
     properties
@@ -78,6 +79,7 @@ classdef GraspData < handle
         t0 = 0;                     % s, time of frame 1
         SourceFile = '';
         SourceVars = '';
+        ParamOpts = struct('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1);
     end
 
     % ------------------------------------------------------------------
@@ -379,6 +381,7 @@ classdef GraspData < handle
             obj.UserFlip = logical(userFlip(:)');
             obj.AxisCodes = GraspData.permFlipToCodes(obj.Perm, obj.Flip);
             obj.CanonMapCache = struct();
+            obj.MapsVersion = obj.MapsVersion + 1;
         end
 
         function setAxisCodes(obj, codes)
@@ -435,6 +438,7 @@ classdef GraspData < handle
             obj.NT = nb;
             obj.Maps = [];
             obj.CanonMapCache = struct();
+            obj.MapsVersion = obj.MapsVersion + 1;
         end
 
         function f = binFrames(obj, t)
@@ -607,42 +611,78 @@ classdef GraspData < handle
 
         % ---------- enhancement maps ----------
         function tf = hasMaps(obj, baseFrames)
-            tf = ~isempty(obj.Maps) && isequal(obj.Maps.BaseFrames, baseFrames);
+            % maps exist for these baseline frames, parameter options and timing
+            tf = ~isempty(obj.Maps) && isequal(obj.Maps.BaseFrames, baseFrames) && ...
+                isequaln(obj.Maps.Key, obj.mapsKey());
+        end
+
+        function k = mapsKey(obj)
+            k = {obj.ParamOpts, obj.dt, obj.t0, obj.BinSize, obj.NT};
+        end
+
+        function t = paramTimes(obj)
+            % time axis used for curve parameters: seconds if known, else frames
+            if obj.hasTiming()
+                t = obj.frameTimes();
+            else
+                t = 1:obj.NT;
+            end
+        end
+
+        function setParamOptions(obj, varargin)
+            % 'WashIn' ('onset'|'max'), 'WashOut' ('regression'|'endpoints'),
+            % 'AUCWindow' (s after the baseline, Inf = to the end), 'OnsetFrac'
+            p = GraspData.parseOpts(varargin, obj.ParamOpts);
+            if isempty(p.AUCWindow) || ~(p.AUCWindow > 0), p.AUCWindow = Inf; end
+            obj.ParamOpts = p;
         end
 
         function computeMaps(obj, baseFrames, progress)
+            % Voxel-wise enhancement and semi-quantitative curve parameters
+            % (gdce_curve_params) on the (binned) series, slice by slice.
             if nargin < 3, progress = []; end
             T = obj.NT;
             bf = baseFrames(baseFrames >= 1 & baseFrames <= T);
             if isempty(bf), bf = 1; end
             nx = obj.NativeSize(1); ny = obj.NativeSize(2); nz = obj.NativeSize(3);
+            tt = obj.paramTimes();
             M.BaseFrames = baseFrames;
-            M.Baseline = zeros(nx, ny, nz, 'single');
-            M.Max = zeros(nx, ny, nz, 'single');
-            M.TTP = zeros(nx, ny, nz, 'single');
-            M.AUC = zeros(nx, ny, nz, 'single');
-            post = max(bf) + 1:T;
+            M.Key = obj.mapsKey();
+            M.TimeUnit = 's';
+            if ~obj.hasTiming(), M.TimeUnit = 'frame'; end
+            names = {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'};
+            src = {'S0', 'Smax', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'};
+            for i = 1:numel(names)
+                M.(names{i}) = zeros(nx, ny, nz, 'single');
+            end
+            P = nx * ny;
+            blk = 16384;
             for z = 1:nz
                 if strcmp(obj.Mode, 'subspace')
-                    S = abs(reshape(obj.C(:, :, :, z), nx * ny, obj.NK) * obj.Phi(:, :, z)');
+                    S = abs(reshape(obj.C(:, :, :, z), P, obj.NK) * obj.Phi(:, :, z)');
                 else
-                    S = reshape(obj.D(:, :, z, :), nx * ny, obj.NTRaw);
+                    S = reshape(obj.D(:, :, z, :), P, obj.NTRaw);
                 end
                 if obj.BinSize > 1 || T ~= obj.NTRaw
                     S = single(double(S) * obj.BinW);
                 end
-                b = mean(S(:, bf), 2);
-                [mx, imx] = max(S, [], 2);
-                M.Baseline(:, :, z) = reshape(b, nx, ny);
-                M.Max(:, :, z) = reshape(mx, nx, ny);
-                M.TTP(:, :, z) = reshape(single(imx), nx, ny);
-                if ~isempty(post)
-                    M.AUC(:, :, z) = reshape(sum(S(:, post) - b, 2), nx, ny);
+                out = cell(1, numel(names));
+                for i = 1:numel(names), out{i} = zeros(P, 1, 'single'); end
+                for b0 = 1:blk:P
+                    rows = b0:min(P, b0 + blk - 1);
+                    R = gdce_curve_params(S(rows, :), tt, bf, obj.ParamOpts);
+                    for i = 1:numel(names)
+                        out{i}(rows) = R.(src{i});
+                    end
+                end
+                for i = 1:numel(names)
+                    M.(names{i})(:, :, z) = reshape(out{i}, nx, ny);
                 end
                 GraspData.report(progress, z / nz, sprintf('Enhancement maps: slice %d/%d', z, nz));
             end
             obj.Maps = M;
             obj.CanonMapCache = struct();
+            obj.MapsVersion = obj.MapsVersion + 1;
         end
 
         function A = canonSubtraction(obj, post, pre)
@@ -663,10 +703,11 @@ classdef GraspData < handle
         function clearMaps(obj)
             obj.Maps = [];
             obj.CanonMapCache = struct();
+            obj.MapsVersion = obj.MapsVersion + 1;
         end
 
         function A = canonMap(obj, name)
-            % name: Baseline | Max | PeakEnh | RelEnh | TTP | AUC
+            % name: Baseline | Max | PeakEnh | RelEnh | TTP | Onset | WashIn | WashOut | AUC
             if isempty(obj.Maps)
                 error('GraspData:maps', 'Enhancement maps have not been computed.');
             end
@@ -676,7 +717,7 @@ classdef GraspData < handle
             end
             M = obj.Maps;
             switch name
-                case {'Baseline', 'Max', 'TTP', 'AUC'}
+                case {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'}
                     A = M.(name);
                 case 'PeakEnh'
                     A = M.Max - M.Baseline;

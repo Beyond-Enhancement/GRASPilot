@@ -11,7 +11,7 @@ function [lin, info] = gdce_detect_sss(D, varargin)
 %   GraspData.setAxisCodes): the method relies on "posterior", "midline"
 %   and "superior".
 %
-%   Method, on the peak enhancement map (max over time - baseline):
+%   Method, on the peak enhancement map (max after the baseline - baseline):
 %   1. head mask (Otsu on the baseline image) and its centre
 %   2. venous structure: vessel mask = enhancement >= RelThr x the maximum
 %      within +/-MidlineMM of the head centre in the posterior half of the

@@ -13,12 +13,18 @@ stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_a
 
 ![Auto SSS: ROI in the posterior superior sagittal sinus just above the torcula](docs/screenshot_sss.png)
 
+![Peak enhancement normalized to the SSS as a colour map](docs/screenshot_params.png)
+
+![Parameters window: settings, colour scale and tumor ROI statistics](docs/screenshot_param_window.png)
+
 *Synthetic phantoms, rendered with GNU Octave; controls look slightly different in MATLAB.
 Top: frame view after 2x temporal binning with the SSS control and the tumor ROI. Middle:
 subtraction map (frame 60 - frame 1), threshold preview in green and the enhancing rim grown
 from the crosshair (necrotic core excluded). Bottom: Auto SSS on a venous phantom - the ROI
 (red) sits in the posterior SSS just above the torcula; the straight sinus (anterior to it on
-the axial view), the transverse sinuses and a scalp vein are excluded.*
+the axial view), the transverse sinuses and a scalp vein are excluded. Last two: peak
+enhancement / SSS as a jet colour map (0-0.8) with the ROI outlines, and the Parameters
+window with the statistics of the tumor ROI.*
 
 ## Quick start
 
@@ -104,7 +110,8 @@ Mouse: left = active tool, right-drag = window/level, shift- or middle-drag = pa
 wheel = slice, Ctrl+wheel = zoom, click on the TIC plot = jump to that frame.
 Keys: Left/Right = frame -/+1 (Shift: 10), Home/End, PgUp/PgDn, Up/Down = slice,
 Space = play, N/C/B/E = tools, [ ] = brush radius, D = 3D toggle, P = threshold preview,
-S = subtraction view, G = grow from crosshair, Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
+S = subtraction view, G = grow from crosshair, M = parameter colour map on/off,
+Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
 
 ## Segmentation tools
 
@@ -177,7 +184,7 @@ with its own window/level.
 2. Subtraction: post - pre frame (default last - first)
 3. Current frame - baseline
 4. Current frame relative enhancement (%)
-5. Peak - baseline (max over time)
+5. Peak - baseline (maximum after the baseline frames)
 6. Peak relative enhancement (%)
 
 Baseline = mean of the chosen pre-contrast frames (default 1-5). Maps 3-6 are computed on
@@ -234,6 +241,75 @@ Mean +/- SD band, median [IQR] band, or mean only; Y as signal, relative enhance
 (%), S/S0 or S-S0 (S0 = mean of the ROI curve over the baseline frames); X in seconds
 (if temporal resolution is set) or frames. File > Save TIC plot as PNG.
 
+## Semi-quantitative parameters (wash-in, washout, AUC, peak enhancement)
+
+Analysis > Semi-quantitative parameters (or the **Parameters...** button above the curves) opens the
+parameter window. Press **Compute parameters** (one pass over the data, a few seconds); the
+voxel maps, the colour map and the statistics are then available. Voxel values and ROI
+values are computed from the same time-intensity curve S(t) on the current (binned)
+series.
+
+Definitions (S0 = mean of the baseline frames; times are measured from the last baseline
+frame, i.e. the injection; seconds if s/frame is set, otherwise frames):
+
+| Parameter | Definition | Unit |
+|---|---|---|
+| Peak enhancement (PE) | Smax - S0, Smax = maximum after the baseline | a.u. |
+| Relative peak enhancement | 100 x (Smax - S0) / S0 | % |
+| Wash-in slope (WIS) | PE / (TP - To): line from the onset To to the peak TP (Khalifa 2014). Option: maximum up-slope between consecutive frames before the peak | a.u./s |
+| Washout slope (WOS) | least-squares slope from the peak to the last frame (at least the last 3 frames, so a curve still rising at the end gets a positive slope). Option: 2-point (S_last - Smax)/(t_last - TP). Negative = washout | a.u./s |
+| Area under the curve (AUC) | trapezoidal area of S - S0 from the end of the baseline to the end, or over the first N s (AUC window 60 = IAUC60, 90 = IAUC90) | a.u. x s |
+| Time to peak (TTP) | TP measured from the end of the baseline | s |
+
+Onset To = last frame before the peak whose enhancement is below 10% of PE.
+
+**Normalization to the SSS.** "/SSS" parameters are the voxel value divided by the same
+parameter of the reference ROI mean curve, in line with the AUC ratio to a venous/vascular
+reference used for subtle blood-brain barrier leakage (Heye et al. 2016). The reference is
+the first ROI whose name contains "SSS" (Auto SSS creates "SSS (auto)"), or the ROI chosen
+under SSS reference. Normalization cancels the arbitrary scaling of the reconstruction
+(global-maximum normalization, coil and receiver gain) and makes values comparable between
+scans and between the 8/16/32-spoke reconstructions of one scan. The washout ratio is a
+ratio of slopes: the SSS normally washes out (negative slope), so a positive WOS/SSS means
+a tumor washout, a negative one a persistent rise.
+
+**Colour maps.** Choose the parameter, Show on images (or key M), colour map (Jet or Turbo
+rainbow, Hot, Gray), Min/Max (type values, Auto head = 1st-99.5th percentile in the head,
+Auto ROIs = 2nd-98th percentile in the tumor ROIs), opacity, Hide below min and Inside head
+only. The colour bar appears in the sagittal panel; the status bar shows the value under
+the cursor. ROIs are drawn as outlines while a map is shown.
+
+**Statistics.** The table lists, for every tumor ROI (all ROIs except the reference; tick
+Include the reference to add it) and every parameter: N voxels, mean, SD, median, Q1, Q3,
+10th and 90th percentile, min, max (voxel values; NaN voxels are ignored) and the
+parameter of the ROI mean curve ("ROI curve"). Voxel-wise statistics describe
+heterogeneity; the ROI-curve value is less noisy.
+
+**Export.** Export statistics + voxel values writes `.xlsx` (sheet Stats, sheet Settings
+with the definitions, options and the reference values, one sheet per ROI with one row
+per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm and one column per parameter) or `.csv`
+(`_param_stats.csv`, `_param_voxels.csv`, `_param_settings.txt`); after binning the file
+name ends in `_<N>frames`. Export parameter maps writes every parameter as a NIfTI map
+(`<base>_PE.nii.gz`, `<base>_PE_SSS.nii.gz`, ...) in the geometry of the image export.
+ROI sessions (Save ROIs) keep the parameter options and the reference ROI.
+
+Scripting:
+
+```matlab
+app.computeParams('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', 60);
+[hdr, rows] = app.paramStatsTable();       % cell table as shown in the window
+app.setParamKey('WIS_SSS'); app.setParamDisplay(true); app.setParamCLim([0 2]);
+app.exportParams('tumor_parameters.xlsx');
+P = gdce_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
+```
+
+Other semi-quantitative descriptors used in DCE-MRI that are not (yet) included: bolus
+arrival / onset time, time to 90% of the peak (T90), maximum intensity-time ratio (MITR =
+PE / TTP), signal enhancement ratio (SER = (S1 - S0)/(S2 - S0), early vs late post-contrast
+frame), relative signal intensity at fixed times, plateau level and washout percentage
+((Smax - S_end)/Smax), and the curve-type classification (I persistent, II plateau, III
+washout). Several are one-line additions to `gdce_curve_params.m`.
+
 ## Exports
 
 | Button / menu | Output |
@@ -241,7 +317,8 @@ Mean +/- SD band, median [IQR] band, or mean only; Y as signal, relative enhance
 | Image -> NIfTI | 4D float32 `.nii.gz`/`.nii` (all frames, streamed frame by frame) or the current frame (3D), plus a JSON sidecar (frame times, source, geometry, normalization) |
 | Mask -> NIfTI | uint8 label map (value = ROI number), `<name>_labels.txt` (label, name, RGB, voxels, mL), `<name>_itksnap_labels.txt`; optionally one binary mask per ROI |
 | ROI voxel time series -> spreadsheet | `.xlsx`: sheets Info, Summary (per-ROI mean, SD, median, relative enhancement, n per frame) and one sheet per ROI with one row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn. `.csv`: `_voxels.csv` (all ROIs, ROI_ID/ROI_Name columns), `_summary.csv`, `_info.txt`. After binning the file name ends in `_<N>frames` |
-| File > Export enhancement maps | Baseline, Max, PeakEnh, RelEnh, TTP (s), AUC as NIfTI |
+| File > Export enhancement maps / Parameters > Export parameter maps | Baseline, Max and every parameter (PE, RE, WIS, WOS, AUC, TTP; PE, WIS, WOS, AUC also /SSS) as NIfTI |
+| Parameters > Export statistics + voxel values | parameter statistics per tumor ROI and voxel values (see above) |
 | (binning) | binned series everywhere; JSON sidecar and Info sheet record bin size, raw frames per frame and dropped frames |
 | Save / Load ROIs | `.mat` session (ROI names, colors, voxels in native indices, geometry); reloads onto any reconstruction with the same matrix, e.g. the 8-, 16- and 32-spoke versions of one scan |
 | Import mask | label NIfTI from this tool or edited elsewhere; axis permutations/flips are corrected from the header; names/colors are read from `_labels.txt` if present |
@@ -294,6 +371,8 @@ Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a Gr
 | `gdce_nifti_write.m`, `gdce_nifti_read.m` | NIfTI-1 I/O (.nii/.nii.gz), streaming 4D writes |
 | `gdce_write_dce_nifti.m` | series -> NIfTI + JSON sidecar |
 | `gdce_export_timeseries.m` | voxel time series -> .xlsx/.csv |
+| `gdce_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
+| `gdce_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
 | `gdce_reorient_to_ref.m` | mask import reorientation |
 | `gdce_detect_sss.m` | automatic superior sagittal sinus ROI |
 | `gdce_convert_mat2nifti.m` | batch .mat -> NIfTI |
@@ -312,6 +391,10 @@ Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a Gr
   near the torcula and with a hypoplastic or asymmetric confluence.
 - Signal is the magnitude of the reconstruction (normalized to the global maximum when
   ReadData.m normalization is on); no T1 mapping or concentration conversion is done.
+  Parameters are therefore semi-quantitative (signal-based): compare absolute values only
+  between scans with the same protocol and scaling, or use the /SSS values.
+- Voxel-wise slopes are noisy at high temporal resolution; binning or the ROI-curve values
+  are more robust.
 - Fill holes is 2D (slice by slice). Grow from crosshair is the connected-component tool
   (6-connectivity, bounded by the max distance).
 - Binning averages magnitudes of reconstructed frames; it does not re-reconstruct with
