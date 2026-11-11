@@ -146,9 +146,21 @@ M = false(np); M(linS) = true;
 [~, ~, kk] = ind2sub(np, linS);
 ok = numel(linS) > 50 && all(tr.SSS(linS)) && ~any(M(:) & (tr.TS(:) | tr.SS(:) | tr.SV(:) | tr.AR(:)));
 nfail = nfail + check('SSS ROI only in SSS (not TS/straight/scalp/artery)', ok, numel(linS));
-ok = abs(infoS.TorculaSlice - tr.TorculaZ) <= 2 && min(kk) >= infoS.TorculaSlice + 5 && max(kk) <= tr.TorculaZ + 30 ...
-    && abs(infoS.Centroid(1) - 50) < 2;
-nfail = nfail + check('SSS ROI just above torcula, midline', ok, infoS.TorculaSlice);
+ok = abs(infoS.TorculaSlice - tr.TorculaZ) <= 2 && min(kk) >= infoS.TorculaSlice + 5 && min(kk) <= tr.TorculaZ + 10 ...
+    && abs(infoS.Centroid(1) - 50) < 2 && isequal(unique(kk)', min(kk):max(kk));
+nfail = nfail + check('SSS ROI starts just above torcula, midline, contiguous', ok, infoS.TorculaSlice);
+% extends up the posterior SSS toward the vertex: 50 mm above the thickest slice, or until the
+% sinus turns forward (phantom SSS: posterior edge moves forward > 1 mm per mm above z ~ 70)
+ok = max(kk) >= infoS.ThickestSlice + 40 && max(kk) <= 75 && numel(linS) > 2000 && ...
+    ~isempty(strfind(infoS.StopReason, 'forward'));
+nfail = nfail + check('SSS ROI extends superiorly toward the vertex', ok, max(kk));
+[linV, infoV] = graspilot_detect_sss(Dp, 'SuperiorMM', 20);
+[~, ~, kv] = ind2sub(np, linV);
+[linB, infoB] = graspilot_detect_sss(Dp, 'SlabMM', 5);
+[~, ~, kB] = ind2sub(np, linB);
+ok = max(kv) == infoV.ThickestSlice + 20 && all(tr.SSS(linV)) && max(kB) - min(kB) <= 4 && ...
+    all(ismember(linB, linS)) && ~isempty(strfind(infoV.StopReason, 'SuperiorMM'));
+nfail = nfail + check('SSS ROI extent options (SuperiorMM, SlabMM)', ok, max(kv));
 [Dp2, tr2] = graspilot_sss_phantom(25);
 [lin2, info2] = graspilot_detect_sss(Dp2);
 ok = numel(lin2) > 50 && all(tr2.SSS(lin2)) && isnan(info2.TorculaSlice);

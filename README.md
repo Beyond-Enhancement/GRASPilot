@@ -11,7 +11,7 @@ stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_a
 
 ![Subtraction map (last - first frame) with the enhancing rim grown from the crosshair](docs/screenshot_subtraction.png)
 
-![Auto SSS: ROI in the posterior superior sagittal sinus just above the torcula](docs/screenshot_sss.png)
+![Auto SSS: ROI along the posterior superior sagittal sinus above the torcula](docs/screenshot_sss.png)
 
 ![Wash-in slope normalized to the SSS as a colour map](docs/screenshot_params.png)
 
@@ -21,8 +21,9 @@ stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_a
 Top: frame view after 2x temporal binning with the SSS control and the tumor ROI. Middle:
 subtraction map (frame 60 - frame 1), threshold preview in green and the enhancing rim grown
 from the crosshair (necrotic core excluded). Bottom: Auto SSS on a venous phantom - the ROI
-(red) sits in the posterior SSS just above the torcula; the straight sinus (anterior to it on
-the axial view), the transverse sinuses and a scalp vein are excluded. Last two: peak
+(red) follows the posterior SSS from just above the torcula toward the vertex (sagittal
+view); the straight sinus (anterior to it on the axial view), the transverse sinuses and a
+scalp vein are excluded. Last two: peak
 wash-in slope / SSS as a jet colour map with the ROI outlines (analysis limited to the first
 100 s, orange line on the curves), and the Parameters window with the tumor ROI statistics.*
 
@@ -131,8 +132,9 @@ Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
 ## Automatic superior sagittal sinus ROI (Auto SSS)
 
 **Auto SSS** (ROI panel, or Edit > Detect superior sagittal sinus) places the control ROI
-`SSS (auto)` in the thickest part of the posterior superior sagittal sinus just above the
-torcula, excluding the transverse sinuses and the straight sinus. Requires correct
+`SSS (auto)` in the posterior superior sagittal sinus, from its thickest part just above the
+torcula up along the sinus toward the vertex, excluding the transverse sinuses and the
+straight sinus. Requires correct
 orientation (LPS etc., see Orientation).
 
 1. Peak enhancement map (maximum over time minus baseline) and a head mask (Otsu on the
@@ -147,15 +149,20 @@ orientation (LPS etc., see Orientation).
    (midline SSS only), the SSS cross-section is its most posterior part against the
    occipital inner table, no deeper front-to-back than it is wide (excludes the straight
    sinus, which joins from anterior). The thickest cross-section (3-slice average) is chosen.
-5. ROI: 5 mm of slices centred there; in each, the cross-section voxels enhancing >= 50% of
-   their maximum (partial-volume edges excluded).
+5. ROI: from 2 mm below the thickest slice up to 50 mm above it, following the sinus slice
+   by slice. It stops earlier where the sinus cross-section is lost, wider than 20 mm or
+   not continuous with the slice below, or where the sinus turns forward over the vertex
+   (posterior edge moving forward by more than 1 mm per mm of height: axial cuts become
+   oblique and partial-volumed). In each slice, the cross-section voxels enhancing >= 50%
+   of their maximum (partial-volume edges excluded).
 
 The crosshair moves to the ROI and the status bar reports the torcula slice, ROI slices,
-voxels and volume. Running it again replaces `SSS (auto)`; Undo removes it; the eraser and
+extent, voxels, volume and why the ROI ends where it does. Running it again replaces `SSS (auto)`; Undo removes it; the eraser and
 brush can edit it. If the transverse sinuses are not in the slab, the lowest posterior SSS
 segment is used and the status bar says so. Always check the ROI on the three views.
 Scripting: `[lin, info] = graspilot_detect_sss(D)` (options for every threshold in `help
-graspilot_detect_sss`).
+graspilot_detect_sss`; e.g. `'SuperiorMM', 30` for a shorter ROI, `'SlabMM', 5` for the former
+5 mm slab at the thickest slice).
 
 ## Enhancing tumor from the subtraction map
 

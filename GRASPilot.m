@@ -1405,8 +1405,8 @@ classdef GRASPilot < handle
         end
 
         function r = autoSSS(obj)
-            % detect the posterior superior sagittal sinus above the torcula
-            % and put it in the ROI "SSS (auto)" (replaced on each run)
+            % detect the posterior superior sagittal sinus from above the torcula
+            % toward the vertex and put it in the ROI "SSS (auto)" (replaced on each run)
             r = 0;
             if ~obj.requireData(), return; end
             wb = obj.wbOpen('Detecting the superior sagittal sinus...');
@@ -2036,8 +2036,8 @@ classdef GRASPilot < handle
             P = obj.H.roiPanel; C = obj.Col;
             obj.ctl(P, 8, 7, 40, 18, 'text', 'ROIs', 'FontWeight', 'bold', 'ForegroundColor', C.accent);
             obj.ctl(P, 50, 5, 76, 22, 'pushbutton', 'Auto SSS', ...
-                'TooltipString', ['Detect the posterior superior sagittal sinus above the torcula ' ...
-                '(excludes transverse and straight sinuses) and place the ROI "SSS (auto)"'], ...
+                'TooltipString', ['Detect the posterior superior sagittal sinus from just above the torcula ' ...
+                'up toward the vertex (excludes transverse and straight sinuses) and place the ROI "SSS (auto)"'], ...
                 'Callback', @(s, e) obj.autoSSS());
             obj.ctl(P, 130, 5, 64, 22, 'pushbutton', '+ SSS', ...
                 'TooltipString', 'Add an empty superior sagittal sinus control ROI to draw by hand', ...
@@ -3607,7 +3607,8 @@ classdef GRASPilot < handle
                 '  presets (LPS = scanner order of the GRASP recon), Rotate 90 / Flip buttons'
                 ''
                 'SSS CONTROL ROI'
-                '  Auto SSS: posterior superior sagittal sinus just above the torcula'
+                '  Auto SSS: posterior superior sagittal sinus from just above the torcula'
+                '  up toward the vertex (up to 50 mm above its thickest part)'
                 '  (transverse and straight sinuses excluded); check and edit as needed'
                 ''
                 'SEMI-QUANTITATIVE PARAMETERS (Analysis menu or Parameters... button)'

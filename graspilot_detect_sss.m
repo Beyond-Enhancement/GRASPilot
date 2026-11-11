@@ -4,9 +4,10 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   [lin, info] = graspilot_detect_sss(D)
 %   [lin, info] = graspilot_detect_sss(D, 'Name', Value, ...)
 %
-%   Returns canonical linear indices of an ROI in the thickest part of the
-%   posterior superior sagittal sinus (SSS) above the torcula (confluence of
-%   sinuses), excluding the transverse sinuses and the straight sinus.
+%   Returns canonical linear indices of an ROI in the posterior superior
+%   sagittal sinus (SSS): from its thickest part above the torcula
+%   (confluence of sinuses) up along the sinus toward the vertex, excluding
+%   the transverse sinuses and the straight sinus.
 %   Orientation must be correct (canonical axes R->L, A->P, I->S; see
 %   GRASPilotData.setAxisCodes): the method relies on "posterior", "midline"
 %   and "superior".
@@ -28,30 +29,47 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   5. candidate slices GapMM .. GapMM+SearchMM above the torcula where
 %      the structure is no wider than MaxWidthMM (midline SSS only);
 %      thickest = largest posterior cross-section (3-slice average)
-%   6. ROI = SlabMM of slices centred on the thickest slice; in each slice
-%      the cross-section voxels enhancing >= Core x their maximum
-%      (excludes partial-volume edge voxels)
+%   6. ROI slices: from InferiorMM below the thickest slice (not closer to
+%      the torcula than GapMM) up to SuperiorMM above it, following the
+%      sinus slice by slice. The extension stops early where the sinus
+%      cross-section is missing or wider than MaxWidthMM, no longer overlaps
+%      the cross-section of the slice below, or where the sinus turns
+%      forward over the vertex (its posterior edge moving anteriorly by more
+%      than MaxSlope mm per mm of height over >= 4 mm: the axial cut
+%      becomes oblique and partial-volumed)
+%   7. in each ROI slice the cross-section voxels enhancing >= Core x their
+%      maximum (excludes partial-volume edge voxels)
 %
 %   Options (defaults): 'BaseFrames' (1:min(5,T)), 'MidlineMM' (10),
 %   'LateralMM' (50), 'RelThr' (0.35), 'PosteriorMM' (12),
 %   'TorculaWidthMM' (30), 'MaxWidthMM' (20), 'GapMM' (5), 'SearchMM' (35),
-%   'SlabMM' (5), 'Core' (0.5), 'Seeds' (6), 'Progress' ([])
+%   'InferiorMM' (2), 'SuperiorMM' (50), 'MaxSlope' (1), 'Core' (0.5),
+%   'Seeds' (6), 'Progress' ([]). 'SlabMM' (empty) gives the former ROI:
+%   SlabMM of slices centred on the thickest slice (sets InferiorMM and
+%   SuperiorMM to SlabMM/2).
 %
-%   info: Seed, TorculaSlice (NaN if not found), Slices, NVoxels, VolumeML,
-%   Centroid [i j k], MeanPeakEnh, Width and Area per slice, Message.
+%   info: Seed, TorculaSlice (NaN if not found), ThickestSlice, Slices,
+%   ExtentMM, StopReason, NVoxels, VolumeML, Centroid [i j k], MeanPeakEnh,
+%   Width and Area per slice, Message.
 
 p = struct('BaseFrames', [], 'MidlineMM', 10, 'LateralMM', 50, 'RelThr', 0.35, ...
     'PosteriorMM', 12, 'TorculaWidthMM', 30, 'MaxWidthMM', 20, 'GapMM', 5, 'SearchMM', 35, ...
-    'SlabMM', 5, 'Core', 0.5, 'Seeds', 6, 'Progress', []);
+    'InferiorMM', 2, 'SuperiorMM', 50, 'MaxSlope', 1, 'SlabMM', [], 'Core', 0.5, 'Seeds', 6, ...
+    'Progress', []);
 for i = 1:2:numel(varargin)
     fn = fieldnames(p);
     m = find(strcmpi(fn, varargin{i}), 1);
     if isempty(m), error('graspilot_detect_sss:opt', 'Unknown option %s.', varargin{i}); end
     p.(fn{m}) = varargin{i + 1};
 end
+if ~isempty(p.SlabMM)
+    p.InferiorMM = p.SlabMM / 2;
+    p.SuperiorMM = p.SlabMM / 2;
+end
 lin = zeros(0, 1);
-info = struct('Seed', [], 'TorculaSlice', NaN, 'Slices', [], 'NVoxels', 0, 'VolumeML', 0, ...
-    'Centroid', [], 'MeanPeakEnh', NaN, 'Width', [], 'Area', [], 'Message', '');
+info = struct('Seed', [], 'TorculaSlice', NaN, 'ThickestSlice', NaN, 'Slices', [], 'ExtentMM', 0, ...
+    'StopReason', '', 'NVoxels', 0, 'VolumeML', 0, 'Centroid', [], 'MeanPeakEnh', NaN, 'Width', [], ...
+    'Area', [], 'Message', '');
 
 n = D.canonSize();
 vox = D.canonVox();
@@ -109,6 +127,7 @@ info.Seed = bestSeed;
 
 % 3. per-slice width and posterior cross-section
 W = zeros(1, n(3)); A = zeros(1, n(3));
+Wb = zeros(1, n(3)); Yp = NaN(1, n(3));      % cross-section width (mm), posterior edge (voxel)
 blob = cell(1, n(3));
 pr = round(p.PosteriorMM / vox(2));
 for k = 1:n(3)
@@ -135,6 +154,8 @@ for k = 1:n(3)
     end
     blob{k} = find(R2);
     A(k) = numel(blob{k}) * vox(1) * vox(2);
+    Wb(k) = wd * vox(1);
+    Yp(k) = yp;
 end
 info.Width = W;
 info.Area = A;
@@ -165,11 +186,41 @@ As(ok) = A(ok);
 Asm = conv(As, ones(1, 3) / 3, 'same');
 [~, i] = max(Asm(ok));
 kb = ok(i);
-h = max(0, round((p.SlabMM / vox(3) - 1) / 2));
-ks = ok(ok >= kb - h & ok <= kb + h);
 
-% 6. core voxels of the cross-section in those slices
+info.ThickestSlice = kb;
+kl = max(k0, kb - round(p.InferiorMM / vox(3)));
+ks = kl:kb;
+ks = ks(ismember(ks, ok));
+
+% 6. follow the sinus superiorly toward the vertex
 np = n(1) * n(2);
+kw = kb + floor(p.SuperiorMM / vox(3) + 1e-9);   % wanted top slice
+kt = min(n(3), kw);
+span = max(3, ceil(4 / vox(3)));                 % slices over which the forward turn is measured
+why = '';
+for k = kb + 1:kt
+    if A(k) == 0
+        why = 'sinus not found higher up'; break
+    end
+    if Wb(k) > p.MaxWidthMM
+        why = 'sinus cross-section wider than MaxWidthMM'; break
+    end
+    if ~overlaps(blob{k}, blob{k - 1}, [n(1) n(2)])
+        why = 'cross-section not continuous with the slice below'; break
+    end
+    j = k - span;
+    if j >= ks(1) && (Yp(j) - Yp(k)) * vox(2) / (span * vox(3)) > p.MaxSlope
+        why = 'sinus turning forward over the vertex'; break
+    end
+    ks(end + 1) = k; %#ok<AGROW>
+end
+if isempty(why) && kw > kb
+    if kt < kw, why = 'top of the imaged volume';
+    else, why = sprintf('%g mm above the thickest slice (SuperiorMM)', p.SuperiorMM); end
+end
+info.StopReason = why;
+
+% 7. core voxels of the cross-section in those slices
 for k = ks
     l2 = blob{k};
     e = E(l2 + (k - 1) * np);
@@ -183,12 +234,24 @@ for k = ks
 end
 [ii, jj, kk] = ind2sub(n, lin);
 info.Slices = ks;
+info.ExtentMM = numel(ks) * vox(3);
 info.NVoxels = numel(lin);
 info.VolumeML = numel(lin) * prod(vox) / 1000;
 info.Centroid = [mean(ii) mean(jj) mean(kk)];
 info.MeanPeakEnh = mean(E(lin));
-info.Message = sprintf(['SSS ROI: %d voxels (%.3f mL) on slices %d-%d, thickest at slice %d ' ...
-    '(%.0f mm2). %s'], numel(lin), info.VolumeML, min(ks), max(ks), kb, A(kb), tmsg);
+info.Message = sprintf(['SSS ROI: %d voxels (%.3f mL) on slices %d-%d (%.0f mm), from the thickest ' ...
+    'slice %d (%.0f mm2) up toward the vertex. %s'], numel(lin), info.VolumeML, min(ks), max(ks), ...
+    info.ExtentMM, kb, A(kb), tmsg);
+if ~isempty(why), info.Message = sprintf('%s Upper end: %s.', info.Message, why); end
+end
+
+function tf = overlaps(a, b, n2)
+% 2D cross-sections (linear indices in a slice) touch or overlap
+if isempty(a) || isempty(b), tf = false; return; end
+M = false(n2);
+M(b) = true;
+M = M | circshift(M, [1 0]) | circshift(M, [-1 0]) | circshift(M, [0 1]) | circshift(M, [0 -1]);
+tf = any(M(a));
 end
 
 function th = otsu(vals)
