@@ -1,14 +1,14 @@
-function r = gdce_validate_readdata(matFile, slices, frames, coefVar, basisVar)
-%GDCE_VALIDATE_READDATA Check the viewer's frames against ReadData.m on a real file.
+function r = graspilot_validate_readdata(matFile, slices, frames, coefVar, basisVar)
+%GRASPILOT_VALIDATE_READDATA Check the viewer's frames against ReadData.m on a real file.
 %
-%   gdce_validate_readdata('recon.mat')                     3 slices, all frames
-%   gdce_validate_readdata('recon.mat', [10 40 70], 1:10:150)
-%   r = gdce_validate_readdata(..., coefVar, basisVar)      other variable names
+%   graspilot_validate_readdata('recon.mat')                     3 slices, all frames
+%   graspilot_validate_readdata('recon.mat', [10 40 70], 1:10:150)
+%   r = graspilot_validate_readdata(..., coefVar, basisVar)      other variable names
 %
 %   Runs the original ReadData.m arithmetic (TempPCASub adjoint, global
 %   maximum over all slices and frames before CropImg) slice by slice, so
 %   the full 4D array is never built, and compares it with
-%   GraspData.nativeSlice for the chosen slices/frames. Differences should
+%   GRASPilotData.nativeSlice for the chosen slices/frames. Differences should
 %   be at single-precision rounding level (~1e-7 relative to the maximum).
 
 if nargin < 4 || isempty(coefVar), coefVar = 'vk_all'; end
@@ -43,8 +43,8 @@ for ii = 1:nz
     if ~isempty(k), ref{k} = CropImg(d, nxnew, nxnew); end
 end
 
-fprintf('Building GraspData ...\n');
-D = GraspData.fromSubspace(vk_all, basis_all);
+fprintf('Building GRASPilotData ...\n');
+D = GRASPilotData.fromSubspace(vk_all, basis_all);
 if nargin < 3 || isempty(frames), frames = 1:D.NT; end
 emax = 0;
 for k = 1:numel(slices)

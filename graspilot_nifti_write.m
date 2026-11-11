@@ -1,8 +1,8 @@
-function gdce_nifti_write(fname, src, hdr, progress)
-%GDCE_NIFTI_WRITE Write a NIfTI-1 single-file volume (.nii or .nii.gz).
+function graspilot_nifti_write(fname, src, hdr, progress)
+%GRASPILOT_NIFTI_WRITE Write a NIfTI-1 single-file volume (.nii or .nii.gz).
 %
-%   gdce_nifti_write(fname, src, hdr)
-%   gdce_nifti_write(fname, src, hdr, progress)
+%   graspilot_nifti_write(fname, src, hdr)
+%   graspilot_nifti_write(fname, src, hdr, progress)
 %
 %   src  numeric 3D/4D array, or a function handle f(t) that returns frame
 %        t (3D array) for t = 1..nt. Frames are streamed to disk one at a
@@ -73,7 +73,7 @@ end
 
 fid = fopen(target, 'w', 'ieee-le');
 if fid < 0
-    error('gdce_nifti_write:open', 'Cannot open %s for writing.', target);
+    error('graspilot_nifti_write:open', 'Cannot open %s for writing.', target);
 end
 cleanup = onCleanup(@() closeIfOpen(fid));
 fwrite(fid, H, 'uint8');
@@ -86,7 +86,7 @@ for t = 1:nt
         vol = src;
     end
     if numel(vol) ~= prod(dim(1:3))
-        error('gdce_nifti_write:size', 'Frame %d has %d voxels, expected %d.', t, numel(vol), prod(dim(1:3)));
+        error('graspilot_nifti_write:size', 'Frame %d has %d voxels, expected %d.', t, numel(vol), prod(dim(1:3)));
     end
     fwrite(fid, cast(vol, prec), prec);
     if ~isempty(progress)
@@ -132,7 +132,7 @@ switch lower(name)
     case 'double',  code = 64;  bitpix = 64; prec = 'double';
     case 'uint16',  code = 512; bitpix = 16; prec = 'uint16';
     otherwise
-        error('gdce_nifti_write:type', 'Unsupported datatype %s.', name);
+        error('graspilot_nifti_write:type', 'Unsupported datatype %s.', name);
 end
 end
 

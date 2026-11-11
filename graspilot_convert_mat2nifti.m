@@ -1,13 +1,13 @@
-function outFile = gdce_convert_mat2nifti(matFile, outFile, varargin)
-%GDCE_CONVERT_MAT2NIFTI Batch-convert a GRASP .mat reconstruction to 4D NIfTI.
+function outFile = graspilot_convert_mat2nifti(matFile, outFile, varargin)
+%GRASPILOT_CONVERT_MAT2NIFTI Batch-convert a GRASP .mat reconstruction to 4D NIfTI.
 %
-%   gdce_convert_mat2nifti('recon.mat')                 -> recon_dce.nii.gz
-%   gdce_convert_mat2nifti('recon.mat', 'out.nii.gz', 'Name', Value, ...)
+%   graspilot_convert_mat2nifti('recon.mat')                 -> recon_dce.nii.gz
+%   graspilot_convert_mat2nifti('recon.mat', 'out.nii.gz', 'Name', Value, ...)
 %
-%   Options (in addition to all GraspData.fromFile options):
+%   Options (in addition to all GRASPilotData.fromFile options):
 %   'AxisCodes'  direction of increasing rows, cols, slices ('LPS' =
 %                scanner order of the GRASP reconstructions; 'PLS' = data1
-%                slices already radiological; see GraspData)    ('LPS')
+%                slices already radiological; see GRASPilotData)    ('LPS')
 %   'Plane', 'SwapInPlane', 'Flip'  older alternative to AxisCodes
 %   'Voxel'      [row col slice] mm                    ([1 1 1])
 %   'dt'         s per frame                           (NaN)
@@ -16,13 +16,13 @@ function outFile = gdce_convert_mat2nifti(matFile, outFile, varargin)
 %   'Frames'     frame indices to write, after binning (all)
 %
 %   Uses exactly the same frame synthesis, orientation and affine as the
-%   viewer, so masks exported from GraspDCEViewer overlay this file. A JSON
+%   viewer, so masks exported from GRASPilot overlay this file. A JSON
 %   sidecar with timing and provenance is written next to the image.
 %
 %   Example (loop over 8/16/32-spoke reconstructions):
 %     f = dir('*.mat');
 %     for k = 1:numel(f)
-%         gdce_convert_mat2nifti(f(k).name, '', 'Voxel', [0.94 0.94 2], 'dt', 3.3);
+%         graspilot_convert_mat2nifti(f(k).name, '', 'Voxel', [0.94 0.94 2], 'dt', 3.3);
 %     end
 
 if nargin < 2 || isempty(outFile)
@@ -43,7 +43,7 @@ for i = 1:2:numel(varargin)
 end
 prog = @(f, msg) fprintf('  %5.1f%%  %s\n', 100 * f, msg);
 fprintf('Loading %s\n', matFile);
-D = GraspData.fromFile(matFile, pass{:});
+D = GRASPilotData.fromFile(matFile, pass{:});
 if ~isempty(g.Plane)
     D.setOrientation(g.Plane, g.SwapInPlane, g.Flip);
 else
@@ -55,6 +55,6 @@ D.setBinning(g.BinSize);
 D.t0 = g.t0;
 fr = g.Frames;
 if isempty(fr), fr = 1:D.NT; end
-gdce_write_dce_nifti(D, outFile, fr, prog);
+graspilot_write_dce_nifti(D, outFile, fr, prog);
 fprintf('Wrote %s\n', outFile);
 end

@@ -1,15 +1,15 @@
-function nfail = gdce_selftest_gui_sss(out)
-%GDCE_SELFTEST_GUI_SSS Auto SSS button and orientation check on the venous phantom.
+function nfail = graspilot_selftest_gui_sss(out)
+%GRASPILOT_SELFTEST_GUI_SSS Auto SSS button and orientation check on the venous phantom.
 nfail = 0;
-[D, tr] = gdce_sss_phantom();
-app = GraspDCEViewer(D);
+[D, tr] = graspilot_sss_phantom();
+app = GRASPilot(D);
 app.Quiet = true;
 cleanup = onCleanup(@() app.close(true));
 nfail = nfail + check('orientation check passes (LPS phantom)', app.checkOrientation(), 0);
 app.addTumor();
 k = app.autoSSS();
 lin = find(app.Masks{k});
-[ref, info] = gdce_detect_sss(D, 'BaseFrames', app.BaseFrames(1):app.BaseFrames(2));
+[ref, info] = graspilot_detect_sss(D, 'BaseFrames', app.BaseFrames(1):app.BaseFrames(2));
 nfail = nfail + check('Auto SSS button creates "SSS (auto)" ROI', k > 0 && strcmp(app.ROIs(k).Name, 'SSS (auto)') ...
     && isequal(sort(lin), sort(ref)) && all(tr.SSS(lin)), numel(lin));
 nfail = nfail + check('crosshair moved to the SSS ROI', isequal(app.Pos, round(info.Centroid)), 0);
@@ -39,9 +39,9 @@ app.beginAction(); app.setVoxels(t, find(M), true); app.commitAction('box'); app
 ok = app.computeParams();
 lin = find(app.Masks{t});
 bf = app.BaseFrames(1):app.BaseFrames(2);
-P = gdce_curve_params(double(D.timecourses(lin)), D.paramTimes(), bf, D.ParamOpts);
+P = graspilot_curve_params(double(D.timecourses(lin)), D.paramTimes(), bf, D.ParamOpts);
 app.computeStats(k);
-R = gdce_curve_params(app.ROIs(k).Stats.mean, D.paramTimes(), bf, D.ParamOpts);
+R = graspilot_curve_params(app.ROIs(k).Stats.mean, D.paramTimes(), bf, D.ParamOpts);
 e = 0;
 pairs = {'PE', 'PE', 1; 'RE', 'RE', 1; 'WIS', 'WashIn', 1; 'WOS', 'WashOut', 1; 'AUC', 'AUC', 1; ...
     'TTP', 'TTP', 1; 'PE_SSS', 'PE', R.PE; 'WIS_SSS', 'WashIn', R.WashIn; 'WOS_SSS', 'WashOut', R.WashOut; ...
@@ -55,9 +55,9 @@ nfail = nfail + check('parameter values (absolute and /SSS)', ok && e < 1e-4, e)
 nfail = nfail + check('SSS reference: PE > 0, washout < 0', R.PE > 0.5 && R.WashOut < 0, R.PE);
 [hdr, rows] = app.paramStatsTable();
 ir = find(strcmp(rows(:, 2), 'Peak enhancement / SSS'));
-d = GraspDCEViewer.describeVals(P.PE / R.PE);
+d = GRASPilot.describeVals(P.PE / R.PE);
 app.computeStats(t);
-cm = gdce_curve_params(app.ROIs(t).Stats.mean, D.paramTimes(), bf, D.ParamOpts);
+cm = graspilot_curve_params(app.ROIs(t).Stats.mean, D.paramTimes(), bf, D.ParamOpts);
 okT = size(rows, 1) == numel(app.ParamKeys) + 3 && all(strcmp(rows(:, 1), app.ROIs(t).Name)) && numel(ir) == 1 && ...
     abs(rows{ir, 5} - mean(P.PE / R.PE)) < 1e-5 && abs(rows{ir, 7} - median(P.PE / R.PE)) < 1e-5 && ...
     rows{ir, 4} == numel(lin) && abs(rows{ir, 6} - std(P.PE / R.PE)) < 1e-5 && ...
@@ -117,7 +117,7 @@ if exist('writecell', 'file') == 2
     nfail = nfail + check('parameter export (xlsx)', exist(fx{1}, 'file') == 2, 0);
 end
 app.exportMaps(out, 'pmaps');
-[V, hv] = gdce_nifti_read(fullfile(out, 'pmaps_WOS_SSS.nii.gz'));
+[V, hv] = graspilot_nifti_read(fullfile(out, 'pmaps_WOS_SSS.nii.gz'));
 Wm = double(D.canonMap('WashOut')) / R.WashOut;
 e = max(abs(double(V(lin)) - Wm(lin)));
 nfail = nfail + check('parameter maps NIfTI (WOS / SSS)', e < 1e-4 && isequal(hv.Dim(1:3), n), e);
@@ -140,13 +140,13 @@ nfail = nfail + check('curve-type fractions sum to 100%', numel(ic) == 3 && abs(
     abs(fr(1) - 100 * mean(P.CurveType == 1)) < 1e-9, fr(1));
 app.computeParams('EndTime', 30);                    % frames at 2, 6, ..., 30 s -> 8 frames
 ke = D.analysisEnd();
-P8 = gdce_curve_params(TC(:, 1:ke), tt(1:ke), bf);
+P8 = graspilot_curve_params(TC(:, 1:ke), tt(1:ke), bf);
 v = app.paramValues('AUC', lin); v2 = app.paramValues('WOS', lin);
 e = max(max(abs(v - P8.AUC)) / max(abs(P8.AUC)), max(abs(v2 - P8.WashOut)) / max(abs(P8.WashOut)));
 nfail = nfail + check('analysis endpoint in seconds (first 30 s)', tt(ke) <= 30 && tt(ke + 1) > 30 && e < 1e-4, ke);
 app.computeParams('EndTime', Inf, 'EndFrame', 9);
 v = app.paramValues('PE', lin);
-P9 = gdce_curve_params(TC(:, 1:9), tt(1:9), bf);
+P9 = graspilot_curve_params(TC(:, 1:9), tt(1:9), bf);
 nfail = nfail + check('analysis endpoint in frames (first 9)', D.analysisEnd() == 9 && ...
     max(abs(v - P9.PE)) / max(abs(P9.PE)) < 1e-4, D.analysisEnd());
 app.computeParams('EndFrame', Inf, 'WashIn', 'sss');

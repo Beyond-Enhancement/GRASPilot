@@ -1,8 +1,8 @@
-function gdce_write_dce_nifti(D, outFile, frames, progress)
-%GDCE_WRITE_DCE_NIFTI Write frames of a GraspData series to NIfTI + JSON sidecar.
+function graspilot_write_dce_nifti(D, outFile, frames, progress)
+%GRASPILOT_WRITE_DCE_NIFTI Write frames of a GRASPilotData series to NIfTI + JSON sidecar.
 %
-%   gdce_write_dce_nifti(D, outFile)                all frames, 4D float32
-%   gdce_write_dce_nifti(D, outFile, frames, progress)
+%   graspilot_write_dce_nifti(D, outFile)                all frames, 4D float32
+%   graspilot_write_dce_nifti(D, outFile, frames, progress)
 
 if nargin < 3 || isempty(frames), frames = 1:D.NT; end
 if nargin < 4, progress = []; end
@@ -18,7 +18,7 @@ end
 hdr.Affine = D.affine();
 hdr.Datatype = 'float32';
 hdr.Descrip = 'GRASPilot';
-gdce_nifti_write(outFile, @(i) D.canonVolume(frames(i)), hdr, progress);
+graspilot_nifti_write(outFile, @(i) D.canonVolume(frames(i)), hdr, progress);
 
 % JSON sidecar
 J = struct();
@@ -60,6 +60,6 @@ try
     fprintf(fid, '%s', txt);
     fclose(fid);
 catch err
-    warning('gdce:json', 'JSON sidecar not written: %s', err.message);
+    warning('graspilot:json', 'JSON sidecar not written: %s', err.message);
 end
 end

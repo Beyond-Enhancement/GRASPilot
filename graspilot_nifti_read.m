@@ -1,7 +1,7 @@
-function [img, hdr] = gdce_nifti_read(fname)
-%GDCE_NIFTI_READ Read a NIfTI-1 single-file volume (.nii or .nii.gz).
+function [img, hdr] = graspilot_nifti_read(fname)
+%GRASPILOT_NIFTI_READ Read a NIfTI-1 single-file volume (.nii or .nii.gz).
 %
-%   [img, hdr] = gdce_nifti_read(fname)
+%   [img, hdr] = graspilot_nifti_read(fname)
 %
 %   hdr fields: Dim, Vox, dt, Affine (voxel 0-based -> RAS mm, from sform
 %   if set, else qform, else pixdim), Datatype, SformCode, QformCode.
@@ -19,7 +19,7 @@ end
 cleaner = onCleanup(@() removeTmp(tmpDir));
 
 fid = fopen(f, 'r', 'ieee-le');
-if fid < 0, error('gdce_nifti_read:open', 'Cannot open %s.', fname); end
+if fid < 0, error('graspilot_nifti_read:open', 'Cannot open %s.', fname); end
 sz = fread(fid, 1, 'int32');
 if sz ~= 348
     fclose(fid);
@@ -27,7 +27,7 @@ if sz ~= 348
     sz = fread(fid, 1, 'int32');
     if sz ~= 348
         fclose(fid);
-        error('gdce_nifti_read:format', '%s is not a NIfTI-1 file.', fname);
+        error('graspilot_nifti_read:format', '%s is not a NIfTI-1 file.', fname);
     end
 end
 fseek(fid, 40, 'bof');  dim = fread(fid, 8, 'int16')';
@@ -46,7 +46,7 @@ fseek(fid, 344, 'bof');
 magic = fread(fid, 4, 'uint8=>char')';
 if ~strncmp(magic, 'n+1', 3)
     fclose(fid);
-    error('gdce_nifti_read:format', 'Only single-file NIfTI-1 (.nii) is supported.');
+    error('graspilot_nifti_read:format', 'Only single-file NIfTI-1 (.nii) is supported.');
 end
 
 nd = max(1, min(7, dim(1)));
@@ -56,7 +56,7 @@ fseek(fid, round(voxOffset), 'bof');
 img = fread(fid, prod(dims), [prec '=>' prec]);
 fclose(fid);
 if numel(img) ~= prod(dims)
-    error('gdce_nifti_read:size', 'File %s is truncated.', fname);
+    error('graspilot_nifti_read:size', 'File %s is truncated.', fname);
 end
 img = reshape(img, [dims 1 1]);
 if slope ~= 0 && ~(slope == 1 && inter == 0)
@@ -91,7 +91,7 @@ switch code
     case 512, p = 'uint16';
     case 768, p = 'uint32';
     otherwise
-        error('gdce_nifti_read:type', 'Unsupported NIfTI datatype %d.', code);
+        error('graspilot_nifti_read:type', 'Unsupported NIfTI datatype %d.', code);
 end
 end
 

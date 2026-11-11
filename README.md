@@ -29,15 +29,13 @@ wash-in slope / SSS as a jet colour map with the ROI outlines (analysis limited 
 ## Quick start
 
 ```matlab
-addpath('/path/to/GRASP_DCE_Viewer')
+addpath('/path/to/GRASPilot')
 GRASPilot                               % then File > Open .mat (or the Open button)
-GRASPilot('recon.mat')                  % same arguments as GraspDCEViewer below
-GraspDCEViewer                          % the class behind GRASPilot (used for scripting)
-GraspDCEViewer('recon.mat')             % opens the load dialog for this file
-GraspDCEViewer(vk_all, basis_all)       % variables already in the workspace
-GraspDCEViewer(data1)                   % output of ReadData.m ([nx ny t nz])
-GraspDCEViewer('recon.mat', 'Voxel', [1 1 1], 'dt', 3.3, 'NoDialog', true)
-GraspDCEViewer('recon.mat', 'BinSize', 2)   % average every 2 frames on load
+GRASPilot('recon.mat')             % opens the load dialog for this file
+GRASPilot(vk_all, basis_all)       % variables already in the workspace
+GRASPilot(data1)                   % output of ReadData.m ([nx ny t nz])
+GRASPilot('recon.mat', 'Voxel', [1 1 1], 'dt', 3.3, 'NoDialog', true)
+GRASPilot('recon.mat', 'BinSize', 2)   % average every 2 frames on load
 ```
 
 The load dialog lists the variables in the file, detects `vk_all`/`basis_all`, shows the
@@ -58,7 +56,7 @@ the cropped coefficients and synthesizes frames, slices, voxel time courses and 
 demand. A ~2 GB file therefore needs roughly 0.5 GB after loading (peak ~2.5 GB while
 reading), and the uncropped 4D array that ReadData.m builds is never created.
 
-`tests/gdce_validate_readdata('recon.mat')` re-runs the original ReadData.m arithmetic
+`tests/graspilot_validate_readdata('recon.mat')` re-runs the original ReadData.m arithmetic
 with your `@TempPCASub` class on a real file and reports the difference (expected
 ~1e-7, single-precision rounding). Basis arrays stored as `[slices K T]` or a single
 shared `[T K]` basis are also accepted.
@@ -156,8 +154,8 @@ The crosshair moves to the ROI and the status bar reports the torcula slice, ROI
 voxels and volume. Running it again replaces `SSS (auto)`; Undo removes it; the eraser and
 brush can edit it. If the transverse sinuses are not in the slab, the lowest posterior SSS
 segment is used and the status bar says so. Always check the ROI on the three views.
-Scripting: `[lin, info] = gdce_detect_sss(D)` (options for every threshold in `help
-gdce_detect_sss`).
+Scripting: `[lin, info] = graspilot_detect_sss(D)` (options for every threshold in `help
+graspilot_detect_sss`).
 
 ## Enhancing tumor from the subtraction map
 
@@ -233,7 +231,7 @@ Details: frame i of the binned series is the mean of raw frames (i-1)n+1 ... in,
 time is the mean of their times (bin centre). If the number of frames is not a multiple
 of n, the incomplete last bin is dropped (reported); View > Temporal binning can keep it as
 a shorter last bin instead. ROIs are not affected (they are spatial). Batch:
-`gdce_convert_mat2nifti(file, '', 'BinSize', n)`; scripting: `D.setBinning(n)`.
+`graspilot_convert_mat2nifti(file, '', 'BinSize', n)`; scripting: `D.setBinning(n)`.
 Binning averages reconstructed magnitude frames; it is not a reconstruction with more
 spokes per frame.
 
@@ -333,7 +331,7 @@ app.computeParams('EndTime', Inf, 'EndFrame', 100);     % or the first 100 frame
 [hdr, rows] = app.paramStatsTable();       % cell table as shown in the window
 app.setParamKey('WIS_SSS'); app.setParamDisplay(true); app.setParamCLim([0 2]);
 app.exportParams('tumor_parameters.xlsx');
-P = gdce_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
+P = graspilot_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 ```
 
 The parameter maps take about 50 MB of memory each for a 12-million-voxel volume (13 maps).
@@ -364,22 +362,22 @@ voxels per ROI, 16,384 columns) apply to `.xlsx`; use `.csv` for very large ROIs
 % batch conversion of every reconstruction in a folder to 4D NIfTI
 f = dir('*.mat');
 for k = 1:numel(f)
-    gdce_convert_mat2nifti(f(k).name, '', 'Voxel', [1 1 1], 'dt', 3.3);   % AxisCodes 'LPS' by default
+    graspilot_convert_mat2nifti(f(k).name, '', 'Voxel', [1 1 1], 'dt', 3.3);   % AxisCodes 'LPS' by default
 end
-gdce_convert_mat2nifti('recon_8spoke.mat', '', 'dt', 1.6, 'BinSize', 2);   % binned x2
+graspilot_convert_mat2nifti('recon_8spoke.mat', '', 'dt', 1.6, 'BinSize', 2);   % binned x2
 
 % data model only
-D = GraspData.fromFile('recon.mat');
+D = GRASPilotData.fromFile('recon.mat');
 D.setAxisCodes('LPS'); D.VoxNative = [1 1 1]; D.dt = 3.3;
 D.setBinning(2);                   % optional: average frame pairs
 V  = D.canonVolume(40);            % 3D frame 40 (canonical order)
 S  = D.canonSubtraction(D.NT, 1);  % last - first
 TC = D.timecourses(find(mask));    % voxel x frame matrix for a canonical mask
-gdce_export_timeseries(D, {mask}, {'Tumor 1'}, 'tumor.csv', 'BaseFrames', 1:5);
-[sss, info] = gdce_detect_sss(D);  % automatic SSS ROI (canonical indices)
+graspilot_export_timeseries(D, {mask}, {'Tumor 1'}, 'tumor.csv', 'BaseFrames', 1:5);
+[sss, info] = graspilot_detect_sss(D);  % automatic SSS ROI (canonical indices)
 
 % drive the GUI
-app = GraspDCEViewer(D);
+app = GRASPilot(D);
 app.setFrame(45); app.addTumor();
 app.setThrSource('sub'); app.setThreshold(0.2, Inf);
 app.setPos([90 50 24]); app.growFromCrosshair();
@@ -387,31 +385,30 @@ app.autoSSS();
 app.exportMaskNifti('mask.nii.gz');
 ```
 
-Standalone build (MATLAB Compiler): `mcc -m gdce_app.m -a GraspDCEViewer.m -a GraspData.m -a gdce_*.m`.
+Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a graspilot_*.m`.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `GraspDCEViewer.m` | GUI (classic figure, no toolboxes) |
-| `GraspData.m` | data model: subspace/dense loading, frame synthesis, orientation, maps, affine |
-| `gdce_load_dialog.m` | variable/format/geometry dialog |
-| `gdce_nifti_write.m`, `gdce_nifti_read.m` | NIfTI-1 I/O (.nii/.nii.gz), streaming 4D writes |
-| `gdce_write_dce_nifti.m` | series -> NIfTI + JSON sidecar |
-| `gdce_export_timeseries.m` | voxel time series -> .xlsx/.csv |
-| `GRASPilot.m` | launcher (`GRASPilot(...)` = `GraspDCEViewer(...)`) |
-| `gdce_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
-| `gdce_ref_window.m`, `gdce_end_frame.m` | SSS wash-in period; analysis endpoint |
-| `gdce_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
-| `gdce_reorient_to_ref.m` | mask import reorientation |
-| `gdce_detect_sss.m` | automatic superior sagittal sinus ROI |
-| `gdce_convert_mat2nifti.m` | batch .mat -> NIfTI |
-| `gdce_app.m` | launcher / compiler entry point |
+| `GRASPilot.m` | GUI (classic figure, no toolboxes) |
+| `GRASPilotData.m` | data model: subspace/dense loading, frame synthesis, orientation, maps, affine |
+| `graspilot_load_dialog.m` | variable/format/geometry dialog |
+| `graspilot_nifti_write.m`, `graspilot_nifti_read.m` | NIfTI-1 I/O (.nii/.nii.gz), streaming 4D writes |
+| `graspilot_write_dce_nifti.m` | series -> NIfTI + JSON sidecar |
+| `graspilot_export_timeseries.m` | voxel time series -> .xlsx/.csv |
+| `graspilot_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
+| `graspilot_ref_window.m`, `graspilot_end_frame.m` | SSS wash-in period; analysis endpoint |
+| `graspilot_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
+| `graspilot_reorient_to_ref.m` | mask import reorientation |
+| `graspilot_detect_sss.m` | automatic superior sagittal sinus ROI |
+| `graspilot_convert_mat2nifti.m` | batch .mat -> NIfTI |
+| `graspilot_app.m` | launcher / compiler entry point |
 | `docs/` | README screenshots |
 | `legacy/` | the original ReadData.m, CropImg.m and @TempPCASub (reference for validation) |
-| `tests/gdce_selftest.m` | synthetic end-to-end test (`gdce_selftest(true)` also drives the GUI) |
-| `tests/gdce_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
-| `tests/gdce_sss_phantom.m` | venous phantom (SSS, torcula, transverse/straight sinuses, scalp vein, artery) |
+| `tests/graspilot_selftest.m` | synthetic end-to-end test (`graspilot_selftest(true)` also drives the GUI) |
+| `tests/graspilot_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
+| `tests/graspilot_sss_phantom.m` | venous phantom (SSS, torcula, transverse/straight sinuses, scalp vein, artery) |
 
 ## Notes and limitations
 

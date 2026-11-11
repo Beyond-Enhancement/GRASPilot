@@ -1,10 +1,10 @@
-function nfail = gdce_selftest_gui(D, ref, out)
-%GDCE_SELFTEST_GUI Drive GraspDCEViewer by script (called from gdce_selftest(true)).
+function nfail = graspilot_selftest_gui(D, ref, out)
+%GRASPILOT_SELFTEST_GUI Drive GRASPilot by script (called from graspilot_selftest(true)).
 nfail = 0;
 tol = 1e-5;
 D.setOrientation('axial', false, [0 0 0]);
 D.VoxNative = [1 1 2]; D.dt = 2.5; D.t0 = 0;
-app = GraspDCEViewer(D);
+app = GRASPilot(D);
 app.Quiet = true;
 cleanup = onCleanup(@() app.close(true));
 nn = D.NativeSize;
@@ -225,7 +225,7 @@ e = max(abs(reshape(app.subVolume() - Sb, [], 1)));
 nfail = nfail + check('subtraction after binning uses binned last/first', e < tol, e);
 fB = fullfile(out, 'gui_binned.nii.gz');
 app.exportImageNifti(fB);
-[imB, hB] = gdce_nifti_read(fB);
+[imB, hB] = graspilot_nifti_read(fB);
 e = max(abs(reshape(imB(:, :, :, 3) - D.canonVolume(3), [], 1)));
 nfail = nfail + check('binned NIfTI: 11 frames, dt = 2 x 2.5 s', e < tol && hB.Dim(4) == 11 && ...
     abs(hB.dt - 5) < 1e-6, hB.dt);
@@ -248,12 +248,12 @@ nfail = nfail + check('temporal resolution set from time strip', D.dt == 2.5 && 
 masksBefore = app.Masks;
 fImg = fullfile(out, 'gui_series.nii.gz');
 app.exportImageNifti(fImg);
-[img, h] = gdce_nifti_read(fImg);
+[img, h] = graspilot_nifti_read(fImg);
 e = max(abs(reshape(img(:, :, :, 5) - D.canonVolume(5), [], 1)));
 nfail = nfail + check('GUI image NIfTI export', e < tol && isequal(h.Dim, [n D.NT]), e);
 fMask = fullfile(out, 'gui_mask.nii.gz');
 app.exportMaskNifti(fMask, true);
-[L, hm] = gdce_nifti_read(fMask);
+[L, hm] = graspilot_nifti_read(fMask);
 okm = true;
 for q = 1:numel(app.Masks), okm = okm && isequal(L == q, app.Masks{q}); end
 A0 = D.affine();

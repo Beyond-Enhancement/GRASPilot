@@ -1,9 +1,9 @@
-function ok = gdce_selftest(doGUI)
-%GDCE_SELFTEST Synthetic end-to-end test of the GRASPilot toolbox.
+function ok = graspilot_selftest(doGUI)
+%GRASPILOT_SELFTEST Synthetic end-to-end test of the GRASPilot toolbox.
 %
-%   gdce_selftest          core tests (data model vs ReadData.m, orientation,
+%   graspilot_selftest          core tests (data model vs ReadData.m, orientation,
 %                          NIfTI round trip, mask reorientation, exports)
-%   gdce_selftest(true)    also opens the viewer and drives it by script
+%   graspilot_selftest(true)    also opens the viewer and drives it by script
 %
 %   The reference is the original ReadData.m logic using the TempPCASub
 %   class in legacy/@TempPCASub, run on random complex data.
@@ -36,7 +36,7 @@ ref = permute(data1, [1 2 4 3]);                     % [nx ny nz T]
 tol = 1e-5;
 
 % ---------------------------------------------------------------- 1. subspace model
-D = GraspData.fromSubspace(vk_all, basis_all);
+D = GRASPilotData.fromSubspace(vk_all, basis_all);
 e = 0;
 for t = 1:T
     for z = 1:nz
@@ -59,12 +59,12 @@ e = max(max(abs(D.nativeTC(lin(2)) - R2(lin(2), :))));
 nfail = nfail + check('single-voxel time course', e < tol, e);
 
 % shared basis [T K] and basis stored as [nz K T]
-Dp = GraspData.fromSubspace(vk_all, permute(basis_all, [1 3 2]));
+Dp = GRASPilotData.fromSubspace(vk_all, permute(basis_all, [1 3 2]));
 e = max(abs(reshape(Dp.nativeVolume(5) - ref(:, :, :, 5), [], 1)));
 nfail = nfail + check('basis stored as [slices K T]', e < tol, e);
 
 % ---------------------------------------------------------------- 2. dense model (ReadData data1 order)
-Dd = GraspData.fromDense(data1, 'xytz');
+Dd = GRASPilotData.fromDense(data1, 'xytz');
 e = max(abs(reshape(Dd.nativeVolume(11) - ref(:, :, :, 11), [], 1)));
 e = max(e, max(max(abs(Dd.nativeTC(lin) - R2(lin, :)))));
 nfail = nfail + check('dense model (xytz)', e < tol, e);
@@ -127,20 +127,20 @@ cs = {'LPS', 'PLS', 'RAS', 'ALI', 'ILP', 'SRA'};
 for ic = 1:numel(cs)
     D.setAxisCodes(cs{ic});
     a0 = D.canonSlice(3, 2, 4).';                     % axial screen image
-    D.setAxisCodes(GraspData.rotateCodesCW(cs{ic}));
+    D.setAxisCodes(GRASPilotData.rotateCodesCW(cs{ic}));
     a1 = D.canonSlice(3, 2, 4).';
     e = e + ~isequal(a1, rot90(a0, -1));
 end
 nfail = nfail + check('Rotate axial 90 CW == rot90(screen, -1)', e == 0, e);
 D.setAxisCodes('PLS');
-nfail = nfail + check('flip L-R code', strcmp(GraspData.flipCodes('LPS', 'LR'), 'RPS'), 0);
+nfail = nfail + check('flip L-R code', strcmp(GRASPilotData.flipCodes('LPS', 'LR'), 'RPS'), 0);
 bad = 0;
 try, D.setAxisCodes('LLS'); catch, bad = 1; end
 nfail = nfail + check('invalid axis codes rejected', bad == 1, 0);
 
 % ---------------------------------------------------------------- 3c. SSS detection (venous phantom)
-[Dp, tr] = gdce_sss_phantom();
-[linS, infoS] = gdce_detect_sss(Dp);
+[Dp, tr] = graspilot_sss_phantom();
+[linS, infoS] = graspilot_detect_sss(Dp);
 np = Dp.canonSize();
 M = false(np); M(linS) = true;
 [~, ~, kk] = ind2sub(np, linS);
@@ -149,12 +149,12 @@ nfail = nfail + check('SSS ROI only in SSS (not TS/straight/scalp/artery)', ok, 
 ok = abs(infoS.TorculaSlice - tr.TorculaZ) <= 2 && min(kk) >= infoS.TorculaSlice + 5 && max(kk) <= tr.TorculaZ + 30 ...
     && abs(infoS.Centroid(1) - 50) < 2;
 nfail = nfail + check('SSS ROI just above torcula, midline', ok, infoS.TorculaSlice);
-[Dp2, tr2] = gdce_sss_phantom(25);
-[lin2, info2] = gdce_detect_sss(Dp2);
+[Dp2, tr2] = graspilot_sss_phantom(25);
+[lin2, info2] = graspilot_detect_sss(Dp2);
 ok = numel(lin2) > 50 && all(tr2.SSS(lin2)) && isnan(info2.TorculaSlice);
 nfail = nfail + check('SSS detection without torcula in slab', ok, numel(lin2));
 Dp2.setAxisCodes('PLS');
-[lin3, info3] = gdce_detect_sss(Dp2);
+[lin3, info3] = graspilot_detect_sss(Dp2);
 nfail = nfail + check('SSS detection reports failure, wrong orientation', ...
     isempty(lin3) || ~all(tr2.SSS(Dp2.canon2nativeLin(lin3))), numel(lin3));
 
@@ -174,24 +174,24 @@ Sa = ones(size(tt));
 up = tt > 4 & tt <= 14; Sa(up) = 1 + 0.2 * (tt(up) - 4);
 dn = tt > 14; Sa(dn) = 3 - 0.05 * (tt(dn) - 14);
 Sp = Sa; Sp(dn) = 3 + 0.05 * (tt(dn) - 14);            % persistent: keeps rising
-P = gdce_curve_params([Sa; Sp], tt, 1:5, struct('OnsetFrac', 0.05));   % onset = end of baseline
+P = graspilot_curve_params([Sa; Sp], tt, 1:5, struct('OnsetFrac', 0.05));   % onset = end of baseline
 e = max(abs([P.PE(1) - 2, P.RE(1) - 200, P.TTP(1) - 10, P.Onset(1), P.WashIn(1) - 0.2, ...
     P.WashOut(1) + 0.05, P.AUC(1) - 35.6]));
 nfail = nfail + check('curve parameters, washout curve (analytic)', e < 1e-9, e);
 nfail = nfail + check('curve parameters, persistent curve (analytic)', ...
     abs(P.WashOut(2) - 0.05) < 1e-9 && abs(P.TTP(2) - 26) < 1e-9, P.WashOut(2));
-P2 = gdce_curve_params(Sa, tt, 1:5, struct('WashIn', 'max', 'WashOut', 'endpoints', 'AUCWindow', 10));
+P2 = graspilot_curve_params(Sa, tt, 1:5, struct('WashIn', 'max', 'WashOut', 'endpoints', 'AUCWindow', 10));
 e = max(abs([P2.WashIn - 0.2, P2.WashOut + 0.05, P2.AUC - 10]));
 nfail = nfail + check('curve parameters, max slope / endpoints / IAUC10', e < 1e-9, e);
 % T90 at 4 + 9 s; MITR 2/10; early frame 10 s after baseline (t = 14, the peak), late = last:
 % SER = 2/1.2, RE early 200%, washout % = 100 (3 - 2.2)/3, plateau = mean(1.3 1.25 1.2), type 3
-P3 = gdce_curve_params([Sa; Sp], tt, 1:5, struct('EarlyTime', 10));
+P3 = graspilot_curve_params([Sa; Sp], tt, 1:5, struct('EarlyTime', 10));
 e = max(abs([P3.T90(1) - 9, P3.MITR(1) - 0.2, P3.SER(1) - 2 / 1.2, P3.REearly(1) - 200, ...
     P3.WashoutPct(1) - 100 * 0.8 / 3, P3.Plateau(1) - 1.25, P3.CurveType(1) - 3, P3.CurveType(2) - 1]));
 nfail = nfail + check('T90, MITR, SER, early RE, washout %, plateau, type', e < 1e-9, e);
-P4 = gdce_curve_params(Sa, tt, 1:5, struct('EndTime', 20));       % first 20 s: frames 1-21
-P5 = gdce_curve_params(Sa(1:21), tt(1:21), 1:5);
-P6 = gdce_curve_params(Sa, tt, 1:5, struct('EndFrame', 21));
+P4 = graspilot_curve_params(Sa, tt, 1:5, struct('EndTime', 20));       % first 20 s: frames 1-21
+P5 = graspilot_curve_params(Sa(1:21), tt(1:21), 1:5);
+P6 = graspilot_curve_params(Sa, tt, 1:5, struct('EndFrame', 21));
 nfail = nfail + check('analysis endpoint (EndTime, EndFrame)', P4.EndFrame == 21 && isequal(P4.AUC, P5.AUC) && ...
     isequal(P4.WashOut, P5.WashOut) && isequal(P6.AUC, P5.AUC) && abs(P4.AUC - (10 + 6 * (2 + 1.7) / 2)) < 1e-9, P4.AUC);
 % reference rising 0.1/s (t 4-6), 0.5/s (6-10), 0.3/s (10-12), 0.05/s (12-14), then falling
@@ -199,15 +199,15 @@ Sr = ones(size(tt));
 Sr(tt > 4) = 1 + 0.1 * (tt(tt > 4) - 4); Sr(tt > 6) = 1.2 + 0.5 * (tt(tt > 6) - 6);
 Sr(tt > 10) = 3.2 + 0.3 * (tt(tt > 10) - 10); Sr(tt > 12) = 3.8 + 0.05 * (tt(tt > 12) - 12);
 Sr(tt > 14) = 3.9 - 0.02 * (tt(tt > 14) - 14);
-[wr, ir] = gdce_ref_window(Sr, tt, 1:5);
-Pw = gdce_curve_params([Sa; Sr], tt, 1:5, struct('WashIn', 'sss', 'WashInFrames', wr));
+[wr, ir] = graspilot_ref_window(Sr, tt, 1:5);
+Pw = graspilot_curve_params([Sa; Sr], tt, 1:5, struct('WashIn', 'sss', 'WashInFrames', wr));
 nfail = nfail + check('SSS wash-in period and slopes within it', isequal(wr, [7 13]) && abs(ir.MaxSlope - 0.5) < 1e-9 && ...
     abs(Pw.WashIn(1) - 0.2) < 1e-9 && abs(Pw.WashIn(2) - 0.5) < 1e-9, wr(1));
 Sn = [Sa; 2 * Sa; Sp] + 0.01 * randn(3, numel(tt));
-Pv = gdce_curve_params(Sn, tt, 1:5);
+Pv = graspilot_curve_params(Sn, tt, 1:5);
 e = 0;
 for r = 1:3
-    Pr = gdce_curve_params(Sn(r, :), tt, 1:5);
+    Pr = graspilot_curve_params(Sn(r, :), tt, 1:5);
     for fn = {'S0', 'PE', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC'}
         e = max(e, abs(Pr.(fn{1}) - Pv.(fn{1})(r)));
     end
@@ -218,14 +218,14 @@ nfail = nfail + check('curve parameters, vectorized == per curve', e < 1e-12, e)
 D.dt = 2.5; D.t0 = 0;
 D.computeMaps(1:3);
 nc = prod(D.canonSize());
-Pm = gdce_curve_params(double(D.timecourses((1:nc)')), D.paramTimes(), 1:3, D.ParamOpts);
+Pm = graspilot_curve_params(double(D.timecourses((1:nc)')), D.paramTimes(), 1:3, D.ParamOpts);
 e = mapErr(D, Pm, {'Baseline', 'S0'; 'PeakEnh', 'PE'; 'RelEnh', 'RE'; 'TTP', 'TTP'; 'Onset', 'Onset'; ...
     'WashIn', 'WashIn'; 'WashOut', 'WashOut'; 'AUC', 'AUC'});
-nfail = nfail + check('parameter maps == gdce_curve_params (s)', e < 1e-4, e);
+nfail = nfail + check('parameter maps == graspilot_curve_params (s)', e < 1e-4, e);
 D.setParamOptions('WashIn', 'max', 'WashOut', 'endpoints', 'AUCWindow', 20);
 stale = ~D.hasMaps(1:3);
 D.computeMaps(1:3);
-Pm = gdce_curve_params(double(D.timecourses((1:nc)')), D.paramTimes(), 1:3, D.ParamOpts);
+Pm = graspilot_curve_params(double(D.timecourses((1:nc)')), D.paramTimes(), 1:3, D.ParamOpts);
 e = mapErr(D, Pm, {'WashIn', 'WashIn'; 'WashOut', 'WashOut'; 'AUC', 'AUC'});
 nfail = nfail + check('parameter options invalidate and recompute maps', stale && e < 1e-4, e);
 D.setParamOptions('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf);
@@ -236,8 +236,8 @@ D.dt = 2.5;
 % ---------------------------------------------------------------- 4b. temporal binning
 % each binned frame = mean magnitude of n consecutive ReadData.m frames
 for mode = 1:2
-    if mode == 1, Db = GraspData.fromSubspace(vk_all, basis_all); lab = 'subspace';
-    else, Db = GraspData.fromDense(data1, 'xytz'); lab = 'dense'; end
+    if mode == 1, Db = GRASPilotData.fromSubspace(vk_all, basis_all); lab = 'subspace';
+    else, Db = GRASPilotData.fromDense(data1, 'xytz'); lab = 'dense'; end
     Db.setOrientation('coronal', true, [1 0 0]);
     Db.dt = 2; Db.t0 = 1;
     Db.setBinning(3);                                  % 23 frames -> 7 bins, frames 22-23 dropped
@@ -290,8 +290,8 @@ D.setOrientation('axial', false, [0 0 0]);
 D.setOrientation('coronal', true, [1 0 1]);
 D.VoxNative = [0.9 1.1 2.5]; D.dt = 3.2; D.t0 = 0;
 f4 = fullfile(out, 'series.nii.gz');
-gdce_write_dce_nifti(D, f4);
-[img, h] = gdce_nifti_read(f4);
+graspilot_write_dce_nifti(D, f4);
+[img, h] = graspilot_nifti_read(f4);
 e = 0;
 for t = [1 9 T]
     e = max(e, max(abs(reshape(img(:, :, :, t) - D.canonVolume(t), [], 1))));
@@ -305,9 +305,9 @@ nfail = nfail + check('JSON sidecar written', exist(fullfile(out, 'series.json')
 % qform-only reading path
 hq = struct('Dim', D.canonSize(), 'Vox', D.canonVox(), 'Affine', D.affine(), 'Datatype', 'uint8');
 fq = fullfile(out, 'q.nii');
-gdce_nifti_write(fq, uint8(D.native2canon(ref(:, :, :, 1)) > 0.3), hq);
+graspilot_nifti_write(fq, uint8(D.native2canon(ref(:, :, :, 1)) > 0.3), hq);
 fid = fopen(fq, 'r+', 'ieee-le'); fseek(fid, 254, 'bof'); fwrite(fid, 0, 'int16'); fclose(fid);
-[~, h2] = gdce_nifti_read(fq);
+[~, h2] = graspilot_nifti_read(fq);
 e = max(abs(h2.Affine(:) - A0(:)));
 nfail = nfail + check('qform -> affine', e < 1e-4, e);
 
@@ -318,17 +318,17 @@ A = D.affine();
 arr2 = permute(flip(M, 1), [2 1 3]);     % another tool's voxel order
 Mx = [0 -1 0 n(1) - 1; 1 0 0 0; 0 0 1 0; 0 0 0 1];
 fm = fullfile(out, 'reoriented_mask.nii.gz');
-gdce_nifti_write(fm, uint8(arr2), struct('Dim', size(arr2), 'Vox', D.canonVox(), ...
+graspilot_nifti_write(fm, uint8(arr2), struct('Dim', size(arr2), 'Vox', D.canonVox(), ...
     'Affine', A * Mx, 'Datatype', 'uint8'));
-[im2, h3] = gdce_nifti_read(fm);
-back = gdce_reorient_to_ref(im2, h3.Affine, A, n) > 0;
+[im2, h3] = graspilot_nifti_read(fm);
+back = graspilot_reorient_to_ref(im2, h3.Affine, A, n) > 0;
 nfail = nfail + check('mask reorientation on import', isequal(back, M), nnz(xor(back, M)));
 
 % ---------------------------------------------------------------- 7. time-series export (csv)
 masks = {M, false(n)};
 masks{2}(10:12, n(2) - 1:n(2), 6:7) = true;
 fcsv = fullfile(out, 'ts.csv');
-gdce_export_timeseries(D, masks, {'SSS (control)', 'Tumor 1'}, fcsv, 'BaseFrames', 1:3);
+graspilot_export_timeseries(D, masks, {'SSS (control)', 'Tumor 1'}, fcsv, 'BaseFrames', 1:3);
 fid = fopen(fullfile(out, 'ts_voxels.csv')); hdrl = fgetl(fid); l1 = fgetl(fid); fclose(fid);
 vals = str2double(regexp(l1, ',', 'split'));
 lin1 = find(M, 1);
@@ -337,14 +337,14 @@ e = max(abs(vals(10:end) - double(tc1)));
 nfail = nfail + check('CSV voxel export values', e < 1e-5 && numel(vals) == 9 + T, e);
 if exist('writecell', 'file') == 2
     fx = fullfile(out, 'ts.xlsx');
-    gdce_export_timeseries(D, masks, {'SSS (control)', 'Tumor 1'}, fx, 'BaseFrames', 1:3);
+    graspilot_export_timeseries(D, masks, {'SSS (control)', 'Tumor 1'}, fx, 'BaseFrames', 1:3);
     nfail = nfail + check('XLSX export', exist(fx, 'file') == 2, 0);
 end
 
 % ---------------------------------------------------------------- 8. GUI
 if doGUI
-    nfail = nfail + gdce_selftest_gui(D, ref, out);
-    nfail = nfail + gdce_selftest_gui_sss(out);
+    nfail = nfail + graspilot_selftest_gui(D, ref, out);
+    nfail = nfail + graspilot_selftest_gui_sss(out);
 end
 
 ok = nfail == 0;

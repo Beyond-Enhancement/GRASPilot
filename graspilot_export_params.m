@@ -1,12 +1,12 @@
-function files = gdce_export_params(file, D, hdr, rows, blocks, keys, units, settings)
-%GDCE_EXPORT_PARAMS Write semi-quantitative parameter statistics and voxel values.
+function files = graspilot_export_params(file, D, hdr, rows, blocks, keys, units, settings)
+%GRASPILOT_EXPORT_PARAMS Write semi-quantitative parameter statistics and voxel values.
 %
-%   files = gdce_export_params(file, D, hdr, rows, blocks, keys, units, settings)
+%   files = graspilot_export_params(file, D, hdr, rows, blocks, keys, units, settings)
 %
 %   file      output .xlsx or .csv
-%   D         GraspData object (geometry, binning)
+%   D         GRASPilotData object (geometry, binning)
 %   hdr       statistics header (cell row), rows: statistics (cell array),
-%             one row per ROI and parameter (GraspDCEViewer.paramStatsTable)
+%             one row per ROI and parameter (GRASPilot.paramStatsTable)
 %   blocks    struct array per ROI: id, name, lin (canonical linear indices),
 %             values [nvox x numel(keys)]
 %   keys      parameter keys (e.g. 'PE', 'PE_SSS', ...), units: their units
@@ -38,7 +38,7 @@ for k = 1:numel(keys)
     phdr{k} = sprintf('%s [%s]', keys{k}, units{k});
 end
 vhdr = [{'Voxel', 'i', 'j', 'k', 'x_mm', 'y_mm', 'z_mm'}, phdr];
-info = [{'Created by', 'GRASPilot (gdce_export_params)';
+info = [{'Created by', 'GRASPilot (graspilot_export_params)';
     'Date', datestr(now, 'yyyy-mm-dd HH:MM:SS');
     'Source file', D.SourceFile;
     'Frames', D.NT;
@@ -62,12 +62,12 @@ end
 switch ext
     case {'.xlsx', '.xls'}
         if exist('writecell', 'file') ~= 2 || exist('writematrix', 'file') ~= 2
-            error('gdce_export_params:xlsx', ['Writing .xlsx needs MATLAB R2019a or newer ' ...
+            error('graspilot_export_params:xlsx', ['Writing .xlsx needs MATLAB R2019a or newer ' ...
                 '(writecell/writematrix). Export to .csv instead.']);
         end
         for q = 1:numel(blocks)
             if numel(blocks(q).lin) + 1 > 1048576
-                error('gdce_export_params:rows', ['ROI %s has more voxels than an Excel sheet ' ...
+                error('graspilot_export_params:rows', ['ROI %s has more voxels than an Excel sheet ' ...
                     'can hold. Export to .csv instead.'], blocks(q).name);
             end
         end
@@ -91,7 +91,7 @@ switch ext
         fi = fullfile(folder, [base '_param_settings.txt']);
         % statistics
         fid = fopen(fs, 'w');
-        if fid < 0, error('gdce_export_params:open', 'Cannot write %s.', fs); end
+        if fid < 0, error('graspilot_export_params:open', 'Cannot write %s.', fs); end
         fprintf(fid, '%s\n', strjoin(cellfun(@quote, hdr, 'UniformOutput', false), ','));
         for r = 1:size(rows, 1)
             c = cell(1, size(rows, 2));
@@ -106,7 +106,7 @@ switch ext
         fclose(fid);
         % voxel values
         fid = fopen(fv, 'w');
-        if fid < 0, error('gdce_export_params:open', 'Cannot write %s.', fv); end
+        if fid < 0, error('graspilot_export_params:open', 'Cannot write %s.', fv); end
         fprintf(fid, '%s\n', strjoin(cellfun(@quote, [{'ROI_ID', 'ROI_Name'}, vhdr], ...
             'UniformOutput', false), ','));
         for q = 1:numel(blocks)
@@ -130,7 +130,7 @@ switch ext
         files = {fs, fv, fi};
 
     otherwise
-        error('gdce_export_params:ext', 'Use a .xlsx or .csv file name.');
+        error('graspilot_export_params:ext', 'Use a .xlsx or .csv file name.');
 end
 end
 

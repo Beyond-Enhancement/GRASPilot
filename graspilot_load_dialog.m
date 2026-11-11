@@ -1,8 +1,8 @@
-function out = gdce_load_dialog(matFile, opts)
-%GDCE_LOAD_DIALOG Choose variables, format and geometry for a GRASP .mat file.
+function out = graspilot_load_dialog(matFile, opts)
+%GRASPILOT_LOAD_DIALOG Choose variables, format and geometry for a GRASP .mat file.
 %
-%   opts = gdce_load_dialog(matFile, defaults)
-%   opts = gdce_load_dialog('', defaults)      geometry only (data in memory)
+%   opts = graspilot_load_dialog(matFile, defaults)
+%   opts = graspilot_load_dialog('', defaults)      geometry only (data in memory)
 %
 %   Returns [] if cancelled. Fields of opts: Format ('subspace'|'dense'),
 %   CoefVar, BasisVar, ImageVar, DimOrder, CropFactor, Normalize, Plane,
@@ -101,8 +101,8 @@ olabels = {'LPS: axial, rows R->L, cols A->P (scanner order, GRASP recon)', ...
 cur = '';
 if isfield(opts, 'AxisCodes'), cur = upper(opts.AxisCodes); end
 if isempty(cur)
-    [pm, fl] = GraspData.presetOrientation(opts.Plane, opts.SwapInPlane, opts.Flip);
-    cur = GraspData.permFlipToCodes(pm, fl);
+    [pm, fl] = GRASPilotData.presetOrientation(opts.Plane, opts.SwapInPlane, opts.Flip);
+    cur = GRASPilotData.permFlipToCodes(pm, fl);
 end
 if ~any(strcmp(codes, cur))
     codes{end + 1} = cur;
@@ -240,7 +240,7 @@ uiwait(d);
             o.Normalize = logical(get(hNorm, 'Value'));
         end
         o.AxisCodes = codes{get(hPlane, 'Value')};
-        [pm, ~] = GraspData.codesToPermFlip(o.AxisCodes);
+        [pm, ~] = GRASPilotData.codesToPermFlip(o.AxisCodes);
         pl = {'sagittal', 'coronal', 'axial'};
         o.Plane = pl{find(pm == 3)};
         v = [str2double(get(hVr, 'String')) str2double(get(hVc, 'String')) str2double(get(hVs, 'String'))];

@@ -1,9 +1,9 @@
-function files = gdce_export_timeseries(D, masks, names, file, varargin)
-%GDCE_EXPORT_TIMESERIES Write voxel-wise ROI time series to .xlsx or .csv.
+function files = graspilot_export_timeseries(D, masks, names, file, varargin)
+%GRASPILOT_EXPORT_TIMESERIES Write voxel-wise ROI time series to .xlsx or .csv.
 %
-%   files = gdce_export_timeseries(D, masks, names, file, 'Name', Value, ...)
+%   files = graspilot_export_timeseries(D, masks, names, file, 'Name', Value, ...)
 %
-%   D       GraspData object
+%   D       GRASPilotData object
 %   masks   cell array of canonical logical masks (same size as D.canonSize())
 %   names   cell array of ROI names
 %   file    output .xlsx or .csv
@@ -29,7 +29,7 @@ p = struct('BaseFrames', 1, 'Progress', []);
 for i = 1:2:numel(varargin)
     fn = fieldnames(p);
     m = find(strcmpi(fn, varargin{i}), 1);
-    if isempty(m), error('gdce_export_timeseries:opt', 'Unknown option %s.', varargin{i}); end
+    if isempty(m), error('graspilot_export_timeseries:opt', 'Unknown option %s.', varargin{i}); end
     p.(fn{m}) = varargin{i + 1};
 end
 
@@ -52,7 +52,7 @@ if isempty(bf), bf = 1; end
 
 keep = find(cellfun(@(m) any(m(:)), masks));
 if isempty(keep)
-    error('gdce_export_timeseries:empty', 'All ROIs are empty.');
+    error('graspilot_export_timeseries:empty', 'All ROIs are empty.');
 end
 R = numel(keep);
 
@@ -88,7 +88,7 @@ end
 
 % info block
 info = {
-    'Created by', 'GRASPilot (gdce_export_timeseries)';
+    'Created by', 'GRASPilot (graspilot_export_timeseries)';
     'Date', datestr(now, 'yyyy-mm-dd HH:MM:SS');
     'Source file', D.SourceFile;
     'Source variables', D.SourceVars;
@@ -120,17 +120,17 @@ vhdr = [{'Voxel', 'i', 'j', 'k', 'x_mm', 'y_mm', 'z_mm'}, fhdr];
 switch ext
     case {'.xlsx', '.xls'}
         if exist('writecell', 'file') ~= 2 || exist('writematrix', 'file') ~= 2
-            error('gdce_export_timeseries:xlsx', ['Writing .xlsx needs MATLAB R2019a or newer ' ...
+            error('graspilot_export_timeseries:xlsx', ['Writing .xlsx needs MATLAB R2019a or newer ' ...
                 '(writecell/writematrix). Export to .csv instead.']);
         end
         for q = 1:R
             if size(roi(q).TC, 1) + 1 > 1048576
-                error('gdce_export_timeseries:rows', ['ROI %s has %d voxels, more than an Excel ' ...
+                error('graspilot_export_timeseries:rows', ['ROI %s has %d voxels, more than an Excel ' ...
                     'sheet can hold. Export to .csv instead.'], roi(q).name, size(roi(q).TC, 1));
             end
         end
         if 7 + T > 16384
-            error('gdce_export_timeseries:cols', 'Too many frames for an Excel sheet; use .csv.');
+            error('graspilot_export_timeseries:cols', 'Too many frames for an Excel sheet; use .csv.');
         end
         if exist(file, 'file') == 2, delete(file); end
         writecell(info, file, 'Sheet', 'Info');
@@ -154,7 +154,7 @@ switch ext
         fi = fullfile(folder, [base '_info.txt']);
         % voxel file
         fid = fopen(fv, 'w');
-        if fid < 0, error('gdce_export_timeseries:open', 'Cannot write %s.', fv); end
+        if fid < 0, error('graspilot_export_timeseries:open', 'Cannot write %s.', fv); end
         fprintf(fid, '%s\n', strjoin([{'ROI_ID', 'ROI_Name'}, vhdr], ','));
         for q = 1:R
             nv = size(roi(q).TC, 1);
@@ -183,7 +183,7 @@ switch ext
         files = {fv, fs, fi};
 
     otherwise
-        error('gdce_export_timeseries:ext', 'Use a .xlsx or .csv file name.');
+        error('graspilot_export_timeseries:ext', 'Use a .xlsx or .csv file name.');
 end
 report(p.Progress, 1, 'Done');
 end

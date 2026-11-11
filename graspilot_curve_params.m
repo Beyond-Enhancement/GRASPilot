@@ -1,8 +1,8 @@
-function P = gdce_curve_params(S, t, bf, opts)
-%GDCE_CURVE_PARAMS Semi-quantitative descriptors of DCE time-intensity curves.
+function P = graspilot_curve_params(S, t, bf, opts)
+%GRASPILOT_CURVE_PARAMS Semi-quantitative descriptors of DCE time-intensity curves.
 %
-%   P = gdce_curve_params(S, t, baseFrames)
-%   P = gdce_curve_params(S, t, baseFrames, opts)
+%   P = graspilot_curve_params(S, t, baseFrames)
+%   P = graspilot_curve_params(S, t, baseFrames, opts)
 %
 %   S           [N x T] signal curves (one per row: voxels or ROI means)
 %   t           [1 x T] frame times (s), or 1:T when the timing is unknown
@@ -14,7 +14,7 @@ function P = gdce_curve_params(S, t, bf, opts)
 %                between consecutive frames (Li et al. 2024); 'sss': maximum
 %                up-slope between consecutive frames inside WashInFrames,
 %                the period of most rapid signal increase of the reference
-%                (SSS) curve from gdce_ref_window (Lee, Berger et al.,
+%                (SSS) curve from graspilot_ref_window (Lee, Berger et al.,
 %                Neurosurgery 2023). NaN if WashInFrames is empty.
 %     WashInFrames [a b] frame range for WashIn = 'sss'
 %     EndFrame   last frame analysed (default Inf = all); later frames are
@@ -77,7 +77,7 @@ if ~isfield(opts, 'CurveTol') || isempty(opts.CurveTol), opts.CurveTol = 10; end
 S = double(S);
 t = double(t(:)');
 % analysis endpoint: drop the frames after it
-Te = gdce_end_frame(t, opts);
+Te = graspilot_end_frame(t, opts);
 S = S(:, 1:Te);
 t = t(1:Te);
 [N, T] = size(S);

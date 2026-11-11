@@ -1,8 +1,8 @@
-function [D, truth] = gdce_sss_phantom(zmin)
-%GDCE_SSS_PHANTOM Synthetic DCE head with dural sinuses for testing gdce_detect_sss.
+function [D, truth] = graspilot_sss_phantom(zmin)
+%GRASPILOT_SSS_PHANTOM Synthetic DCE head with dural sinuses for testing graspilot_detect_sss.
 %
-%   [D, truth] = gdce_sss_phantom          full coverage
-%   [D, truth] = gdce_sss_phantom(zmin)    slab starting at slice zmin
+%   [D, truth] = graspilot_sss_phantom          full coverage
+%   [D, truth] = graspilot_sss_phantom(zmin)    slab starting at slice zmin
 %
 %   1 mm isotropic, LPS voxel order (axis codes 'LPS'), 12 frames. Contains
 %   the superior sagittal sinus (thickest posteriorly), torcula, transverse
@@ -57,7 +57,7 @@ for t = 1:T
     I(:, :, :, t) = single(f + 0.005 * randn(n));
 end
 I = I(:, :, zmin:end, :);
-D = GraspData.fromDense(I, 'xyzt');
+D = GRASPilotData.fromDense(I, 'xyzt');
 D.setAxisCodes('LPS');
 D.VoxNative = [1 1 1];
 D.dt = 4;

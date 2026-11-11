@@ -1,9 +1,9 @@
-classdef GraspData < handle
-%GRASPDATA Data model for dynamic GRASP DCE-MRI image series.
+classdef GRASPilotData < handle
+%GRASPILOTDATA Data model for dynamic GRASP DCE-MRI image series.
 %
-%   D = GraspData.fromFile(matFile, 'Name', Value, ...)
-%   D = GraspData.fromSubspace(vk_all, basis_all, 'Name', Value, ...)
-%   D = GraspData.fromDense(img, dimOrder, 'Name', Value, ...)
+%   D = GRASPilotData.fromFile(matFile, 'Name', Value, ...)
+%   D = GRASPilotData.fromSubspace(vk_all, basis_all, 'Name', Value, ...)
+%   D = GRASPilotData.fromDense(img, dimOrder, 'Name', Value, ...)
 %
 %   SUBSPACE MODE reproduces ReadData.m frame by frame:
 %       data1(:,:,t,z) = abs( Bz * Phi_z' )        (TempPCASub adjoint)
@@ -88,9 +88,9 @@ classdef GraspData < handle
     methods (Static)
 
         function obj = fromFile(matFile, varargin)
-            p = GraspData.parseOpts(varargin, GraspData.defaultOpts());
+            p = GRASPilotData.parseOpts(varargin, GRASPilotData.defaultOpts());
             if exist(matFile, 'file') ~= 2
-                error('GraspData:file', 'File not found: %s', matFile);
+                error('GRASPilotData:file', 'File not found: %s', matFile);
             end
             info = whos('-file', matFile);
             names = {info.name};
@@ -101,43 +101,43 @@ classdef GraspData < handle
                 elseif ~isempty(p.ImageVar) && any(strcmp(names, p.ImageVar))
                     fmt = 'dense';
                 else
-                    error('GraspData:format', ['Could not find %s/%s in %s. Use the load ' ...
+                    error('GRASPilotData:format', ['Could not find %s/%s in %s. Use the load ' ...
                         'dialog or pass ''Format'',''dense'',''ImageVar'',name.'], ...
                         p.CoefVar, p.BasisVar, matFile);
                 end
             end
-            GraspData.report(p.Progress, 0, 'Reading .mat file (this can take a while for large files)...');
+            GRASPilotData.report(p.Progress, 0, 'Reading .mat file (this can take a while for large files)...');
             switch fmt
                 case 'subspace'
                     S = load(matFile, p.CoefVar, p.BasisVar);
                     if ~isfield(S, p.CoefVar) || ~isfield(S, p.BasisVar)
-                        error('GraspData:vars', 'Variables %s and %s are required.', p.CoefVar, p.BasisVar);
+                        error('GRASPilotData:vars', 'Variables %s and %s are required.', p.CoefVar, p.BasisVar);
                     end
                     vk = S.(p.CoefVar); bs = S.(p.BasisVar);
                     S = []; %#ok<NASGU>
-                    obj = GraspData.fromSubspace(vk, bs, p);
+                    obj = GRASPilotData.fromSubspace(vk, bs, p);
                     obj.SourceVars = sprintf('%s + %s', p.CoefVar, p.BasisVar);
                 case 'dense'
                     if isempty(p.ImageVar)
-                        error('GraspData:vars', 'ImageVar must be given for dense format.');
+                        error('GRASPilotData:vars', 'ImageVar must be given for dense format.');
                     end
                     S = load(matFile, p.ImageVar);
                     img = S.(p.ImageVar);
                     S = []; %#ok<NASGU>
-                    obj = GraspData.fromDense(img, p.DimOrder, p);
+                    obj = GRASPilotData.fromDense(img, p.DimOrder, p);
                     obj.SourceVars = sprintf('%s (%s)', p.ImageVar, p.DimOrder);
                 otherwise
-                    error('GraspData:format', 'Unknown format "%s".', fmt);
+                    error('GRASPilotData:format', 'Unknown format "%s".', fmt);
             end
             obj.SourceFile = matFile;
         end
 
         function obj = fromSubspace(vk_all, basis_all, varargin)
-            p = GraspData.parseOpts(varargin, GraspData.defaultOpts());
+            p = GRASPilotData.parseOpts(varargin, GRASPilotData.defaultOpts());
             if isempty(p.CropFactor), p.CropFactor = 2; end
             if isempty(p.Normalize), p.Normalize = true; end
             if ndims(vk_all) > 4
-                error('GraspData:size', 'vk_all must be [slices nx ny K].');
+                error('GRASPilotData:size', 'vk_all must be [slices nx ny K].');
             end
             nz = size(vk_all, 1); nxF = size(vk_all, 2); nyF = size(vk_all, 3); K = size(vk_all, 4);
 
@@ -147,7 +147,7 @@ classdef GraspData < handle
                 Phi = repmat(single(B), [1 1 nz]);        % one basis shared by all slices
             else
                 if size(B, 1) ~= nz
-                    error('GraspData:basis', ['basis_all has %d entries along dim 1 but vk_all ' ...
+                    error('GRASPilotData:basis', ['basis_all has %d entries along dim 1 but vk_all ' ...
                         'has %d slices.'], size(B, 1), nz);
                 end
                 if size(B, 3) == K
@@ -155,7 +155,7 @@ classdef GraspData < handle
                 elseif size(B, 2) == K
                     Phi = permute(single(B), [3 2 1]);    % [nz K T] -> [T K nz]
                 else
-                    error('GraspData:basis', ['basis_all [%s] is not compatible with K = %d ' ...
+                    error('GRASPilotData:basis', ['basis_all [%s] is not compatible with K = %d ' ...
                         'coefficients in vk_all.'], num2str(size(B)), K);
                 end
             end
@@ -185,7 +185,7 @@ classdef GraspData < handle
                 end
                 Bz = reshape(Bz, nxF, nyF, K);
                 Cc(:, :, :, z) = Bz(rr, cc, :);
-                GraspData.report(p.Progress, z / nz, sprintf('Preparing slice %d/%d', z, nz));
+                GRASPilotData.report(p.Progress, z / nz, sprintf('Preparing slice %d/%d', z, nz));
             end
             sf = 1;
             if p.Normalize && gmax > 0
@@ -195,7 +195,7 @@ classdef GraspData < handle
                 end
             end
 
-            obj = GraspData();
+            obj = GRASPilotData();
             obj.Mode = 'subspace';
             obj.C = Cc;
             obj.Phi = Phi;
@@ -210,7 +210,7 @@ classdef GraspData < handle
         end
 
         function obj = fromDense(img, dimOrder, varargin)
-            p = GraspData.parseOpts(varargin, GraspData.defaultOpts());
+            p = GRASPilotData.parseOpts(varargin, GRASPilotData.defaultOpts());
             if isempty(p.CropFactor), p.CropFactor = 1; end
             if isempty(p.Normalize), p.Normalize = false; end
             if nargin < 2 || isempty(dimOrder), dimOrder = 'xytz'; end
@@ -223,7 +223,7 @@ classdef GraspData < handle
                 o = [o 't'];
             end
             if numel(o) ~= 4 || ~all(sort(o) == sort('xyzt'))
-                error('GraspData:dimorder', 'DimOrder must be a permutation of xyzt (got "%s").', dimOrder);
+                error('GRASPilotData:dimorder', 'DimOrder must be a permutation of xyzt (got "%s").', dimOrder);
             end
             pm = [find(o == 'x') find(o == 'y') find(o == 'z') find(o == 't')];
             if ~isa(img, 'single')
@@ -248,7 +248,7 @@ classdef GraspData < handle
                     img = img * single(sf);
                 end
             end
-            obj = GraspData();
+            obj = GRASPilotData();
             obj.Mode = 'dense';
             obj.D = img;
             obj.NativeSize = [size(img, 1) size(img, 2) size(img, 3)];
@@ -278,13 +278,13 @@ classdef GraspData < handle
                 return
             end
             if mod(numel(args), 2) ~= 0
-                error('GraspData:opts', 'Options must be name/value pairs.');
+                error('GRASPilotData:opts', 'Options must be name/value pairs.');
             end
             fn = fieldnames(p);
             for i = 1:2:numel(args)
                 m = find(strcmpi(fn, args{i}), 1);
                 if isempty(m)
-                    error('GraspData:opts', 'Unknown option "%s".', args{i});
+                    error('GRASPilotData:opts', 'Unknown option "%s".', args{i});
                 end
                 p.(fn{m}) = args{i + 1};
             end
@@ -301,7 +301,7 @@ classdef GraspData < handle
 
         function [perm, flp] = codesToPermFlip(codes)
             if ~ischar(codes) || numel(codes) ~= 3
-                error('GraspData:codes', 'Axis codes must be 3 letters, e.g. ''LPS''.');
+                error('GRASPilotData:codes', 'Axis codes must be 3 letters, e.g. ''LPS''.');
             end
             codes = upper(codes);
             perm = zeros(1, 3); flp = false(1, 3);
@@ -314,10 +314,10 @@ classdef GraspData < handle
                     case 'S', a = 3; f = false;
                     case 'I', a = 3; f = true;
                     otherwise
-                        error('GraspData:codes', 'Invalid axis code ''%s'' in %s (use L R A P S I).', codes(d), codes);
+                        error('GRASPilotData:codes', 'Invalid axis code ''%s'' in %s (use L R A P S I).', codes(d), codes);
                 end
                 if perm(a) ~= 0
-                    error('GraspData:codes', 'Axis codes %s use the same anatomical axis twice.', codes);
+                    error('GRASPilotData:codes', 'Axis codes %s use the same anatomical axis twice.', codes);
                 end
                 perm(a) = d; flp(a) = f;
             end
@@ -361,7 +361,7 @@ classdef GraspData < handle
                 case 'sagittal'   % rows S->I, cols A->P
                     perm = [3 2 1]; flp = [false false true];
                 otherwise
-                    error('GraspData:plane', 'Plane must be axial, coronal or sagittal.');
+                    error('GRASPilotData:plane', 'Plane must be axial, coronal or sagittal.');
             end
             if swapInPlane
                 a1 = find(perm == 1); a2 = find(perm == 2);
@@ -377,11 +377,11 @@ classdef GraspData < handle
         function setOrientation(obj, plane, swapInPlane, userFlip)
             if nargin < 3 || isempty(swapInPlane), swapInPlane = false; end
             if nargin < 4 || isempty(userFlip), userFlip = [false false false]; end
-            [obj.Perm, obj.Flip] = GraspData.presetOrientation(plane, swapInPlane, userFlip);
+            [obj.Perm, obj.Flip] = GRASPilotData.presetOrientation(plane, swapInPlane, userFlip);
             obj.Plane = lower(plane);
             obj.SwapInPlane = logical(swapInPlane);
             obj.UserFlip = logical(userFlip(:)');
-            obj.AxisCodes = GraspData.permFlipToCodes(obj.Perm, obj.Flip);
+            obj.AxisCodes = GRASPilotData.permFlipToCodes(obj.Perm, obj.Flip);
             obj.CanonMapCache = struct();
             obj.MapsVersion = obj.MapsVersion + 1;
         end
@@ -389,20 +389,20 @@ classdef GraspData < handle
         function setAxisCodes(obj, codes)
             % codes: direction of increasing native rows, cols, slices,
             % one of L/R, A/P, S/I each, e.g. 'LPS' or 'PLS'
-            [perm, flp] = GraspData.codesToPermFlip(codes);
+            [perm, flp] = GRASPilotData.codesToPermFlip(codes);
             planes = {'sagittal', 'coronal', 'axial'};
             plane = planes{find(perm == 3)};                       % anatomical axis of the slices
             for sw = 0:1
                 for f = 0:7
                     uf = logical(bitget(f, 1:3));
-                    [p2, f2] = GraspData.presetOrientation(plane, sw, uf);
+                    [p2, f2] = GRASPilotData.presetOrientation(plane, sw, uf);
                     if isequal(p2, perm) && isequal(f2, flp)
                         obj.setOrientation(plane, sw, uf);
                         return
                     end
                 end
             end
-            error('GraspData:codes', 'Could not represent axis codes %s.', codes);
+            error('GRASPilotData:codes', 'Could not represent axis codes %s.', codes);
         end
 
         function n = canonSize(obj)
@@ -637,8 +637,8 @@ classdef GraspData < handle
             % 'EndFrame' / 'EndTime' (analysis endpoint in frames / s; Inf = all),
             % 'EarlyTime', 'LateTime' (s after the baseline), 'CurveTol' (%),
             % 'WashInFrames' ([a b], set from the reference curve for 'sss'),
-            % 'RefSlopeFrac'. See gdce_curve_params.
-            p = GraspData.parseOpts(varargin, obj.ParamOpts);
+            % 'RefSlopeFrac'. See graspilot_curve_params.
+            p = GRASPilotData.parseOpts(varargin, obj.ParamOpts);
             for f = {'AUCWindow', 'EndFrame', 'EndTime', 'LateTime'}
                 v = p.(f{1});
                 if isempty(v) || ~(v > 0), p.(f{1}) = Inf; end
@@ -651,12 +651,12 @@ classdef GraspData < handle
 
         function k = analysisEnd(obj)
             % last frame used for the curve parameters (EndFrame / EndTime)
-            k = gdce_end_frame(obj.paramTimes(), obj.ParamOpts);
+            k = graspilot_end_frame(obj.paramTimes(), obj.ParamOpts);
         end
 
         function computeMaps(obj, baseFrames, progress)
             % Voxel-wise enhancement and semi-quantitative curve parameters
-            % (gdce_curve_params) on the (binned) series, slice by slice.
+            % (graspilot_curve_params) on the (binned) series, slice by slice.
             if nargin < 3, progress = []; end
             T = obj.NT;
             bf = baseFrames(baseFrames >= 1 & baseFrames <= T);
@@ -688,7 +688,7 @@ classdef GraspData < handle
                 for i = 1:numel(names), out{i} = zeros(P, 1, 'single'); end
                 for b0 = 1:blk:P
                     rows = b0:min(P, b0 + blk - 1);
-                    R = gdce_curve_params(S(rows, :), tt, bf, obj.ParamOpts);
+                    R = graspilot_curve_params(S(rows, :), tt, bf, obj.ParamOpts);
                     for i = 1:numel(names)
                         out{i}(rows) = R.(src{i});
                     end
@@ -696,7 +696,7 @@ classdef GraspData < handle
                 for i = 1:numel(names)
                     M.(names{i})(:, :, z) = reshape(out{i}, nx, ny);
                 end
-                GraspData.report(progress, z / nz, sprintf('Enhancement maps: slice %d/%d', z, nz));
+                GRASPilotData.report(progress, z / nz, sprintf('Enhancement maps: slice %d/%d', z, nz));
             end
             obj.Maps = M;
             obj.CanonMapCache = struct();
@@ -727,7 +727,7 @@ classdef GraspData < handle
         function A = canonMap(obj, name)
             % name: Baseline | Max | PeakEnh | RelEnh | TTP | Onset | WashIn | WashOut | AUC
             if isempty(obj.Maps)
-                error('GraspData:maps', 'Enhancement maps have not been computed.');
+                error('GRASPilotData:maps', 'Enhancement maps have not been computed.');
             end
             if isfield(obj.CanonMapCache, name)
                 A = obj.CanonMapCache.(name);
@@ -746,7 +746,7 @@ classdef GraspData < handle
                     A = 100 * (M.Max - M.Baseline) ./ M.Baseline;
                     A(~(M.Baseline > 0)) = NaN;
                 otherwise
-                    error('GraspData:maps', 'Unknown map "%s".', name);
+                    error('GRASPilotData:maps', 'Unknown map "%s".', name);
             end
             A = obj.native2canon(A);
             obj.CanonMapCache.(name) = A;

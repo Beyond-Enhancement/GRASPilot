@@ -1,14 +1,14 @@
-function [lin, info] = gdce_detect_sss(D, varargin)
-%GDCE_DETECT_SSS Find the posterior superior sagittal sinus just above the torcula.
+function [lin, info] = graspilot_detect_sss(D, varargin)
+%GRASPILOT_DETECT_SSS Find the posterior superior sagittal sinus just above the torcula.
 %
-%   [lin, info] = gdce_detect_sss(D)
-%   [lin, info] = gdce_detect_sss(D, 'Name', Value, ...)
+%   [lin, info] = graspilot_detect_sss(D)
+%   [lin, info] = graspilot_detect_sss(D, 'Name', Value, ...)
 %
 %   Returns canonical linear indices of an ROI in the thickest part of the
 %   posterior superior sagittal sinus (SSS) above the torcula (confluence of
 %   sinuses), excluding the transverse sinuses and the straight sinus.
 %   Orientation must be correct (canonical axes R->L, A->P, I->S; see
-%   GraspData.setAxisCodes): the method relies on "posterior", "midline"
+%   GRASPilotData.setAxisCodes): the method relies on "posterior", "midline"
 %   and "superior".
 %
 %   Method, on the peak enhancement map (max after the baseline - baseline):
@@ -46,7 +46,7 @@ p = struct('BaseFrames', [], 'MidlineMM', 10, 'LateralMM', 50, 'RelThr', 0.35, .
 for i = 1:2:numel(varargin)
     fn = fieldnames(p);
     m = find(strcmpi(fn, varargin{i}), 1);
-    if isempty(m), error('gdce_detect_sss:opt', 'Unknown option %s.', varargin{i}); end
+    if isempty(m), error('graspilot_detect_sss:opt', 'Unknown option %s.', varargin{i}); end
     p.(fn{m}) = varargin{i + 1};
 end
 lin = zeros(0, 1);
@@ -94,7 +94,7 @@ for s = 1:p.Seeds
     [emax, k] = max(Es(:));
     if ~(emax > 0) || emax < 0.6 * emax1, break; end   % strongly enhancing seeds only
     [a, b, c] = ind2sub(n, k);
-    C = GraspDCEViewer.floodFill3D(vessel, [a b c]);
+    C = GRASPilot.floodFill3D(vessel, [a b c]);
     if nnz(C) > bestN
         best = C; bestN = nnz(C); bestSeed = [a b c];
     end
@@ -122,7 +122,7 @@ for k = 1:n(3)
     seed2 = [ix(cand(j)) yp 1];
     M2 = Ck;
     M2(:, 1:max(0, yp - pr - 1)) = false;
-    R2 = GraspDCEViewer.floodFill3D(M2, seed2);
+    R2 = GRASPilot.floodFill3D(M2, seed2);
     % depth (A-P) limited to the left-right width of the cross-section:
     % the SSS is about as deep as it is wide, the straight sinus joins
     % from anterior
@@ -131,7 +131,7 @@ for k = 1:n(3)
     dlim = min(pr, round(wd * vox(1) / vox(2)));
     if any(by < yp - dlim + 1)
         M2(:, 1:max(0, yp - dlim)) = false;
-        R2 = GraspDCEViewer.floodFill3D(M2, seed2);
+        R2 = GRASPilot.floodFill3D(M2, seed2);
     end
     blob{k} = find(R2);
     A(k) = numel(blob{k}) * vox(1) * vox(2);
@@ -178,7 +178,7 @@ for k = ks
     M2(l2(keep)) = true;
     [~, im] = max(e);
     [sx, sy] = ind2sub([n(1) n(2)], l2(im));
-    R2 = GraspDCEViewer.floodFill3D(M2, [sx sy 1]);
+    R2 = GRASPilot.floodFill3D(M2, [sx sy 1]);
     lin = [lin; find(R2) + (k - 1) * np]; %#ok<AGROW>
 end
 [ii, jj, kk] = ind2sub(n, lin);

@@ -1,7 +1,7 @@
-function [w, info] = gdce_ref_window(Sref, t, bf, opts)
-%GDCE_REF_WINDOW Period of most rapid signal increase of a reference (SSS) curve.
+function [w, info] = graspilot_ref_window(Sref, t, bf, opts)
+%GRASPILOT_REF_WINDOW Period of most rapid signal increase of a reference (SSS) curve.
 %
-%   [w, info] = gdce_ref_window(Sref, t, baseFrames, opts)
+%   [w, info] = graspilot_ref_window(Sref, t, baseFrames, opts)
 %
 %   Sref   [1 x T] reference curve (mean of the superior sagittal sinus ROI)
 %   w      [a b] frames: the wash-in period. The slopes between consecutive
@@ -11,18 +11,18 @@ function [w, info] = gdce_ref_window(Sref, t, bf, opts)
 %          [] if the curve does not rise.
 %   info   MaxSlope, MaxSlopeFrame (the slope from that frame to the next)
 %
-%   Used for WashIn = 'sss' in gdce_curve_params: the wash-in slope of a
+%   Used for WashIn = 'sss' in graspilot_curve_params: the wash-in slope of a
 %   tissue curve is its maximum slope within the same period, following the
 %   wash-in definition "period of maximally rapid increasing superior
 %   sagittal sinus signal" of Lee, Berger et al., Neurosurgery 2023;92:497.
-%   opts.EndFrame / opts.EndTime limit the frames as in gdce_curve_params.
+%   opts.EndFrame / opts.EndTime limit the frames as in graspilot_curve_params.
 
 if nargin < 4 || isempty(opts), opts = struct(); end
 if ~isfield(opts, 'RefSlopeFrac') || isempty(opts.RefSlopeFrac), opts.RefSlopeFrac = 0.5; end
 w = []; info = struct('MaxSlope', NaN, 'MaxSlopeFrame', NaN);
 Sref = double(Sref(:)');
 t = double(t(:)');
-Te = gdce_end_frame(t, opts);
+Te = graspilot_end_frame(t, opts);
 Sref = Sref(1:Te); t = t(1:Te);
 T = numel(t);
 bf = bf(bf >= 1 & bf <= T);

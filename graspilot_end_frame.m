@@ -1,7 +1,7 @@
-function Te = gdce_end_frame(t, opts)
-%GDCE_END_FRAME Last frame analysed for the options EndFrame / EndTime.
+function Te = graspilot_end_frame(t, opts)
+%GRASPILOT_END_FRAME Last frame analysed for the options EndFrame / EndTime.
 %
-%   Te = gdce_end_frame(t, opts)   t: frame times; opts.EndFrame (frames)
+%   Te = graspilot_end_frame(t, opts)   t: frame times; opts.EndFrame (frames)
 %   and opts.EndTime (same axis as t); the earlier one applies, at least 2
 %   frames are kept.
 T = numel(t);
