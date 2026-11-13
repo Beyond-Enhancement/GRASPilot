@@ -17,6 +17,11 @@ classdef GRASPilotData < handle
 %
 %   DENSE MODE holds a magnitude series as single [nx ny nz T].
 %
+%   MOTION CORRECTION (applyMotionCorrection) realigns every raw frame to
+%   the reference of a rigid motion estimate (graspilot_motion_estimate)
+%   and keeps the realigned frames as a dense series; the original frame
+%   source is kept for revertMotionCorrection.
+%
 %   TEMPORAL BINNING (setBinning) averages the magnitude of n consecutive
 %   reconstructed frames into one frame. Every frame-based method (slices,
 %   volumes, time courses, maps, frame times, exports) then works on the
@@ -71,6 +76,10 @@ classdef GRASPilotData < handle
         Maps = [];                  % native-space enhancement maps
         CanonMapCache = struct();
         MapsVersion = 0;            % incremented whenever maps or orientation change
+        Motion = [];                % last motion estimate (graspilot_motion_estimate)
+        MotionCorrected = false;    % frames realigned by applyMotionCorrection
+        MotionApplied = [];         % the estimate that was applied
+        Orig = [];                  % original frame source while motion-corrected
     end
 
     properties
@@ -290,6 +299,10 @@ classdef GRASPilotData < handle
             end
         end
 
+        function s = ternary(c, a, b)
+            if c, s = a; else, s = b; end
+        end
+
         function report(fcn, frac, msg)
             if ~isempty(fcn)
                 try
@@ -472,6 +485,117 @@ classdef GRASPilotData < handle
             else
                 b = numel(obj.D) * 4;
             end
+            if ~isempty(obj.Orig)
+                O = obj.Orig;
+                b = b + numel(O.C) * 4 * (1 + ~isreal(O.C)) + numel(O.Phi) * 4 * (1 + ~isreal(O.Phi)) + numel(O.D) * 4;
+            end
+        end
+
+        % ---------- motion ----------
+        function V = rawCanonVolume(obj, f)
+            % canonical volume of raw (unbinned) frame f
+            if strcmp(obj.Mode, 'dense')
+                V = obj.native2canon(obj.D(:, :, :, f));
+                return
+            end
+            nx = obj.NativeSize(1); ny = obj.NativeSize(2); nz = obj.NativeSize(3);
+            K = obj.NK;
+            V = zeros(nx, ny, nz, 'single');
+            for z = 1:nz
+                V(:, :, z) = reshape(abs(reshape(obj.C(:, :, :, z), nx * ny, K) * obj.Phi(f, :, z)'), nx, ny);
+            end
+            V = obj.native2canon(V);
+        end
+
+        function s = motionDescription(obj)
+            % one line for exports / sidecars
+            if obj.MotionCorrected
+                M = obj.MotionApplied;
+                s = sprintf(['applied: rigid realignment of every raw frame to the %s (normalized mutual ' ...
+                    'information); before correction max mean head displacement %.2f mm from the reference, ' ...
+                    '%.2f mm between frames'], M.Reference, max(M.AbsMean), max([0; M.RelMean(isfinite(M.RelMean))]));
+            elseif ~isempty(obj.Motion)
+                M = obj.Motion;
+                s = sprintf(['not applied; estimated max mean head displacement %.2f mm from the %s, %.2f mm ' ...
+                    'between frames%s'], max(M.AbsMean), M.Reference, max([0; M.RelMean(isfinite(M.RelMean))]), ...
+                    GRASPilotData.ternary(M.Excess, ' (EXCESS MOTION WARNING)', ''));
+            else
+                s = 'not applied; motion not estimated';
+            end
+        end
+
+        function setMotion(obj, M)
+            % store a motion estimate (graspilot_motion_estimate)
+            obj.Motion = M;
+        end
+
+        function b = motionCorrectionBytes(obj)
+            % memory of the realigned (dense) series
+            b = prod(obj.NativeSize) * obj.NTRaw * 4;
+        end
+
+        function applyMotionCorrection(obj, M, progress)
+            % Realign every raw frame with the rigid transforms of motion
+            % estimate M (default: obj.Motion): frame f is resampled at
+            % y = Rot (x - Centre) + Centre + t (trilinear; outside the
+            % volume the nearest edge value). Frames with sub-0.05-voxel
+            % motion are copied. The result is kept as a dense series.
+            if nargin < 2 || isempty(M), M = obj.Motion; end
+            if nargin < 3, progress = []; end
+            if isempty(M) || ~isfield(M, 'Params')
+                error('GRASPilotData:motion', 'No motion estimate: run graspilot_motion_estimate first.');
+            end
+            if obj.MotionCorrected
+                error('GRASPilotData:motion', 'Already motion-corrected: revert first.');
+            end
+            if size(M.Params, 1) ~= obj.NTRaw
+                error('GRASPilotData:motion', 'The motion estimate has %d frames, the series %d.', ...
+                    size(M.Params, 1), obj.NTRaw);
+            end
+            n = obj.canonSize();
+            vox = obj.canonVox();
+            [g1, g2, g3] = ndgrid(single(0:n(1) - 1) * vox(1), single(0:n(2) - 1) * vox(2), ...
+                single(0:n(3) - 1) * vox(3));
+            X = [g1(:) g2(:) g3(:)];
+            clear g1 g2 g3
+            Cc = single(M.Centre);
+            out = zeros([obj.NativeSize obj.NTRaw], 'single');
+            for f = 1:obj.NTRaw
+                GRASPilotData.report(progress, (f - 1) / obj.NTRaw, ...
+                    sprintf('Motion correction: frame %d of %d...', f, obj.NTRaw));
+                V = obj.rawCanonVolume(f);
+                pf = M.Params(f, :);
+                if any(~isfinite(pf)), pf = zeros(1, 6); end
+                Rm = single(graspilot_rigid_matrix(pf));
+                Y = (X - repmat(Cc, size(X, 1), 1)) * Rm' + repmat(Cc + single(pf(1:3)), size(X, 1), 1);
+                q = Y ./ repmat(single(vox), size(Y, 1), 1) + 1;
+                dq = abs(q - X ./ repmat(single(vox), size(X, 1), 1) - 1);
+                if max(dq(:)) > 0.05
+                    for a = 1:3, q(:, a) = min(max(q(:, a), 1), n(a)); end
+                    V = reshape(interpn(double(V), double(q(:, 1)), double(q(:, 2)), double(q(:, 3)), 'linear'), n);
+                end
+                out(:, :, :, f) = obj.canon2native(single(V));
+            end
+            obj.Orig = struct('Mode', obj.Mode, 'C', obj.C, 'Phi', obj.Phi, 'D', obj.D, 'NK', obj.NK);
+            obj.Mode = 'dense';
+            obj.D = out;
+            obj.C = []; obj.Phi = [];
+            obj.NK = 0;
+            obj.MotionCorrected = true;
+            obj.MotionApplied = M;
+            obj.clearMaps();
+            GRASPilotData.report(progress, 1, 'Motion correction: done');
+        end
+
+        function revertMotionCorrection(obj)
+            % back to the original (uncorrected) frames
+            if ~obj.MotionCorrected, return; end
+            O = obj.Orig;
+            obj.Mode = O.Mode; obj.C = O.C; obj.Phi = O.Phi; obj.D = O.D; obj.NK = O.NK;
+            obj.Orig = [];
+            obj.MotionCorrected = false;
+            obj.MotionApplied = [];
+            obj.clearMaps();
         end
 
         % ---------- orientation helpers ----------

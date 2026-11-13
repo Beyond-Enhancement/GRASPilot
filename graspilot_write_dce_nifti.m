@@ -35,6 +35,8 @@ if D.hasTiming()
 end
 J.RawFrames = D.NTRaw;
 J.BinSize = D.BinSize;
+J.MotionCorrected = logical(D.MotionCorrected);
+J.MotionCorrection = D.motionDescription();
 J.BinningNote = 'each frame = mean magnitude of BinSize consecutive reconstructed frames';
 J.RawFramesPerFrame = D.BinIdx(frames);
 J.DroppedRawFrames = D.droppedFrames();

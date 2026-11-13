@@ -99,6 +99,7 @@ info = {
     'Native acquisition plane', D.Plane;
     'Frames', T;
     'Temporal binning (raw frames averaged per frame)', D.BinSize;
+    'Motion correction', D.motionDescription();
     'Raw frames', D.NTRaw;
     'Dropped raw frames (incomplete last bin)', num2str(D.droppedFrames());
     'Temporal resolution (s/frame, after binning)', D.effectiveDt();

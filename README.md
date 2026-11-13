@@ -17,15 +17,19 @@ stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_a
 
 ![Parameters window: settings, colour scale and tumor ROI statistics](docs/screenshot_param_window.png)
 
+![Motion window: rigid motion per frame and the excess-motion warning](docs/screenshot_motion.png)
+
 *Synthetic phantoms, rendered with GNU Octave; controls look slightly different in MATLAB.
 Top: frame view after 2x temporal binning with the SSS control and the tumor ROI. Middle:
 subtraction map (frame 60 - frame 1), threshold preview in green and the enhancing rim grown
-from the crosshair (necrotic core excluded). Bottom: Auto SSS on a venous phantom - the ROI
+from the crosshair (necrotic core excluded). Third: Auto SSS on a venous phantom - the ROI
 (red) follows the posterior SSS from just above the torcula toward the vertex (sagittal
 view); the straight sinus (anterior to it on the axial view), the transverse sinuses and a
-scalp vein are excluded. Last two: peak
+scalp vein are excluded. Next:
 wash-in slope / SSS as a jet colour map with the ROI outlines (analysis limited to the first
-100 s, orange line on the curves), and the Parameters window with the tumor ROI statistics.*
+100 s, orange line on the curves), and the Parameters window with the tumor ROI statistics.
+Last: Motion window for a phantom whose head moves 1-1.5 mm and 1.5-2 deg from frame 9 on
+(warning in red, flagged frames as red dots).*
 
 ## Quick start
 
@@ -343,6 +347,53 @@ P = graspilot_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 
 The parameter maps take about 50 MB of memory each for a 12-million-voxel volume (13 maps).
 
+## Motion check and correction
+
+Analysis > **Motion check and correction** opens the Motion window.
+
+**Estimate motion** registers every reconstructed frame (raw frames, before binning) to a
+reference volume with a rigid transform (3 translations, 3 rotations about the head
+centre). The reference is the mean of the baseline frames (or a chosen frame). The cost is
+normalized mutual information (Studholme et al. 1999), which tolerates the signal changes
+from contrast enhancement; the search is a 2-level (3 mm, then 1 mm smoothing) simplex
+optimization on up to 30,000 voxels of the head and its outline, each frame starting from
+the previous estimate. It takes about 1-3 s per frame (Stop keeps the frames done). The
+window plots translations (mm, along L, P, S), rotations (deg) and the mean displacement of
+the head voxels, from the reference and from the previous frame.
+
+**Warning.** Excess motion is reported (status bar, a message box, red text in the window
+and MOTION WARNING in the data panel) when the mean head displacement of any frame exceeds
+the thresholds: by default one voxel (geometric mean of the voxel size, at least 1 mm)
+from the reference, or half a voxel between consecutive frames (sudden motion). The
+flagged frames are listed and marked.
+
+**Apply correction** resamples every frame at its estimated position (trilinear
+interpolation; frames that moved less than 0.05 voxel are copied unchanged). The frames
+then line up with the reference, so the ROIs (drawn on any frame) stay in place, and
+images, curves, maps, parameters and exports all use the corrected frames. The corrected
+series is held in memory as a full 4D array (the size is shown before applying; the
+original data are kept for **Revert to original**). Estimating again on corrected frames
+shows the residual motion. ROI sessions remember the correction and re-apply it when
+loaded with the same data; the NIfTI JSON sidecar, the time-series Info sheet and the
+parameter Settings sheet record whether it was applied. **Export (.csv)** writes the
+parameters and displacements per frame.
+
+Limits: motion during the acquisition also enters the subspace (low-rank) reconstruction
+itself; realigning frames cannot remove the resulting blurring or ghosting, so frames
+flagged as excess motion deserve a look even after correction. Only rigid motion is
+modelled (no brain deformation or through-slab motion outside the imaged slab: frames are
+padded with edge values there).
+
+Scripting:
+
+```matlab
+M = app.estimateMotion();          % viewer: warns on excess motion
+app.applyMotion();                 % realign; app.revertMotion() to undo
+M = graspilot_motion_estimate(D, 'RefFrames', 1:5, 'WarnAbsMM', 1.5);
+D.applyMotionCorrection(M);        % data model only
+graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true);  % batch, + _motion.csv
+```
+
 ## Exports
 
 | Button / menu | Output |
@@ -372,6 +423,7 @@ for k = 1:numel(f)
     graspilot_convert_mat2nifti(f(k).name, '', 'Voxel', [1 1 1], 'dt', 3.3);   % AxisCodes 'LPS' by default
 end
 graspilot_convert_mat2nifti('recon_8spoke.mat', '', 'dt', 1.6, 'BinSize', 2);   % binned x2
+graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCheck', true);     % warn only
 
 % data model only
 D = GRASPilotData.fromFile('recon.mat');
@@ -406,6 +458,8 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `graspilot_export_timeseries.m` | voxel time series -> .xlsx/.csv |
 | `graspilot_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
 | `graspilot_ref_window.m`, `graspilot_end_frame.m` | SSS wash-in period; analysis endpoint |
+| `graspilot_motion_estimate.m` | rigid frame-by-frame motion (normalized mutual information) and excess-motion check |
+| `graspilot_rigid_matrix.m`, `graspilot_motion_summary.m` | rotation matrix; motion summary text |
 | `graspilot_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
 | `graspilot_reorient_to_ref.m` | mask import reorientation |
 | `graspilot_detect_sss.m` | automatic superior sagittal sinus ROI |
@@ -416,6 +470,7 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `tests/graspilot_selftest.m` | synthetic end-to-end test (`graspilot_selftest(true)` also drives the GUI) |
 | `tests/graspilot_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
 | `tests/graspilot_sss_phantom.m` | venous phantom (SSS, torcula, transverse/straight sinuses, scalp vein, artery) |
+| `tests/graspilot_motion_phantom.m` | the venous phantom with known rigid motion of chosen frames |
 
 ## Notes and limitations
 
@@ -423,6 +478,9 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
   orientation (especially left-right) and frame timing should be checked once per protocol.
 - Auto SSS was tested on synthetic phantoms; check its ROI on real data, in particular
   near the torcula and with a hypoplastic or asymmetric confluence.
+- Motion estimation was validated on a phantom with known motion (2-3 mm, 2-3 deg recovered
+  to < 0.1 mm mean error); on real GRASP frames check the plots for implausible jumps
+  (e.g. in noisy early frames) before applying the correction.
 - Signal is the magnitude of the reconstruction (normalized to the global maximum when
   ReadData.m normalization is on); no T1 mapping or concentration conversion is done.
   Parameters are therefore semi-quantitative (signal-based): compare absolute values only

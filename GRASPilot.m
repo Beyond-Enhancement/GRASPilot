@@ -56,6 +56,8 @@ classdef GRASPilot < handle
         RefROIName = '';        % reference ROI for /SSS normalization ('' = first ROI named SSS*)
         IncludeRefStats = false;
         PW = struct();          % parameter window handles
+        MW = struct();          % motion window handles
+        MotionStop = false;     % stop request for the motion estimate
         CB = struct();          % colour bar in the sagittal panel
         ParamCache = struct('key', '', 'V', []);
         RefCache = [];
@@ -269,6 +271,7 @@ classdef GRASPilot < handle
             obj.ParamCache = struct('key', '', 'V', []);
             obj.RefCache = [];
             obj.updateColorbar();
+            obj.refreshMotionWindow();
             obj.setupTimeSlider();
             obj.resetViewsGeometry();
             obj.autoContrast(false);
@@ -1191,6 +1194,7 @@ classdef GRASPilot < handle
             end
             ke = D.analysisEnd(); tt = D.paramTimes();
             S = {'Baseline frames', sprintf('%d-%d', obj.BaseFrames);
+                'Motion correction', D.motionDescription();
                 'Analysis endpoint', sprintf('frames 1-%d of %d (last frame at %.4g %s); later frames ignored', ...
                 ke, D.NT, tt(ke), GRASPilot.ternaryStr(D.hasTiming(), 's', 'frames'));
                 'Early / late frame (after end of baseline)', sprintf('%g / %g (nearest frames; Inf = last analysed frame)', ...
@@ -1546,6 +1550,12 @@ classdef GRASPilot < handle
             S.SubFrames = obj.SubFrames;
             S.ParamOpts = D.ParamOpts;
             S.RefROIName = obj.RefROIName;
+            S.MotionCorrected = D.MotionCorrected;
+            if D.MotionCorrected
+                S.Motion = D.MotionApplied;
+            elseif ~isempty(D.Motion)
+                S.Motion = D.Motion;
+            end
             S.ROINames = {obj.ROIs.Name};
             S.ROIColors = reshape([obj.ROIs.Color], 3, [])';
             S.ROIVisible = [obj.ROIs.Visible];
@@ -1598,6 +1608,17 @@ classdef GRASPilot < handle
                     kp = false;
                     if isfield(S, 'BinKeepPartial'), kp = logical(S.BinKeepPartial); end
                     obj.applyBinning(sBin, kp);
+                end
+            end
+            if isfield(S, 'MotionCorrected') && isfield(S, 'Motion') && ~isempty(S.Motion) && ...
+                    size(S.Motion.Params, 1) == D.NTRaw
+                if S.MotionCorrected && ~D.MotionCorrected
+                    % the ROIs were analysed on motion-corrected frames: redo the same correction
+                    obj.applyMotion(S.Motion, true);
+                elseif ~S.MotionCorrected && D.MotionCorrected
+                    obj.revertMotion();
+                elseif ~D.MotionCorrected
+                    D.setMotion(S.Motion);
                 end
             end
             if strcmp(mode, 'Replace')
@@ -1679,6 +1700,7 @@ classdef GRASPilot < handle
             catch
             end
             if isfield(obj.PW, 'Fig') && ishghandle(obj.PW.Fig), delete(obj.PW.Fig); end
+            if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig), delete(obj.MW.Fig); end
             if ~isempty(obj.Fig) && ishghandle(obj.Fig), delete(obj.Fig); end
         end
     end
@@ -1802,6 +1824,8 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.openParamWindow());
             uimenu(m, 'Label', 'Show / hide parameter map   (M)', 'Callback', @(s, e) obj.setParamDisplay(~obj.ParamOn));
             uimenu(m, 'Label', 'Export parameter statistics and voxel values...', 'Callback', @(s, e) obj.onExportParams());
+            uimenu(m, 'Label', 'Motion check and correction...', 'Separator', 'on', ...
+                'Callback', @(s, e) obj.openMotionWindow());
             m = uimenu(obj.Fig, 'Label', 'Help');
             uimenu(m, 'Label', 'Mouse and keyboard...', 'Callback', @(s, e) obj.showHelp());
             uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.inform(sprintf(['GRASPilot %s\n' ...
@@ -3318,6 +3342,324 @@ classdef GRASPilot < handle
             end
         end
 
+        % ------------------------------------------------------------ motion
+        function M = estimateMotion(obj, varargin)
+            % Rigid frame-by-frame motion estimate of the raw frames
+            % (graspilot_motion_estimate); options are passed on. Warns when
+            % excess motion is found. Reference: mean of the baseline frames.
+            M = [];
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            rf = [D.BinIdx{obj.BaseFrames(1):obj.BaseFrames(2)}];
+            opts = [{'RefFrames', rf}, varargin];
+            if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig)
+                a = str2double(get(obj.MW.warnAbs, 'String'));
+                r = str2double(get(obj.MW.warnRel, 'String'));
+                if isfinite(a) && a > 0, opts = [opts, {'WarnAbsMM', a}]; end
+                if isfinite(r) && r > 0, opts = [opts, {'WarnRelMM', r}]; end
+                if get(obj.MW.refPop, 'Value') == 2
+                    k = round(str2double(get(obj.MW.refFrame, 'String')));
+                    if isfinite(k) && k >= 1 && k <= D.NTRaw, opts = [opts, {'Reference', k}]; end
+                end
+            end
+            obj.MotionStop = false;
+            wb = obj.wbOpen('Estimating head motion...');
+            obj.setMotionButtons(true);
+            try
+                M = graspilot_motion_estimate(D, opts{:}, 'Progress', @(f, m) obj.motionProgress(wb, f, m), ...
+                    'Cancel', @() obj.MotionStop);
+            catch err
+                obj.wbClose(wb);
+                obj.setMotionButtons(false);
+                obj.showError(err, 'Motion estimate failed');
+                return
+            end
+            obj.wbClose(wb);
+            obj.setMotionButtons(false);
+            D.setMotion(M);
+            obj.updateDataInfo();
+            obj.refreshMotionWindow();
+            pre = '';
+            if D.MotionCorrected, pre = 'Residual motion after correction. '; end
+            obj.setStatus([pre M.Message]);
+            if M.Excess
+                obj.inform(sprintf(['%s%s\n\nCheck the frames listed (Motion window). Motion during the ' ...
+                    'acquisition also degrades the reconstruction itself; Apply correction realigns the frames ' ...
+                    'but cannot remove blurring or ghosting.'], pre, M.Message), 'Motion warning');
+            end
+        end
+
+        function motionProgress(obj, wb, f, m)
+            obj.wbUpdate(wb, f, m);
+            if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig)
+                set(obj.MW.info, 'String', m);
+            end
+            drawnow;
+        end
+
+        function ok = applyMotion(obj, M, quiet)
+            % realign the frames with motion estimate M (default: the last
+            % estimate); ROIs stay in place (frames move to the reference)
+            ok = false;
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            if nargin < 2 || isempty(M), M = D.Motion; end
+            if nargin < 3, quiet = false; end
+            if isempty(M)
+                obj.inform('Estimate the motion first.', 'Motion correction');
+                return
+            end
+            if D.MotionCorrected
+                obj.inform('The frames are already motion-corrected (Revert first).', 'Motion correction');
+                return
+            end
+            if ~quiet && ~obj.Quiet
+                mb = D.motionCorrectionBytes() / 2^20;
+                b = obj.ask(sprintf(['Realign all %d frames to the reference (%s)?\n\nThe corrected frames are ' ...
+                    'kept in memory as a full 4D series: about %.0f MB (the original data are kept for Revert). ' ...
+                    'Images, curves, maps and exports then use the corrected frames.'], D.NTRaw, M.Reference, mb), ...
+                    'Motion correction', {'Apply', 'Cancel'}, 'Apply');
+                if ~strcmp(b, 'Apply'), return; end
+            end
+            wb = obj.wbOpen('Motion correction...');
+            try
+                D.applyMotionCorrection(M, @(f, m) obj.wbUpdate(wb, f, m));
+            catch err
+                obj.wbClose(wb);
+                obj.showError(err, 'Motion correction failed');
+                return
+            end
+            obj.wbClose(wb);
+            obj.afterFramesChanged();
+            obj.setStatus(sprintf('Motion correction applied: %d frames realigned to the %s.', D.NTRaw, M.Reference));
+            ok = true;
+        end
+
+        function revertMotion(obj)
+            if ~obj.requireData() || ~obj.Data.MotionCorrected, return; end
+            M = obj.Data.MotionApplied;
+            obj.Data.revertMotionCorrection();
+            obj.Data.setMotion(M);
+            obj.afterFramesChanged();
+            obj.setStatus('Motion correction removed: original frames.');
+        end
+
+        function afterFramesChanged(obj)
+            % the frame source changed (motion correction): refresh everything
+            obj.stopPlay();
+            for r = 1:numel(obj.ROIs), obj.ROIs(r).Dirty = true; end
+            obj.CursorTC = [];
+            obj.ParamCache = struct('key', '', 'V', []);
+            obj.RefCache = [];
+            obj.HeadCache = struct('ver', -1, 'M', []);
+            if obj.Preview && obj.thrNeedsMaps(), obj.ensureMaps(false); end
+            if obj.ParamOn, obj.ensureMaps(false); end
+            obj.updateDataInfo();
+            obj.refreshAll();
+            obj.updateThrSliderRange();
+            obj.refreshParamDisplay();
+            obj.refreshParamWindow();
+            obj.refreshMotionWindow();
+        end
+
+        function files = exportMotion(obj, file)
+            % motion parameters and displacements per raw frame (.csv)
+            files = {};
+            D = obj.Data;
+            M = D.Motion;
+            what = 'estimate';
+            if isempty(M), M = D.MotionApplied; end
+            if D.MotionCorrected
+                if isequal(M, D.MotionApplied)
+                    what = 'estimate applied for the motion correction';
+                else
+                    what = 'residual motion of the corrected frames';
+                end
+            end
+            if isempty(M), error('GRASPilot:motion', 'No motion estimate.'); end
+            fid = fopen(file, 'w');
+            if fid < 0, error('GRASPilot:motion', 'Cannot write %s.', file); end
+            fprintf(fid, ['RawFrame,Time_s,TransL_mm,TransP_mm,TransS_mm,RotLR_deg,RotAP_deg,RotIS_deg,' ...
+                'MeanDispRef_mm,MaxDispRef_mm,MeanDispPrev_mm,MaxDispPrev_mm,Excess\n']);
+            tt = D.t0 + (0:D.NTRaw - 1) * D.dt;
+            for f = 1:D.NTRaw
+                v = [M.Params(f, :) M.AbsMean(f) M.AbsMax(f) M.RelMean(f) M.RelMax(f)];
+                c = arrayfun(@(x) GRASPilot.ternaryStr(isfinite(x), sprintf('%.4f', x), ''), v, 'UniformOutput', false);
+                ts = '';
+                if isfinite(tt(f)), ts = sprintf('%.3f', tt(f)); end
+                fprintf(fid, '%d,%s,%s,%d\n', f, ts, strjoin(c, ','), any(M.ExcessFrames == f));
+            end
+            fprintf(fid, '# Motion %s. %s\n', what, M.Message);
+            fprintf(fid, '# Translations: head motion along L (R->L), P (A->P), S (I->S); rotations about the L-R, A-P, I-S axes through the head centre [%.1f %.1f %.1f] mm (canonical voxel order).\n', M.Centre);
+            fprintf(fid, '# Motion correction: %s\n', D.motionDescription());
+            fclose(fid);
+            files = {file};
+        end
+
+        function openMotionWindow(obj)
+            if ~obj.requireData(), return; end
+            if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig)
+                figure(obj.MW.Fig);
+                obj.refreshMotionWindow();
+                return
+            end
+            obj.Layout = obj.Layout(arrayfun(@(L) ishghandle(L.h), obj.Layout));
+            C = obj.Col;
+            W = 980; Hh = 720;
+            ss = get(0, 'ScreenSize');
+            f = figure('Name', 'Motion check and correction', 'NumberTitle', 'off', 'MenuBar', 'none', ...
+                'ToolBar', 'none', 'Units', 'pixels', 'Color', C.bg, ...
+                'Position', [max(1, round((ss(3) - W) / 2)), max(40, round((ss(4) - Hh) / 2)), W, Hh]);
+            P = uipanel('Parent', f, 'Units', 'pixels', 'Position', [1 1 W Hh], 'BorderType', 'none', ...
+                'BackgroundColor', C.panel);
+            obj.MW = struct('Fig', f, 'Panel', P);
+            vmm = max(1, prod(obj.Data.canonVox()) ^ (1 / 3));
+            obj.ctl(P, 12, 10, 300, 18, 'text', 'RIGID MOTION, FRAME BY FRAME', 'FontWeight', 'bold', ...
+                'ForegroundColor', C.accent);
+            obj.ctl(P, 12, 36, 70, 18, 'text', 'Reference');
+            obj.MW.refPop = obj.ctl(P, 86, 34, 210, 22, 'popupmenu', {'Mean of the baseline frames', 'Raw frame:'});
+            obj.MW.refFrame = obj.ctl(P, 300, 34, 46, 22, 'edit', '1');
+            obj.ctl(P, 360, 36, 176, 18, 'text', 'Warn if mean displacement >');
+            obj.MW.warnAbs = obj.ctl(P, 538, 34, 46, 22, 'edit', sprintf('%.2g', vmm), ...
+                'TooltipString', 'mm from the reference (default: one voxel)');
+            obj.ctl(P, 588, 36, 140, 18, 'text', 'mm from reference, or');
+            obj.MW.warnRel = obj.ctl(P, 730, 34, 46, 22, 'edit', sprintf('%.2g', vmm / 2), ...
+                'TooltipString', 'mm between consecutive frames (default: half a voxel)');
+            obj.ctl(P, 780, 36, 160, 18, 'text', 'mm between frames');
+            obj.MW.btnEst = obj.ctl(P, 12, 64, 150, 26, 'pushbutton', 'Estimate motion', 'FontWeight', 'bold', ...
+                'Callback', @(s, e) obj.estimateMotion());
+            obj.MW.btnStop = obj.ctl(P, 168, 64, 60, 26, 'pushbutton', 'Stop', 'Enable', 'off', ...
+                'Callback', @(s, e) obj.stopMotion());
+            obj.MW.btnApply = obj.ctl(P, 236, 64, 150, 26, 'pushbutton', 'Apply correction', ...
+                'Callback', @(s, e) obj.applyMotion());
+            obj.MW.btnRevert = obj.ctl(P, 392, 64, 150, 26, 'pushbutton', 'Revert to original', ...
+                'Callback', @(s, e) obj.revertMotion());
+            obj.MW.btnExport = obj.ctl(P, 548, 64, 150, 26, 'pushbutton', 'Export (.csv)...', ...
+                'Callback', @(s, e) obj.onExportMotion());
+            obj.MW.info = obj.ctl(P, 12, 98, -12, 66, 'text', '', 'FontSize', 9);
+            ttl = {'Translation (mm)', 'Rotation (deg)', 'Mean head displacement (mm)'};
+            obj.MW.Ax = GRASPilot.handleArray(3);
+            for i = 1:3
+                ax = axes('Parent', P, 'Units', 'pixels', 'Position', [60 100 400 120], 'Color', [0.07 0.07 0.08], ...
+                    'XColor', [0.8 0.8 0.8], 'YColor', [0.8 0.8 0.8], 'Box', 'on', 'FontSize', 8, 'NextPlot', 'add');
+                title(ax, ttl{i}, 'Color', [0.85 0.85 0.85], 'FontSize', 9);
+                obj.MW.Ax(i) = ax;
+            end
+            set(f, 'SizeChangedFcn', @(s, e) obj.layoutMotionWindow());
+            obj.layoutMotionWindow();
+            obj.refreshMotionWindow();
+        end
+
+        function layoutMotionWindow(obj)
+            if ~isfield(obj.MW, 'Fig') || ~ishghandle(obj.MW.Fig), return; end
+            fp = get(obj.MW.Fig, 'Position');
+            set(obj.MW.Panel, 'Position', [1 1 fp(3) fp(4)]);
+            obj.layoutRecords(obj.MW.Panel);
+            top = 190; gap = 46; bottom = 40;
+            h = max(60, (fp(4) - top - bottom - 2 * gap) / 3);
+            for i = 1:3
+                y = fp(4) - top - i * h - (i - 1) * gap;
+                set(obj.MW.Ax(i), 'Position', [60 y max(100, fp(3) - 80) h]);
+            end
+        end
+
+        function setMotionButtons(obj, busy)
+            if ~isfield(obj.MW, 'Fig') || ~ishghandle(obj.MW.Fig), return; end
+            on = {'on', 'off'};
+            set(obj.MW.btnStop, 'Enable', on{2 - busy});
+            set([obj.MW.btnEst obj.MW.btnApply obj.MW.btnRevert obj.MW.btnExport], 'Enable', on{1 + busy});
+            if ~busy
+                D = obj.Data;
+                if D.MotionCorrected, set(obj.MW.btnApply, 'Enable', 'off'); end
+                if ~D.MotionCorrected, set(obj.MW.btnRevert, 'Enable', 'off'); end
+                if isempty(D.Motion) && ~D.MotionCorrected
+                    set([obj.MW.btnApply obj.MW.btnExport], 'Enable', 'off');
+                end
+            end
+        end
+
+        function stopMotion(obj)
+            obj.MotionStop = true;
+        end
+
+        function refreshMotionWindow(obj)
+            if ~isfield(obj.MW, 'Fig') || ~ishghandle(obj.MW.Fig) || isempty(obj.Data), return; end
+            D = obj.Data;
+            obj.setMotionButtons(false);
+            M = D.Motion;
+            hdr = '';
+            if D.MotionCorrected
+                hdr = 'FRAMES ARE MOTION-CORRECTED. ';
+                if isempty(M) || isequal(M, D.MotionApplied)
+                    M = D.MotionApplied;
+                    hdr = [hdr 'Applied estimate: '];
+                else
+                    hdr = [hdr 'Residual motion of the corrected frames: '];
+                end
+            end
+            for i = 1:3, cla(obj.MW.Ax(i)); end
+            if isempty(M)
+                set(obj.MW.info, 'String', {['Estimate motion registers every raw frame rigidly to the reference ' ...
+                    '(normalized mutual information, robust to contrast enhancement).'], ...
+                    'About 1-3 s per frame. Apply correction then realigns the frames (Revert restores them).'}, ...
+                    'ForegroundColor', obj.Col.fg);
+                return
+            end
+            col = [0.95 0.40 0.35; 0.40 0.85 0.45; 0.40 0.65 1.00];
+            x = 1:D.NTRaw;
+            xl = 'Raw frame';
+            if D.hasTiming(), x = D.t0 + (0:D.NTRaw - 1) * D.dt; xl = 'Time (s)'; end
+            lbl = {{'L (R->L)', 'P (A->P)', 'S (I->S)'}, {'about L-R', 'about A-P', 'about I-S'}};
+            for i = 1:2
+                ax = obj.MW.Ax(i);
+                hl = zeros(1, 3);
+                for j = 1:3
+                    hl(j) = plot(ax, x, M.Params(:, 3 * (i - 1) + j), '-', 'Color', col(j, :), 'LineWidth', 1.2);
+                end
+                obj.motionLegend(ax, hl, lbl{i});
+            end
+            ax = obj.MW.Ax(3);
+            h1 = plot(ax, x, M.AbsMean, '-', 'Color', [1 0.75 0.2], 'LineWidth', 1.5);
+            h2 = plot(ax, x, M.RelMean, '-', 'Color', [0.7 0.7 1], 'LineWidth', 1.2);
+            plot(ax, [x(1) x(end)], M.WarnAbsMM * [1 1], '--', 'Color', [1 0.75 0.2]);
+            plot(ax, [x(1) x(end)], M.WarnRelMM * [1 1], ':', 'Color', [0.7 0.7 1]);
+            ex = M.ExcessFrames;
+            if ~isempty(ex)
+                plot(ax, x(ex), M.AbsMean(ex), 'o', 'Color', [1 0.3 0.3], 'MarkerFaceColor', [1 0.3 0.3], 'MarkerSize', 4);
+            end
+            obj.motionLegend(ax, [h1 h2], {'from reference', 'from previous frame'});
+            xlabel(ax, xl, 'Color', [0.85 0.85 0.85]);
+            for i = 1:3
+                if numel(x) > 1, set(obj.MW.Ax(i), 'XLim', [x(1) x(end)]); end
+            end
+            fc = obj.Col.fg;
+            if M.Excess, fc = [1 0.55 0.45]; end
+            fp = get(obj.MW.Fig, 'Position');
+            set(obj.MW.info, 'String', GRASPilot.wrapText([hdr M.Message], floor((fp(3) - 30) / 6.6)), ...
+                'ForegroundColor', fc);
+        end
+
+        function motionLegend(~, ax, h, lbl)
+            try
+                legend(ax, h, lbl, 'TextColor', [0.9 0.9 0.9], 'Color', [0.1 0.1 0.12], 'Location', 'northwest');
+            catch
+                legend(ax, h, lbl, 'Location', 'northwest');
+            end
+        end
+
+        function onExportMotion(obj)
+            if ~obj.requireData(), return; end
+            file = obj.putFile({'*.csv', 'CSV file (*.csv)'}, 'Export motion parameters', '_motion.csv');
+            if isempty(file), return; end
+            try
+                obj.exportMotion(file);
+            catch err
+                obj.showError(err, 'Motion export failed');
+                return
+            end
+            obj.setStatus(['Wrote ' file]);
+        end
+
         function toggleSubView(obj)
             if strcmp(obj.ViewMode, 'sub')
                 obj.setViewMode('frame');
@@ -3611,6 +3953,11 @@ classdef GRASPilot < handle
                 '  up toward the vertex (up to 50 mm above its thickest part)'
                 '  (transverse and straight sinuses excluded); check and edit as needed'
                 ''
+                'MOTION (Analysis > Motion check and correction)'
+                '  Estimate: rigid registration of every raw frame to the baseline mean;'
+                '  warns when the mean head displacement exceeds the thresholds;'
+                '  Apply correction realigns the frames (Revert restores them)'
+                ''
                 'SEMI-QUANTITATIVE PARAMETERS (Analysis menu or Parameters... button)'
                 '  Analyze up to: limit the analysis to the first N s or frames'
                 '  (orange dashed line on the curves)'
@@ -3723,6 +4070,11 @@ classdef GRASPilot < handle
             n = D.NativeSize;
             if D.hasTiming(), dts = sprintf('%.3g s/frame', D.effectiveDt()); else, dts = 's/frame unknown'; end
             if strcmp(D.Mode, 'subspace'), md = sprintf('subspace K=%d', D.NK); else, md = 'dense'; end
+            if D.MotionCorrected
+                md = 'motion-corrected';
+            elseif ~isempty(D.Motion) && D.Motion.Excess
+                md = [md ', MOTION WARNING'];
+            end
             if D.BinSize > 1
                 ts = sprintf('%d frames (%dx binned from %d)', D.NT, D.BinSize, D.NTRaw);
             else
@@ -3998,6 +4350,24 @@ classdef GRASPilot < handle
                 'DimOrder', 'xytz', 'CropFactor', [], 'Normalize', [], 'Plane', 'axial', ...
                 'SwapInPlane', false, 'Flip', [false false false], 'Voxel', [1 1 1], 'dt', NaN, ...
                 't0', 0, 'NoDialog', false, 'BinSize', 1, 'AxisCodes', 'LPS');
+        end
+
+        function L = wrapText(s, w)
+            % word-wrap a string into a cell array of lines of <= w characters
+            L = {};
+            words = regexp(s, '\s+', 'split');
+            cur = '';
+            for i = 1:numel(words)
+                if isempty(cur)
+                    cur = words{i};
+                elseif numel(cur) + 1 + numel(words{i}) <= w
+                    cur = [cur ' ' words{i}]; %#ok<AGROW>
+                else
+                    L{end + 1} = cur; %#ok<AGROW>
+                    cur = words{i};
+                end
+            end
+            if ~isempty(cur), L{end + 1} = cur; end
         end
 
         function s = ternaryStr(c, a, b)

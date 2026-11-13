@@ -298,6 +298,50 @@ S2 = D.canonSubtraction(D.NT, 1);
 nfail = nfail + check('subtraction map == data1(last) - data1(first)', e < tol && isequal(S, S2), e);
 D.setOrientation('axial', false, [0 0 0]);
 
+% ---------------------------------------------------------------- 4d. motion estimate and correction
+Pm = [1.5 -2 1 2 -1.5 3];
+[Dm, trm] = graspilot_motion_phantom(Pm, 7:12);
+Mm = graspilot_motion_estimate(Dm);
+np = Dm.canonSize(); vxm = Dm.canonVox();
+R0 = double(trm.Still.rawCanonVolume(1));
+[a1, a2, a3] = ind2sub(np, find(R0 > 0.2));
+Xh = ([a1 a2 a3] - 1) .* repmat(vxm, numel(a1), 1);
+fe = zeros(1, Dm.NTRaw);
+for f = 1:Dm.NTRaw
+    Rt = graspilot_rigid_matrix(trm.Params(f, :)); Re = graspilot_rigid_matrix(Mm.Params(f, :));
+    Yt = (Xh - repmat(trm.Centre, size(Xh, 1), 1)) * Rt' + repmat(trm.Centre + trm.Params(f, 1:3), size(Xh, 1), 1);
+    Ye = (Xh - repmat(Mm.Centre, size(Xh, 1), 1)) * Re' + repmat(Mm.Centre + Mm.Params(f, 1:3), size(Xh, 1), 1);
+    fe(f) = mean(sqrt(sum((Yt - Ye) .^ 2, 2)));
+end
+nfail = nfail + check('motion estimate: 2-3 mm / 2-3 deg motion recovered (mean field error)', ...
+    max(fe) < 0.2 && max(fe(1:6)) < 0.05, max(fe));
+nfail = nfail + check('excess motion flagged in the moved frames only', Mm.Excess && isequal(Mm.ExcessFrames, 7:12) ...
+    && ~isempty(strfind(Mm.Message, 'WARNING')) && Mm.RelMean(7) > 2 && all(Mm.RelMean(8:12) < 0.2), Mm.RelMean(7));
+Ms = graspilot_motion_estimate(trm.Still, 'Frames', [1 6 9 12]);
+nfail = nfail + check('no motion: no warning', ~Ms.Excess && max(Ms.AbsMean) < 0.05 && isequal(Ms.Frames, [1 6 9 12]), ...
+    max(Ms.AbsMean));
+Dm.applyMotionCorrection(Mm);
+hm = R0 > 0.2;
+e1 = zeros(1, 2); e0 = e1;
+for q = 1:2
+    f = [9 12]; f = f(q);
+    B = double(trm.Still.rawCanonVolume(f));
+    A1 = double(Dm.rawCanonVolume(f)) - B; A0 = double(Dm.native2canon(Dm.Orig.D(:, :, :, f))) - B;
+    e1(q) = sqrt(mean(A1(hm) .^ 2));
+    e0(q) = sqrt(mean(A0(hm) .^ 2));
+end
+same = isequal(Dm.rawCanonVolume(3), Dm.native2canon(Dm.Orig.D(:, :, :, 3)));
+nfail = nfail + check('motion correction realigns moved frames, keeps still ones', Dm.MotionCorrected && ...
+    all(e1 < 0.4 * e0) && same && strcmp(Dm.Mode, 'dense'), max(e1 ./ e0));
+Dm.setBinning(3);
+tcm = Dm.timecourses(find(hm, 5));
+okB = Dm.NT == 4 && abs(tcm(1, 3) - mean(Dm.D(Dm.canon2nativeLin(find(hm, 1)) + (6:8) * prod(np)))) < 1e-6;
+Dm.setBinning(1);
+Dm.revertMotionCorrection();
+nfail = nfail + check('binning on corrected frames; revert restores the original', okB && ~Dm.MotionCorrected && ...
+    isempty(Dm.Orig) && isequal(Dm.rawCanonVolume(9), Dm.native2canon(Dm.D(:, :, :, 9))) && ...
+    ~isempty(strfind(Dm.motionDescription(), 'not applied')), 0);
+
 % ---------------------------------------------------------------- 5. NIfTI round trip
 D.setOrientation('coronal', true, [1 0 1]);
 D.VoxNative = [0.9 1.1 2.5]; D.dt = 3.2; D.t0 = 0;
@@ -357,6 +401,7 @@ end
 if doGUI
     nfail = nfail + graspilot_selftest_gui(D, ref, out);
     nfail = nfail + graspilot_selftest_gui_sss(out);
+    nfail = nfail + graspilot_selftest_gui_motion(out);
 end
 
 ok = nfail == 0;
