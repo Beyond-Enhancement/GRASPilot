@@ -1,8 +1,11 @@
 classdef GRASPilot < handle
 %GRASPILOT 3-plane viewer and ROI analysis platform for dynamic GRASP DCE-MRI.
 %
-%   GRASPilot                       empty viewer (File > Open .mat)
+%   GRASPilot                       empty viewer (File > Open)
 %   GRASPilot('recon.mat')          open a reconstruction (load dialog)
+%   GRASPilot('dce_4d.nii.gz')      4D NIfTI (geometry and timing from the header)
+%   GRASPilot('/path/dicom_folder') DICOM series (folder or one image file;
+%                                   'Series', k chooses among several series)
 %   GRASPilot(vk_all, basis_all)    subspace variables already in the workspace
 %   GRASPilot(data1)                4D array from ReadData.m ([nx ny t nz])
 %   GRASPilot(D)                    GRASPilotData object
@@ -151,9 +154,15 @@ classdef GRASPilot < handle
                 obj.setData(a{1});
                 return
             end
-            if ischar(a{1})
+            if ischar(a{1}) || iscellstr(a{1})
                 opts = obj.mergeOpts(a(2:end));
-                obj.openFile(a{1}, opts);
+                k = find(strcmpi(a(2:2:end), 'dt'), 1);
+                if ~isempty(k), opts.dtGiven = a{2 * k + 1}; end
+                if iscell(a{1})
+                    obj.openImages(a{1}, 'nifti', opts);     % 3D NIfTI files, one per frame
+                else
+                    obj.openFile(a{1}, opts);
+                end
                 return
             end
             if ~isnumeric(a{1})
@@ -191,6 +200,11 @@ classdef GRASPilot < handle
 
         function openFile(obj, file, opts)
             if nargin < 3, opts = obj.LoadOpts; end
+            kind = GRASPilot.inputKind(file);
+            if ~strcmp(kind, 'mat')
+                obj.openImages(file, kind, opts);
+                return
+            end
             if ~opts.NoDialog
                 o = graspilot_load_dialog(file, opts);
                 if isempty(o), return; end
@@ -210,6 +224,59 @@ classdef GRASPilot < handle
             obj.applyLoadGeometry(D, opts);
             obj.LastDir = fileparts(file);
             obj.setData(D);
+        end
+
+        function openImages(obj, src, kind, opts)
+            % NIfTI (4D file, or a cell array of 3D files) or DICOM (folder
+            % or file): geometry, orientation and frame timing come from
+            % the headers; 'Series' and 'dt' may be given as options.
+            if nargin < 4, opts = struct(); end
+            wb = obj.wbOpen('Loading...');
+            prog = @(f, m) obj.wbUpdate(wb, f, m);
+            note = '';
+            try
+                if strcmp(kind, 'nifti')
+                    D = GRASPilotData.fromNifti(src, 'Progress', prog);
+                else
+                    scan = graspilot_dicom_read(src, 'ScanOnly', true, 'Progress', prog);
+                    sel = [];
+                    if isfield(opts, 'Series') && ~isempty(opts.Series)
+                        sel = opts.Series;
+                    elseif ischar(src) && exist(src, 'file') == 2
+                        sel = [];                         % the series of the chosen file
+                        scan = src;
+                    elseif numel(scan.Series) > 1
+                        [~, big] = max([scan.Series.NImages]);
+                        sel = big;
+                        if ~obj.Quiet
+                            obj.wbClose(wb);
+                            [sel, okd] = listdlg('ListString', {scan.Series.Label}, 'InitialValue', big, ...
+                                'Name', 'DICOM series', 'ListSize', [520 300], 'PromptString', ...
+                                'Series to open (several = one 3D series per time frame):');
+                            if ~okd || isempty(sel), return; end
+                            wb = obj.wbOpen('Loading...');
+                            prog = @(f, m) obj.wbUpdate(wb, f, m);
+                        end
+                    end
+                    [D, info] = GRASPilotData.fromDicom(scan, 'Series', sel, 'Progress', prog);
+                    note = info.Message;
+                end
+            catch err
+                obj.wbClose(wb);
+                rethrow(err);
+            end
+            obj.wbClose(wb);
+            if isfield(opts, 'dtGiven') && isfinite(opts.dtGiven) && opts.dtGiven > 0, D.dt = opts.dtGiven; end
+            if iscell(src), src = src{1}; end
+            if exist(src, 'dir') == 7, obj.LastDir = src; else, obj.LastDir = fileparts(src); end
+            obj.setData(D);
+            if D.hasTiming()
+                ts = sprintf('%.3g s/frame from the header', D.dt);
+            else
+                ts = 'frame time not in the header: enter s/frame';
+            end
+            obj.setStatus(strtrim(sprintf('Opened %s: orientation %s and voxel size %.3g x %.3g x %.3g mm from the header; %s. %s', ...
+                upper(kind), D.AxisCodes, D.VoxNative, ts, note)));
         end
 
         function applyLoadGeometry(obj, D, opts)
@@ -1377,14 +1444,16 @@ classdef GRASPilot < handle
                 obj.UndoStack = {}; obj.RedoStack = {};
                 obj.Pos = max(1, round((D.canonSize() + 1) / 2));
             end
-            D.VoxNative = vox(:)';
+            if isempty(D.SrcAffine), D.VoxNative = vox(:)'; end   % NIfTI / DICOM: voxel size is the header's
             D.dt = dt;
             D.t0 = t0;
-            obj.LoadOpts.AxisCodes = D.AxisCodes;
-            obj.LoadOpts.Plane = D.Plane;
-            obj.LoadOpts.Voxel = D.VoxNative;
-            obj.LoadOpts.dt = dt;
-            obj.LoadOpts.t0 = t0;
+            if isempty(D.SrcAffine)          % defaults for the next .mat; header geometry is not a default
+                obj.LoadOpts.AxisCodes = D.AxisCodes;
+                obj.LoadOpts.Plane = D.Plane;
+                obj.LoadOpts.Voxel = D.VoxNative;
+                obj.LoadOpts.dt = dt;
+                obj.LoadOpts.t0 = t0;
+            end
             obj.savePrefs();
             obj.resetViewsGeometry();
             obj.updateDataInfo();
@@ -1401,7 +1470,7 @@ classdef GRASPilot < handle
             if ~obj.requireData(), return; end
             if ~isfinite(dt) || dt <= 0, dt = NaN; end
             obj.Data.dt = dt;
-            obj.LoadOpts.dt = dt;
+            if isempty(obj.Data.SrcAffine), obj.LoadOpts.dt = dt; end
             obj.savePrefs();
             obj.updateDataInfo();
             obj.updateTimeWidgets();
@@ -1508,25 +1577,37 @@ classdef GRASPilot < handle
             obj.setStatus(['Wrote ' strjoin(files, ', ')]);
         end
 
-        function exportMaps(obj, folder, base)
+        function files = exportMaps(obj, folder, base, keys)
+            % Parameter maps as NIfTI (float32) in the geometry of the image
+            % export: <base>_<key>.nii.gz. keys: cell array of parameter
+            % keys (GRASPilot.ParamKeys) and/or 'Baseline', 'Max'; default all.
+            files = {};
             if ~obj.ensureMaps(false), return; end
             D = obj.Data;
+            if nargin < 4 || isempty(keys), keys = [{'Baseline', 'Max'}, obj.ParamKeys]; end
+            if ischar(keys), keys = {keys}; end
+            bad = setdiff(keys, [{'Baseline', 'Max'}, obj.ParamKeys]);
+            if ~isempty(bad), error('GRASPilot:param', 'Unknown map %s.', bad{1}); end
             hdr = struct('Dim', D.canonSize(), 'Vox', D.canonVox(), 'Affine', D.affine(), ...
                 'Datatype', 'float32', 'Descrip', 'GRASPilot map');
             if D.BinSize > 1, base = sprintf('%s_%dframes', base, D.NT); end
-            nw = 0;
-            for nm = {'Baseline', 'Max'}
-                graspilot_nifti_write(fullfile(folder, sprintf('%s_%s.nii.gz', base, nm{1})), single(D.canonMap(nm{1})), hdr);
-                nw = nw + 1;
+            skipped = {};
+            for k = 1:numel(keys)
+                if any(strcmp(keys{k}, {'Baseline', 'Max'}))
+                    V = D.canonMap(keys{k});
+                else
+                    V = obj.paramVolume(keys{k});
+                end
+                if isempty(V), skipped{end + 1} = keys{k}; continue; end %#ok<AGROW>
+                files{end + 1} = fullfile(folder, sprintf('%s_%s.nii.gz', base, keys{k})); %#ok<AGROW>
+                graspilot_nifti_write(files{end}, single(V), hdr);
             end
-            for k = 1:numel(obj.ParamKeys)
-                V = obj.paramVolume(obj.ParamKeys{k});
-                if isempty(V), continue; end
-                graspilot_nifti_write(fullfile(folder, sprintf('%s_%s.nii.gz', base, obj.ParamKeys{k})), single(V), hdr);
-                nw = nw + 1;
+            msg = sprintf('Wrote %d maps to %s (baseline frames %d-%d).', numel(files), folder, ...
+                obj.BaseFrames(1), obj.BaseFrames(2));
+            if ~isempty(skipped)
+                msg = sprintf('%s Not written (no SSS reference ROI): %s.', msg, strjoin(skipped, ', '));
             end
-            obj.setStatus(sprintf('Wrote %d maps to %s (baseline frames %d-%d).', nw, folder, ...
-                obj.BaseFrames(1), obj.BaseFrames(2)));
+            obj.setStatus(msg);
         end
 
         function saveROIs(obj, file)
@@ -1775,14 +1856,14 @@ classdef GRASPilot < handle
             obj.H.ticPanel = uipanel('Parent', obj.Fig, 'Units', 'pixels', 'BorderType', 'none', 'BackgroundColor', C.panel);
             obj.H.roiPanel = uipanel('Parent', obj.Fig, 'Units', 'pixels', 'BorderType', 'none', 'BackgroundColor', C.panel);
             obj.H.status = uicontrol(obj.Fig, 'Style', 'text', 'Units', 'pixels', 'Position', [1 1 400 20], ...
-                'String', 'Open a GRASP reconstruction (.mat) to begin.', 'HorizontalAlignment', 'left', ...
+                'String', 'Open a .mat reconstruction, 4D NIfTI or DICOM series.', 'HorizontalAlignment', 'left', ...
                 'BackgroundColor', C.bg, 'ForegroundColor', C.dim, 'FontSize', 9);
             obj.buildLeft();
             obj.buildTime();
             obj.buildTicPanel();
             obj.buildROIPanel();
             obj.setTool('nav');
-            obj.setStatus('Open a GRASP reconstruction (.mat) to begin: File > Open, or the Open button.');
+            obj.setStatus('Open a GRASP reconstruction (.mat), a 4D NIfTI or a DICOM series to begin: File > Open, or the Open button.');
             try
                 set(obj.Fig, 'SizeChangedFcn', @(s, e) obj.doLayout());
             catch
@@ -1793,14 +1874,15 @@ classdef GRASPilot < handle
 
         function buildMenus(obj)
             m = uimenu(obj.Fig, 'Label', 'File');
-            uimenu(m, 'Label', 'Open .mat...', 'Callback', @(s, e) obj.onOpen());
+            uimenu(m, 'Label', 'Open (.mat, NIfTI, DICOM file)...', 'Callback', @(s, e) obj.onOpen());
+            uimenu(m, 'Label', 'Open DICOM folder...', 'Callback', @(s, e) obj.onOpenDicomFolder());
             uimenu(m, 'Label', 'Save ROIs (session)...', 'Separator', 'on', 'Callback', @(s, e) obj.onSaveROIs());
             uimenu(m, 'Label', 'Load ROIs (session)...', 'Callback', @(s, e) obj.onLoadROIs());
             uimenu(m, 'Label', 'Import mask NIfTI...', 'Callback', @(s, e) obj.onImportMask());
             uimenu(m, 'Label', 'Export image -> NIfTI...', 'Separator', 'on', 'Callback', @(s, e) obj.onExportImage());
             uimenu(m, 'Label', 'Export mask -> NIfTI...', 'Callback', @(s, e) obj.onExportMask());
             uimenu(m, 'Label', 'Export ROI voxel time series -> spreadsheet...', 'Callback', @(s, e) obj.onExportTS());
-            uimenu(m, 'Label', 'Export enhancement maps -> NIfTI...', 'Callback', @(s, e) obj.onExportMaps());
+            uimenu(m, 'Label', 'Export parameter maps -> NIfTI...', 'Callback', @(s, e) obj.onExportMaps());
             uimenu(m, 'Label', 'Save TIC plot as PNG...', 'Callback', @(s, e) obj.onSavePNG());
             uimenu(m, 'Label', 'Close', 'Separator', 'on', 'Callback', @(s, e) obj.close());
             m = uimenu(obj.Fig, 'Label', 'Edit');
@@ -1824,6 +1906,7 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.openParamWindow());
             uimenu(m, 'Label', 'Show / hide parameter map   (M)', 'Callback', @(s, e) obj.setParamDisplay(~obj.ParamOn));
             uimenu(m, 'Label', 'Export parameter statistics and voxel values...', 'Callback', @(s, e) obj.onExportParams());
+            uimenu(m, 'Label', 'Export parameter maps -> NIfTI...', 'Callback', @(s, e) obj.onExportMaps());
             uimenu(m, 'Label', 'Motion check and correction...', 'Separator', 'on', ...
                 'Callback', @(s, e) obj.openMotionWindow());
             m = uimenu(obj.Fig, 'Label', 'Help');
@@ -1863,7 +1946,7 @@ classdef GRASPilot < handle
             P = obj.H.left; C = obj.Col;
             hdr = @(top, s) obj.ctl(P, 10, top, -10, 18, 'text', s, 'FontWeight', 'bold', 'ForegroundColor', C.accent);
             hdr(8, 'DATA');
-            obj.ctl(P, 10, 28, 135, 26, 'pushbutton', 'Open .mat...', 'Callback', @(s, e) obj.onOpen());
+            obj.ctl(P, 10, 28, 135, 26, 'pushbutton', 'Open...', 'TooltipString', '.mat reconstruction, 4D NIfTI or a DICOM image (File menu: Open DICOM folder)', 'Callback', @(s, e) obj.onOpen());
             obj.ctl(P, 150, 28, 140, 26, 'pushbutton', 'Geometry...', 'Callback', @(s, e) obj.geometryDialog());
             obj.H.info = obj.ctl(P, 10, 58, -10, 44, 'text', 'No data loaded.', 'FontSize', 8, 'ForegroundColor', C.dim);
             obj.ctl(P, 10, 108, 86, 18, 'text', 'Average every');
@@ -3789,12 +3872,36 @@ classdef GRASPilot < handle
         end
 
         function onOpen(obj)
-            [f, p] = uigetfile({'*.mat', 'MATLAB data (*.mat)'}, 'Open GRASP reconstruction', obj.startDir());
+            [f, p] = uigetfile({'*.mat;*.nii;*.nii.gz;*.gz;*.dcm;*.ima;*.IMA', 'GRASP .mat, NIfTI, DICOM'; ...
+                '*.mat', 'MATLAB data (*.mat)'; '*.nii;*.nii.gz;*.gz', 'NIfTI (*.nii, *.nii.gz)'; ...
+                '*.*', 'All files (DICOM without extension)'}, ...
+                'Open GRASP reconstruction, 4D NIfTI or a DICOM image (several 3D NIfTI = frames)', ...
+                obj.startDir(), 'MultiSelect', 'on');
             if isequal(f, 0), return; end
             try
-                obj.openFile(fullfile(p, f), obj.LoadOpts);
+                if iscell(f)
+                    f = sort(f);
+                    files = cellfun(@(x) fullfile(p, x), f, 'UniformOutput', false);
+                    if ~strcmp(GRASPilot.inputKind(files{1}), 'nifti')
+                        error('GRASPilot:input', ['Select one file, or several 3D NIfTI files (one per frame). ' ...
+                            'For a DICOM series choose one of its images or use Open DICOM folder.']);
+                    end
+                    obj.openImages(files, 'nifti');
+                else
+                    obj.openFile(fullfile(p, f), obj.LoadOpts);
+                end
             catch err
                 obj.showError(err, 'Could not load data');
+            end
+        end
+
+        function onOpenDicomFolder(obj)
+            d = uigetdir(obj.startDir(), 'Folder with the DICOM series (subfolders are searched)');
+            if isequal(d, 0), return; end
+            try
+                obj.openImages(d, 'dicom');
+            catch err
+                obj.showError(err, 'Could not load DICOM');
             end
         end
 
@@ -3846,12 +3953,21 @@ classdef GRASPilot < handle
 
         function onExportMaps(obj)
             if ~obj.requireData(), return; end
-            folder = uigetdir(obj.startDir(), 'Folder for enhancement maps');
+            keys = [{'Baseline', 'Max'}, obj.ParamKeys];
+            lbl = [{'Baseline signal S0', 'Maximum signal after baseline'}, obj.ParamLabels];
+            if ~obj.Quiet
+                [sel, okd] = listdlg('ListString', lbl, 'InitialValue', 1:numel(lbl), 'Name', 'Parameter maps -> NIfTI', ...
+                    'ListSize', [320 360], 'PromptString', 'Maps to save (one NIfTI file each):');
+                if ~okd || isempty(sel), return; end
+                keys = keys(sel);
+            end
+            folder = uigetdir(obj.startDir(), 'Folder for the parameter maps');
             if isequal(folder, 0), return; end
             [~, b] = fileparts(obj.Data.SourceFile);
+            b = regexprep(b, '\.nii$', '');
             if isempty(b) || strcmp(b, '(workspace)'), b = 'grasp'; end
             try
-                obj.exportMaps(folder, b);
+                obj.exportMaps(folder, b, keys);
             catch err
                 obj.showError(err, 'Map export failed');
             end
@@ -4349,7 +4465,23 @@ classdef GRASPilot < handle
             o = struct('Format', 'auto', 'CoefVar', 'vk_all', 'BasisVar', 'basis_all', 'ImageVar', '', ...
                 'DimOrder', 'xytz', 'CropFactor', [], 'Normalize', [], 'Plane', 'axial', ...
                 'SwapInPlane', false, 'Flip', [false false false], 'Voxel', [1 1 1], 'dt', NaN, ...
-                't0', 0, 'NoDialog', false, 'BinSize', 1, 'AxisCodes', 'LPS');
+                't0', 0, 'NoDialog', false, 'BinSize', 1, 'AxisCodes', 'LPS', 'Series', []);
+        end
+
+        function kind = inputKind(file)
+            % 'mat' | 'nifti' | 'dicom' from the name (folder = DICOM) and, for
+            % unknown extensions, the DICM marker of the file
+            kind = 'mat';
+            if exist(file, 'dir') == 7, kind = 'dicom'; return; end
+            lf = lower(file);
+            if ~isempty(regexp(lf, '(\.nii|\.nii\.gz)$', 'once')), kind = 'nifti'; return; end
+            if ~isempty(regexp(lf, '\.mat$', 'once')), return; end
+            if ~isempty(regexp(lf, '(\.dcm|\.ima|\.dicom)$', 'once')), kind = 'dicom'; return; end
+            fid = fopen(file, 'r');
+            if fid < 0, return; end
+            b = fread(fid, 132, '*uint8')';
+            fclose(fid);
+            if numel(b) == 132 && isequal(b(129:132), uint8('DICM')), kind = 'dicom'; end
         end
 
         function L = wrapText(s, w)

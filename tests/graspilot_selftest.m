@@ -342,6 +342,49 @@ nfail = nfail + check('binning on corrected frames; revert restores the original
     isempty(Dm.Orig) && isequal(Dm.rawCanonVolume(9), Dm.native2canon(Dm.D(:, :, :, 9))) && ...
     ~isempty(strfind(Dm.motionDescription(), 'not applied')), 0);
 
+% ---------------------------------------------------------------- 4e. DICOM and NIfTI input
+rand('state', 5); %#ok<RAND>
+Vd = uint16(round(3000 * rand(22, 18, 5, 4)));
+gd = struct('X', [0.9962 0.0872 0], 'Y', [-0.0853 0.9744 0.2079], 'ipp0', [-90 -110 25], 'ps', [0.9 1.1], ...
+    'dz', 2.5, 'dt', 3.25, 'Implicit', false, 'SeriesNumber', 4, 'Description', 'test dyn');
+gd.Y = gd.Y - dot(gd.Y, gd.X) * gd.X; gd.Y = gd.Y / norm(gd.Y); gd.X = gd.X / norm(gd.X);
+dd = fullfile(out, 'dicom'); 
+graspilot_dicom_write(fullfile(dd, 'a'), Vd, gd);
+gi = gd; gi.Implicit = true; gi.SeriesNumber = 9; gi.Description = 'implicit';
+graspilot_dicom_write(fullfile(dd, 'b'), Vd + 1, gi);
+fid = fopen(fullfile(dd, 'notes.txt'), 'w'); fprintf(fid, 'x'); fclose(fid);
+sc = graspilot_dicom_read(dd, 'ScanOnly', true);
+[Va, ia] = graspilot_dicom_read(sc, 'Series', 1);
+[Vb, ib] = graspilot_dicom_read(sc, 'Series', 2);
+Nd = cross(gd.X, gd.Y);
+Aw = diag([-1 -1 1 1]) * [gd.X(:) * gd.ps(2), gd.Y(:) * gd.ps(1), Nd(:) * gd.dz, gd.ipp0(:); 0 0 0 1];
+okD = numel(sc.Series) == 2 && isequal(Va, single(Vd)) && isequal(Vb, single(Vd) + 1) && ...
+    max(abs(ia.Affine(:) - Aw(:))) < 1e-4 && abs(ia.dt - 3.25) < 1e-6 && abs(ib.dt - 3.25) < 1e-6 && ...
+    sc.Series(1).NSlices == 5 && sc.Series(1).NFrames == 4;
+nfail = nfail + check('DICOM read (explicit + implicit VR): pixels, geometry, timing', okD, max(abs(ia.Affine(:) - Aw(:))));
+Dd = GRASPilotData.fromDicom(dd, 'Series', 1);
+okG = strcmp(Dd.AxisCodes, 'LPS') && max(abs(Dd.canonVox() - [1.1 0.9 2.5])) < 1e-4 && Dd.dt == ia.dt && ...
+    max(max(abs(Dd.affine() - Aw))) < 1e-4 && isequal(Dd.canonVolume(3), single(Vd(:, :, :, 3)));
+nfail = nfail + check('DICOM -> data model keeps scanner geometry', okG, 0);
+% NIfTI in: write the series (canonical order + affine), read it back; then a reoriented copy
+fnii = fullfile(out, 'in4d.nii.gz');
+graspilot_write_dce_nifti(Dd, fnii, 1:Dd.NT);
+Dn = GRASPilotData.fromNifti(fnii);
+okN = isequal(Dn.D, Dd.D) && max(max(abs(Dn.affine() - Dd.affine()))) < 1e-4 && abs(Dn.dt - 3.25) < 1e-6 && ...
+    strcmp(Dn.SourceType, 'nifti');
+% same data stored P->A, I->S with the matching affine: canonical view and world positions unchanged
+Vf = flip(single(Vd), 2);
+Af = Aw * [1 0 0 0; 0 -1 0 size(Vd, 2) - 1; 0 0 1 0; 0 0 0 1];
+Df = GRASPilotData.fromVolume(Vf, Af, 'dt', 2);
+okF = strcmp(Df.AxisCodes, 'LAS') && isequal(Df.canonVolume(2), single(Vd(:, :, :, 2))) && ...
+    max(max(abs(Df.affine() - Aw))) < 1e-9;
+f3 = {fullfile(out, 'f1.nii'), fullfile(out, 'f2.nii')};
+h3 = struct('Dim', Dd.canonSize(), 'Vox', Dd.canonVox(), 'Affine', Dd.affine(), 'Datatype', 'float32', 'Descrip', 't');
+graspilot_nifti_write(f3{1}, Dd.canonVolume(1), h3); graspilot_nifti_write(f3{2}, Dd.canonVolume(2), h3);
+D3 = GRASPilotData.fromNifti(f3, 'dt', 4);
+okF = okF && D3.NTRaw == 2 && D3.dt == 4 && isequal(D3.canonVolume(2), Dd.canonVolume(2));
+nfail = nfail + check('NIfTI in (4D, flipped axes, 3D files per frame)', okN && okF, 0);
+
 % ---------------------------------------------------------------- 5. NIfTI round trip
 D.setOrientation('coronal', true, [1 0 1]);
 D.VoxNative = [0.9 1.1 2.5]; D.dt = 3.2; D.t0 = 0;
@@ -402,6 +445,7 @@ if doGUI
     nfail = nfail + graspilot_selftest_gui(D, ref, out);
     nfail = nfail + graspilot_selftest_gui_sss(out);
     nfail = nfail + graspilot_selftest_gui_motion(out);
+    nfail = nfail + graspilot_selftest_gui_io(out);
 end
 
 ok = nfail == 0;

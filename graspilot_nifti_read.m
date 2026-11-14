@@ -3,8 +3,10 @@ function [img, hdr] = graspilot_nifti_read(fname)
 %
 %   [img, hdr] = graspilot_nifti_read(fname)
 %
-%   hdr fields: Dim, Vox, dt, Affine (voxel 0-based -> RAS mm, from sform
-%   if set, else qform, else pixdim), Datatype, SformCode, QformCode.
+%   hdr fields: Dim, Vox, dt (pixdim(5) as stored), dtSeconds (pixdim(5)
+%   converted with the time unit of xyzt_units; seconds assumed if unset),
+%   Affine (voxel 0-based -> RAS mm, from sform if set, else qform, else
+%   pixdim), Datatype, SformCode, QformCode.
 %   Scaling (scl_slope/scl_inter) is applied when present. No toolbox needed.
 
 tmpDir = '';
@@ -36,6 +38,7 @@ fseek(fid, 76, 'bof');  pixdim = fread(fid, 8, 'float32')';
 voxOffset = fread(fid, 1, 'float32');
 slope = fread(fid, 1, 'float32');
 inter = fread(fid, 1, 'float32');
+fseek(fid, 123, 'bof'); units = fread(fid, 1, 'uint8');
 fseek(fid, 252, 'bof');
 qcode = fread(fid, 1, 'int16');
 scode = fread(fid, 1, 'int16');
@@ -67,6 +70,14 @@ hdr.Dim = dims;
 hdr.Vox = pixdim(2:4);
 hdr.dt = 0;
 if nd >= 4, hdr.dt = pixdim(5); end
+tu = bitand(units, 56);                      % 8 s, 16 ms, 24 us
+sc = 1;
+if tu == 16, sc = 1e-3; elseif tu == 24, sc = 1e-6; end
+hdr.dtSeconds = hdr.dt * sc;
+su = bitand(units, 7);                       % 1 m, 2 mm, 3 um
+if su == 1, pixdim(2:4) = pixdim(2:4) * 1000; srow(:, :) = srow * 1000; qoff = qoff * 1000;
+elseif su == 3, pixdim(2:4) = pixdim(2:4) / 1000; srow(:, :) = srow / 1000; qoff = qoff / 1000; end
+hdr.Vox = pixdim(2:4);
 hdr.Datatype = prec;
 hdr.SformCode = scode;
 hdr.QformCode = qcode;

@@ -1,9 +1,10 @@
 # GRASPilot (MATLAB)
 
-3-plane viewer and ROI analysis platform for dynamic GRASP DCE-MRI reconstructions
-stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_all`).
+3-plane viewer and ROI analysis platform for dynamic GRASP DCE-MRI: reconstructions
+stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_all`),
+4D NIfTI files and DICOM series.
 
-- No toolboxes required (own NIfTI writer/reader, own drawing tools). MATLAB R2019b or
+- No toolboxes required (own NIfTI and DICOM readers, own drawing tools). MATLAB R2019b or
   newer recommended; `.xlsx` export needs R2019a+ (`writecell`/`writematrix`), `.csv` works anywhere.
 - Runs fully offline. Nothing is written except the files you export.
 
@@ -41,12 +42,51 @@ GRASPilot(vk_all, basis_all)       % variables already in the workspace
 GRASPilot(data1)                   % output of ReadData.m ([nx ny t nz])
 GRASPilot('recon.mat', 'Voxel', [1 1 1], 'dt', 3.3, 'NoDialog', true)
 GRASPilot('recon.mat', 'BinSize', 2)   % average every 2 frames on load
+GRASPilot('dce_4d.nii.gz')             % 4D NIfTI
+GRASPilot('/path/to/dicom_folder')     % DICOM series (or one of its image files)
 ```
 
 The load dialog lists the variables in the file, detects `vk_all`/`basis_all`, shows the
 resulting matrix/K/T and a memory estimate, and asks for the acquisition geometry: voxel
 orientation (default LPS, see below), pixel spacing, slice spacing and temporal resolution.
 The geometry is remembered between sessions and can be changed later under View > Geometry.
+
+## NIfTI and DICOM input
+
+File > **Open** also takes a 4D NIfTI (`.nii`, `.nii.gz`), several 3D NIfTI files (one per
+frame, multi-select, sorted by name) or one image of a DICOM series; File > **Open DICOM
+folder** scans a folder and its subfolders. For these inputs there is no load dialog:
+
+- **Geometry from the header.** Voxel size, position and orientation come from the NIfTI
+  affine or the DICOM image position/orientation. The images are shown in the same
+  radiological layout as `.mat` data (axis codes are derived from the header; oblique
+  slices are shown on their own grid, not resampled). Everything exported (images, masks,
+  parameter maps) carries the scanner coordinates of the input, so the files overlay on the
+  original series in ITK-SNAP, 3D Slicer, FSLeyes etc.
+- **Frame timing.** DICOM: from the acquisition, trigger or content times of the frames
+  (median interval). NIfTI: from a JSON sidecar written by GRASPilot, else `pixdim[4]` if it
+  is a plausible frame time (0.5-600 s; shorter values are usually the sequence TR). When
+  the header gives no frame time the status bar says so: enter s/frame in the time strip.
+- **Signal.** Values are kept as stored (rescale slope/intercept applied), not normalized.
+- **DICOM series.** If the folder holds several series a list appears (description, slices
+  x frames, matrix); pick the dynamic series, or several series when every time frame was
+  stored as its own 3D series. Frames are ordered by temporal position, acquisition time,
+  trigger time, acquisition number, content time or instance number (the first that
+  separates the frames of every slice; the status bar reports which).
+- **Supported DICOM.** Classic (one file per slice and frame) and enhanced multi-frame MR
+  images, uncompressed transfer syntaxes. Compressed images (JPEG, JPEG 2000, RLE) need
+  `dicomread` from the Image Processing Toolbox; without it, convert first (e.g. with
+  dcm2niix to NIfTI) and open the NIfTI. No patient-identifying elements are read.
+
+Scripting:
+
+```matlab
+D = GRASPilotData.fromNifti('dce_4d.nii.gz');              % or {'f001.nii', 'f002.nii', ...}, 'dt', 3.3
+scan = graspilot_dicom_read(folder, 'ScanOnly', true);     % scan.Series(k).Label
+D = GRASPilotData.fromDicom(scan, 'Series', 2);
+[V, info] = graspilot_dicom_read(folder);                  % array [nx ny nz T] + affine, dt
+D = GRASPilotData.fromVolume(V, affine, 'dt', 3.3);        % any 4D array with a voxel -> RAS affine
+```
 
 ## How frames are computed (identical to ReadData.m)
 
@@ -329,8 +369,10 @@ heterogeneity; the ROI-curve value is less noisy.
 with the definitions, options and the reference values, one sheet per ROI with one row
 per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm and one column per parameter) or `.csv`
 (`_param_stats.csv`, `_param_voxels.csv`, `_param_settings.txt`); after binning the file
-name ends in `_<N>frames`. Export parameter maps writes every parameter as a NIfTI map
-(`<base>_PE.nii.gz`, `<base>_PE_SSS.nii.gz`, ...) in the geometry of the image export.
+name ends in `_<N>frames`. Export parameter maps -> NIfTI (Parameters window, File
+or Analysis menu) lists the maps to choose from and writes one NIfTI per map
+(`<base>_PE.nii.gz`, `<base>_PE_SSS.nii.gz`, ...) in the geometry of the image export; with
+NIfTI or DICOM input that is the scanner geometry of the source images.
 ROI sessions (Save ROIs) keep the parameter options and the reference ROI.
 
 Scripting:
@@ -401,7 +443,7 @@ graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true); 
 | Image -> NIfTI | 4D float32 `.nii.gz`/`.nii` (all frames, streamed frame by frame) or the current frame (3D), plus a JSON sidecar (frame times, source, geometry, normalization) |
 | Mask -> NIfTI | uint8 label map (value = ROI number), `<name>_labels.txt` (label, name, RGB, voxels, mL), `<name>_itksnap_labels.txt`; optionally one binary mask per ROI |
 | ROI voxel time series -> spreadsheet | `.xlsx`: sheets Info, Summary (per-ROI mean, SD, median, relative enhancement, n per frame) and one sheet per ROI with one row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn. `.csv`: `_voxels.csv` (all ROIs, ROI_ID/ROI_Name columns), `_summary.csv`, `_info.txt`. After binning the file name ends in `_<N>frames` |
-| File > Export enhancement maps / Parameters > Export parameter maps | Baseline, Max and every parameter (PE, WIS, WOS, AUC also /SSS) as NIfTI |
+| File or Analysis > Export parameter maps -> NIfTI (also in the Parameters window) | choose the maps in a list (baseline, maximum and every parameter; PE, WIS, WOS, AUC also /SSS); one float32 `<base>_<key>.nii.gz` per map in the geometry of the image export. Scripting: `app.exportMaps(folder, base, {'PE', 'WIS_SSS'})` |
 | Parameters > Export statistics + voxel values | parameter statistics per tumor ROI and voxel values (see above) |
 | (binning) | binned series everywhere; JSON sidecar and Info sheet record bin size, raw frames per frame and dropped frames |
 | Save / Load ROIs | `.mat` session (ROI names, colors, voxels in native indices, geometry); reloads onto any reconstruction with the same matrix, e.g. the 8-, 16- and 32-spoke versions of one scan |
@@ -453,6 +495,7 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `GRASPilot.m` | GUI (classic figure, no toolboxes) |
 | `GRASPilotData.m` | data model: subspace/dense loading, frame synthesis, orientation, maps, affine |
 | `graspilot_load_dialog.m` | variable/format/geometry dialog |
+| `graspilot_dicom_read.m` | DICOM series -> 4D array, affine, frame timing (no toolbox) |
 | `graspilot_nifti_write.m`, `graspilot_nifti_read.m` | NIfTI-1 I/O (.nii/.nii.gz), streaming 4D writes |
 | `graspilot_write_dce_nifti.m` | series -> NIfTI + JSON sidecar |
 | `graspilot_export_timeseries.m` | voxel time series -> .xlsx/.csv |
@@ -474,8 +517,13 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 
 ## Notes and limitations
 
-- Geometry comes from the dialog; there is no DICOM header import yet. Voxel sizes,
-  orientation (especially left-right) and frame timing should be checked once per protocol.
+- For `.mat` input the geometry comes from the dialog: voxel sizes, orientation (especially
+  left-right) and frame timing should be checked once per protocol. NIfTI and DICOM input
+  take them from the header.
+- The DICOM reader was validated on synthetic series (pixels, geometry and timing against
+  pydicom-written files and dcm2niix), not yet on scanner exports; check orientation and the
+  frame count/order on the first real series. Siemens mosaics and colour images are not
+  supported.
 - Auto SSS was tested on synthetic phantoms; check its ROI on real data, in particular
   near the torcula and with a hypoplastic or asymmetric confluence.
 - Motion estimation was validated on a phantom with known motion (2-3 mm, 2-3 deg recovered

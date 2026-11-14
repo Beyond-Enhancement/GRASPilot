@@ -80,6 +80,8 @@ classdef GRASPilotData < handle
         MotionCorrected = false;    % frames realigned by applyMotionCorrection
         MotionApplied = [];         % the estimate that was applied
         Orig = [];                  % original frame source while motion-corrected
+        SrcAffine = [];             % native voxel (0-based) -> RAS mm of a NIfTI / DICOM source
+        SourceType = 'mat';         % 'mat' | 'nifti' | 'dicom' | 'array'
     end
 
     properties
@@ -268,6 +270,110 @@ classdef GRASPilotData < handle
             obj.CropFactor = cf;
             obj.Normalized = logical(p.Normalize);
             obj.setOrientation('axial', false, [false false false]);
+        end
+
+        function obj = fromVolume(V, A, varargin)
+            % Dense series with scanner geometry.
+            %   D = GRASPilotData.fromVolume(V, A, 'dt', s, 't0', s, 'SourceFile', name, 'SourceType', t)
+            % V [nx ny nz T] (or 3D), A 4x4 voxel (0-based) -> RAS mm. The
+            % anatomical orientation (axis codes) and voxel size are taken
+            % from A; signal values are kept as they are (not normalized).
+            q = struct('dt', NaN, 't0', 0, 'SourceFile', '', 'SourceType', 'array');
+            for i = 1:2:numel(varargin)
+                fn = fieldnames(q);
+                m = find(strcmpi(fn, varargin{i}), 1);
+                if isempty(m), error('GRASPilotData:opt', 'Unknown option %s.', varargin{i}); end
+                q.(fn{m}) = varargin{i + 1};
+            end
+            if ~isequal(size(A), [4 4]) || any(~isfinite(A(:))) || abs(det(A(1:3, 1:3))) < 1e-9
+                error('GRASPilotData:affine', 'The image geometry (affine) is not valid.');
+            end
+            obj = GRASPilotData.fromDense(V, 'xyzt', 'CropFactor', 1, 'Normalize', false);
+            obj.SrcAffine = double(A);
+            obj.VoxNative = sqrt(sum(A(1:3, 1:3) .^ 2, 1));
+            obj.setAxisCodes(GRASPilotData.codesFromAffine(A));
+            if isfinite(q.dt) && q.dt > 0, obj.dt = q.dt; else, obj.dt = NaN; end
+            obj.t0 = q.t0;
+            obj.SourceFile = q.SourceFile;
+            obj.SourceType = q.SourceType;
+            obj.SourceVars = q.SourceType;
+        end
+
+        function codes = codesFromAffine(A)
+            % anatomical direction of increasing index for each array axis
+            % (nearest of L/R, A/P, S/I), from a voxel -> RAS affine
+            R = A(1:3, 1:3) ./ repmat(sqrt(sum(A(1:3, 1:3) .^ 2, 1)), 3, 1);
+            W = abs(R);
+            lett = ['RL'; 'AP'; 'SI'];
+            codes = '   ';
+            for k = 1:3                                  % strongest pairings first
+                [~, i] = max(W(:));
+                [w, d] = ind2sub([3 3], i);              % world axis w <-> array dim d
+                codes(d) = lett(w, 1 + (R(w, d) < 0));
+                W(w, :) = -1; W(:, d) = -1;
+            end
+        end
+
+        function obj = fromNifti(files, varargin)
+            % 4D NIfTI (.nii / .nii.gz), or several 3D files (one per frame,
+            % in the given order; a cell array). Options: 'dt' (s/frame,
+            % overrides the header), 'Progress'.
+            q = struct('dt', [], 'Progress', []);
+            for i = 1:2:numel(varargin)
+                fn = fieldnames(q);
+                m = find(strcmpi(fn, varargin{i}), 1);
+                if isempty(m), error('GRASPilotData:opt', 'Unknown option %s.', varargin{i}); end
+                q.(fn{m}) = varargin{i + 1};
+            end
+            if ischar(files), files = {files}; end
+            V = [];
+            for k = 1:numel(files)
+                GRASPilotData.report(q.Progress, (k - 1) / numel(files), sprintf('Reading %s...', files{k}));
+                [img, hdr] = graspilot_nifti_read(files{k});
+                if ndims(img) > 4
+                    img = reshape(img, size(img, 1), size(img, 2), size(img, 3), []);
+                end
+                if ~isreal(img), img = abs(img); end
+                img = single(img);
+                if k == 1
+                    V = img; h1 = hdr;
+                else
+                    if ~isequal(size(img(:, :, :, 1)), size(V(:, :, :, 1))) || ...
+                            max(abs(hdr.Affine(:) - h1.Affine(:))) > 1e-2
+                        error('GRASPilotData:nifti', '%s does not have the same grid as %s.', files{k}, files{1});
+                    end
+                    V = cat(4, V, img);
+                end
+            end
+            dt = NaN; src = 'header';
+            if ~isempty(q.dt)
+                dt = q.dt; src = 'given';
+            else
+                % sidecar of a GRASPilot / dcm2niix export, else the header
+                js = regexprep(files{1}, '(\.nii\.gz|\.nii)$', '.json', 'ignorecase');
+                if exist(js, 'file') == 2
+                    t = fileread(js);
+                    tk = regexp(t, '"TemporalResolution_s"\s*:\s*([-+0-9.eE]+)', 'tokens', 'once');
+                    if ~isempty(tk), dt = str2double(tk{1}); src = 'sidecar'; end
+                end
+                if ~(isfinite(dt) && dt > 0) && numel(files) == 1 && h1.dtSeconds >= 0.5 && h1.dtSeconds <= 600
+                    dt = h1.dtSeconds;       % shorter values are usually the sequence TR, not the frame time
+                end
+            end
+            if ~(isfinite(dt) && dt > 0), dt = NaN; src = 'not found'; end
+            obj = GRASPilotData.fromVolume(V, h1.Affine, 'dt', dt, 'SourceFile', files{1}, 'SourceType', 'nifti');
+            obj.SourceVars = sprintf('NIfTI (s/frame from %s)', src);
+            GRASPilotData.report(q.Progress, 1, 'Done');
+        end
+
+        function [obj, info] = fromDicom(src, varargin)
+            % DICOM series (folder, file, or a scan from graspilot_dicom_read).
+            % Options as graspilot_dicom_read ('Series', 'Progress', ...).
+            [V, info] = graspilot_dicom_read(src, varargin{:});
+            name = info.Folder;
+            if ischar(src) && exist(src, 'file') == 2, name = src; end
+            obj = GRASPilotData.fromVolume(V, info.Affine, 'dt', info.dt, 'SourceFile', name, 'SourceType', 'dicom');
+            obj.SourceVars = sprintf('DICOM series %g: %s', info.SeriesNumber, info.Series);
         end
 
         function p = defaultOpts()
@@ -878,8 +984,26 @@ classdef GRASPilotData < handle
 
         % ---------- geometry ----------
         function A = affine(obj)
-            % voxel (0-based, canonical LPS order) -> RAS mm, volume centred at 0
+            % voxel (0-based, canonical LPS order) -> RAS mm. Data read from
+            % NIfTI or DICOM keep the scanner coordinates of the source
+            % (exports overlay on the original images); otherwise the
+            % volume is centred at 0.
             v = obj.canonVox(); n = obj.canonSize();
+            if ~isempty(obj.SrcAffine)
+                % canonical index c -> native index: native dim Perm(a) = c(a), reversed if Flip(a)
+                M = zeros(4);
+                M(4, 4) = 1;
+                for a = 1:3
+                    d = obj.Perm(a);
+                    if obj.Flip(a)
+                        M(d, a) = -1; M(d, 4) = n(a) - 1;
+                    else
+                        M(d, a) = 1;
+                    end
+                end
+                A = obj.SrcAffine * M;
+                return
+            end
             A = [-v(1) 0 0  v(1) * (n(1) - 1) / 2;
                  0 -v(2) 0  v(2) * (n(2) - 1) / 2;
                  0 0  v(3) -v(3) * (n(3) - 1) / 2;
