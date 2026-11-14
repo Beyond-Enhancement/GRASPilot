@@ -32,6 +32,10 @@ if D.hasTiming()
     J.FrameTimes_s = ft(frames);
     J.TemporalResolution_s = D.effectiveDt();
     J.RawTemporalResolution_s = D.dt;
+    [un, rg] = D.unevenTiming();
+    J.UnevenFrameTiming = logical(un);
+    if un, J.RawFrameIntervalRange_s = rg; end
+    if D.BinSize == 1, J.RawFrameTimes_s = D.rawTimes(); end
 end
 J.RawFrames = D.NTRaw;
 J.BinSize = D.BinSize;

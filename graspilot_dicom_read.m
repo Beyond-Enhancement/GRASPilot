@@ -7,7 +7,9 @@ function [V, info] = graspilot_dicom_read(src, varargin)
 %   [V, info] = graspilot_dicom_read(scan, 'Series', k)      reuse a scan
 %
 %   src       folder (searched recursively), one DICOM file (its folder is
-%             scanned and the series of that file is read), a cell array of
+%             scanned and the series of that file is read; for a one-frame
+%             series alone in its folder the sibling folders are searched
+%             for the other frames), a cell array of
 %             files, or a scan struct from a previous call
 %   V         single [nx ny nz T]: dim 1 along the image rows (increasing
 %             column index), dim 2 down the columns, dim 3 slices sorted
@@ -16,13 +18,22 @@ function [V, info] = graspilot_dicom_read(src, varargin)
 %   info      Affine (4x4, voxel 0-based -> RAS mm, for V as returned), Vox
 %             (mm), dt (s between frames; NaN if the headers give no usable
 %             frame times), Times (s from the first frame), Series
-%             (description), SeriesNumber, Modality, NFiles, Folder, Message
+%             (description), SeriesNumber, Modality, NFiles, Folder, Message,
+%             AbsTimes (header times of the frames), TimeSource. Uneven
+%             frame spacing is kept in Times (dt is its median).
 %
 %   Options
 %     'Series'    index into scan.Series or a SeriesInstanceUID. Several
-%                 indices: the series are concatenated as time frames (e.g.
-%                 one 3D series per frame); they must share the same grid.
-%                 Default: the series with the most images.
+%                 indices: the series are joined as consecutive time frames
+%                 (one 3D series per frame, or blocks of frames); they must
+%                 share the same image grid. They are ordered by acquisition
+%                 (or trigger) time when every series has distinct times,
+%                 otherwise by series number; frame times are pooled
+%                 across the series. Default: scan.Suggested, the group of
+%                 series with the same grid and description (apart from
+%                 numbers) holding the most frames, e.g. all one-frame
+%                 series of an older series-per-frame export. Given a single
+%                 file of such a group, the whole group is read.
 %     'ScanOnly'  true: only list the series (scan.Series(k).Label etc.)
 %     'Recursive' search subfolders (true)
 %     'Progress'  @(fraction, message)
@@ -67,6 +78,14 @@ else
         error('graspilot_dicom_read:src', 'No such file or folder: %s', src);
     end
     scan = scanFiles(files, folder, report);
+    if ~isempty(pickFile) && numel(scan.Series) == 1 && scan.Series(1).NFrames == 1
+        % one 3D series in this folder: the other time frames may be sibling folders
+        up = fileparts(folder);
+        if ~isempty(up) && ~strcmp(up, folder)
+            scan2 = scanFiles(listFiles(up, true), up, report);
+            if numel(scan2.Suggested) > 1, scan = scan2; end
+        end
+    end
 end
 if isempty(scan.Series)
     error('graspilot_dicom_read:none', 'No readable DICOM images found in %s.', scan.Folder);
@@ -81,7 +100,7 @@ sel = p.Series;
 if isempty(sel)
     if ~isempty(pickFile)
         [~, a] = fileparts(pickFile);
-        fi = find(strcmp(scan.Files, pickFile), 1);
+        fi = find(strcmp(scan.Files, pickFile) | strcmp(scan.Files, fullfile(scan.Folder, pickFile)), 1);
         if isempty(fi)
             for k = 1:numel(scan.Files)
                 [~, b] = fileparts(scan.Files{k});
@@ -93,7 +112,10 @@ if isempty(sel)
             sel = scan.Rec.Series(r);
         end
     end
-    if isempty(sel), [~, sel] = max([scan.Series.NImages]); end
+    if ~isempty(sel) && any(scan.Suggested == sel) && numel(scan.Suggested) > 1
+        sel = scan.Suggested;                       % one frame of a series-per-frame acquisition
+    end
+    if isempty(sel), sel = scan.Suggested; end
 elseif ischar(sel)
     k = find(strcmp({scan.Series.UID}, sel), 1);
     if isempty(k), error('graspilot_dicom_read:series', 'Series %s not found.', sel); end
@@ -103,29 +125,62 @@ if any(sel < 1 | sel > numel(scan.Series))
     error('graspilot_dicom_read:series', 'Series index out of range (1-%d).', numel(scan.Series));
 end
 
-V = []; info = [];
-tStart = [];
+sel = sel(:)';
+if numel(sel) == 1
+    [V, info] = readSeries(scan, sel, report);
+    report(1, 'DICOM: done');
+    return
+end
+% several series = consecutive time frames (one 3D series per frame, or blocks of frames)
+parts = cell(1, numel(sel)); infos = cell(1, numel(sel));
 for q = 1:numel(sel)
-    [Vq, iq] = readSeries(scan, sel(q), @(f, msg) report((q - 1 + f) / numel(sel), msg));
-    if q == 1
-        V = Vq; info = iq;
-    else
-        if ~isequal(size(Vq(:, :, :, 1)), size(V(:, :, :, 1))) || max(abs(iq.Affine(:) - info.Affine(:))) > 1e-2
-            error('graspilot_dicom_read:grid', 'Series %d and %d do not share the same image grid.', sel(1), sel(q));
+    [parts{q}, infos{q}] = readSeries(scan, sel(q), @(f, msg) report((q - 1 + f) / numel(sel), msg));
+    if q > 1 && (~isequal(size(parts{q}(:, :, :, 1)), size(parts{1}(:, :, :, 1))) || ...
+            max(abs(infos{q}.Affine(:) - infos{1}.Affine(:))) > 1e-2)
+        error('graspilot_dicom_read:grid', ['Series %g and %g do not share the same image grid (matrix, slice ' ...
+            'positions, orientation); only series that are time frames of the same slab can be combined.'], ...
+            scan.Series(sel(1)).Number, scan.Series(sel(q)).Number);
+    end
+end
+num = arrayfun(@(k) scan.Series(k).Number, sel);
+[~, oNum] = sort(num);
+src = cellfun(@(x) x.TimeSource, infos, 'UniformOutput', false);
+st = cellfun(@(x) x.StartTime, infos);
+timed = all(cellfun(@(x) all(isfinite(x.AbsTimes)), infos)) && all(strcmp(src, src{1})) && ...
+    ~strcmp(src{1}, 'content time') && numel(unique(st)) == numel(st);
+if timed
+    [~, o] = sort(st);
+    how = sprintf('ordered by %s', src{1});
+    if ~isequal(o, oNum), how = [how ' (differs from the series-number order!)']; end
+else
+    o = oNum;
+    how = 'ordered by series number';
+end
+V = cat(4, parts{o});
+info = infos{o(1)};
+info.Series = sprintf('%d series combined (%s ...)', numel(sel), info.Series);
+info.SeriesNumber = num(o);
+info.CombinedSeries = sel(o);
+info.dt = NaN; info.Times = []; info.AbsTimes = [];
+tmsg = ' No distinct acquisition times across the series: enter s/frame.';
+if timed
+    T = cell2mat(cellfun(@(x) x.AbsTimes, infos(o), 'UniformOutput', false));
+    if all(diff(T) > 0)
+        info.AbsTimes = T;
+        info.Times = T - T(1);
+        d = diff(T);
+        info.dt = median(d);
+        if max(abs(d - info.dt)) > 0.05 * info.dt
+            tmsg = sprintf([' Uneven frame timing (%.2f-%.2f s between frames, median %.2f s): the measured ' ...
+                'frame times are used.'], min(d), max(d), info.dt);
+        else
+            tmsg = sprintf(' %.3g s/frame from the %s.', info.dt, src{1});
         end
-        V = cat(4, V, Vq);
+    else
+        tmsg = ' Frame times overlap between the series: enter s/frame.';
     end
-    tStart(end + 1) = iq.StartTime; %#ok<AGROW>
 end
-if numel(sel) > 1
-    info.Series = sprintf('%d series combined (%s ...)', numel(sel), info.Series);
-    info.dt = NaN; info.Times = [];
-    if all(isfinite(tStart)) && all(diff(tStart) > 0) && size(V, 4) == numel(sel)
-        info.Times = tStart - tStart(1);
-        info.dt = median(diff(tStart));
-    end
-    info.Message = sprintf('%d series combined as %d frames.', numel(sel), size(V, 4));
-end
+info.Message = sprintf('%d series combined as %d frames, %s.%s', numel(sel), size(V, 4), how, tmsg);
 report(1, 'DICOM: done');
 end
 
@@ -235,6 +290,13 @@ for s = 1:numel(S)
         lay = sprintf('%d slices x %d frames', nz, nt);
     end
     S(s).Label = sprintf('Series %g: %s - %s, %dx%d', S(s).Number, ds, lay, S(s).Columns, S(s).Rows);
+    % image grid: matrix, orientation and slice positions
+    [~, ~, zi, pos] = layoutOf(R, r);
+    zp = accumarray(zi, pos, [], @mean);
+    k1 = r(1);
+    S(s).GridKey = sprintf('%d|%d|%d|%s|%.1f|%.1f|%.2f|%.2f', S(s).Rows, S(s).Columns, nz, ...
+        sprintf('%.2f,', R.IOP(k1, :)), min(zp), max(zp), R.PS(k1, 1), R.PS(k1, 2));
+    S(s).Stem = lower(strtrim(regexprep(regexprep(ds, '[0-9]+', ''), '[\s_\-#.:()]+', ' ')));
 end
 [~, o] = sort([S.Number]);
 if ~isempty(o)
@@ -244,6 +306,42 @@ if ~isempty(o)
     R.Series = newIdx(R.Series);
 end
 scan = struct('Folder', folder, 'Files', {files}, 'Series', S, 'Rec', R, 'FH', FH);
+scan.Suggested = suggest(S);
+end
+
+function sel = suggest(S)
+% Series most likely to be the dynamic acquisition: the group of series with
+% the same image grid and description (apart from numbers) holding the most
+% time frames; a single multi-frame series wins over a group with fewer frames.
+sel = [];
+if isempty(S), return; end
+nf = [S.NFrames]; nf(isnan(nf)) = 0;
+key = strcat({S.GridKey}, '#', {S.Stem});
+[u, ~, g] = unique(key);
+best = 0;
+for i = 1:numel(u)
+    m = find(g == i);
+    if numel(m) > 1 && any(nf(m) ~= nf(m(1))) && any(nf(m) > 1)
+        m = m(nf(m) == max(nf(m)));                  % e.g. a localizer with the same name
+    end
+    tot = sum(nf(m));
+    if numel(m) == 1 || all(nf(m) >= 1)
+        if tot > best || (tot == best && numel(m) < numel(sel))
+            best = tot; sel = m(:)';
+        end
+    end
+end
+% no group by name: series named differently per frame (e.g. by time point),
+% same grid, one frame each
+[ug, ~, gg] = unique({S.GridKey});
+for i = 1:numel(ug)
+    if numel(sel) >= 3, break; end
+    m = find(gg(:) == i & nf(:) == 1);
+    if numel(m) >= 3 && numel(m) > best
+        best = numel(m); sel = m(:)';
+    end
+end
+if isempty(sel), [~, sel] = max([S.NImages]); end
 end
 
 function [nz, nt, zi, pos] = layoutOf(R, r)
@@ -297,23 +395,29 @@ end
 m1 = find(zi == 1);
 [~, o] = sort(ti(m1));
 m1 = m1(o);
-dt = NaN; times = []; t0 = NaN;
+dt = NaN; times = []; absT = NaN(1, nt); tsrc = '';
 cand = {R.AcqT(r), R.Trig(r), R.ContT(r)};
+cname = {'acquisition time', 'trigger time', 'content time'};
 for c = 1:numel(cand)
     tv = cand{c}(m1);
-    if all(isfinite(tv)), t0 = tv(1); end
-    if nt > 1 && all(isfinite(tv)) && all(diff(tv) > 0)
-        times = tv(:)' - tv(1);
+    tv = tv(:)';
+    if ~all(isfinite(tv)), continue; end
+    if nt > 1 && all(diff(tv) > 0)
+        times = tv - tv(1);
         dt = median(diff(tv));
+        absT = tv; tsrc = cname{c};
+        break
+    elseif nt == 1 && c < 3                        % content time is often the reconstruction time
+        absT = tv; tsrc = cname{c};
         break
     end
 end
 msg = sprintf('Frames ordered by %s.', used);
 if isnan(dt) && nt > 1
     msg = [msg ' No usable frame times in the headers: enter s/frame.'];
-elseif nt > 1 && max(abs(diff(times) - dt)) > 0.1 * dt
-    msg = sprintf('%s Frame times are not uniform (%.2f-%.2f s); the median %.2f s is used.', msg, ...
-        min(diff(times)), max(diff(times)), dt);
+elseif nt > 1 && max(abs(diff(times) - dt)) > 0.05 * dt
+    msg = sprintf('%s Uneven frame timing (%.2f-%.2f s between frames, median %.2f s): the measured frame times are used.', ...
+        msg, min(diff(times)), max(diff(times)), dt);
 end
 
 % geometry
@@ -355,7 +459,8 @@ for a = 1:numel(fl)
         V(:, :, zi(q), ti(q)) = img;
     end
 end
-info = struct('Affine', A, 'Vox', vox, 'dt', dt, 'Times', times, 'StartTime', t0, 'Series', S.Description, ...
+info = struct('Affine', A, 'Vox', vox, 'dt', dt, 'Times', times, 'AbsTimes', absT, 'TimeSource', tsrc, ...
+    'StartTime', absT(1), 'Series', S.Description, ...
     'SeriesNumber', S.Number, 'Modality', S.Modality, 'NFiles', numel(fl), 'Folder', scan.Folder, 'Message', msg);
 end
 

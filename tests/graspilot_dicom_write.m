@@ -9,7 +9,10 @@ function graspilot_dicom_write(folder, V, g)
 %   g  struct: X, Y (row and column direction cosines, LPS), ipp0 (position
 %      of the first voxel of slice 1, LPS mm), ps [row col] spacing, dz
 %      (slice spacing along cross(X, Y)), dt (s between frames), Implicit
-%      (true: implicit VR little endian), SeriesNumber, Description.
+%      (true: implicit VR little endian), SeriesNumber, Description;
+%      optional: Times (frame times, s; default (0:T-1) dt), T0 (time of day
+%      of frame 1, s; default 10:05:00), Files ('per' default, or a fixed
+%      file-name prefix).
 %   Test data only: not a complete DICOM object.
 if exist(folder, 'dir') ~= 7, mkdir(folder); end
 [nx, ny, nz, T] = size(V);
@@ -18,9 +21,11 @@ uid = sprintf('1.2.826.0.1.3680043.8.498.%d', 1000 + g.SeriesNumber);
 order = reshape(reshape(1:nz * T, nz, T)', 1, []);       % frame-interleaved
 order = order(mod((0:numel(order) - 1) * 7, numel(order)) + 1);   % scrambled (7 coprime to count)
 if numel(unique(order)) ~= nz * T, order = 1:nz * T; end
+if ~isfield(g, 'Times') || isempty(g.Times), g.Times = (0:T - 1) * g.dt; end
+if ~isfield(g, 'T0') || isempty(g.T0), g.T0 = 36300; end
 for c = 1:numel(order)
     [z, t] = ind2sub([nz T], order(c));
-    sec = 36300 + g.dt * (t - 1);
+    sec = g.T0 + g.Times(t);
     tm = sprintf('%02d%02d%09.6f', floor(sec / 3600), floor(mod(sec, 3600) / 60), mod(sec, 60));
     ipp = g.ipp0(:)' + (z - 1) * g.dz * N(:)';
     E = { ...
@@ -39,7 +44,7 @@ for c = 1:numel(order)
         '0028', '0030', 'DS', sprintf('%.6f\\%.6f', g.ps); ...
         '0028', '0100', 'US', 16; ...
         '0028', '0103', 'US', 0};
-    fid = fopen(fullfile(folder, sprintf('I%05d', mod(c * 7919, 99991))), 'w', 'ieee-le');
+    fid = fopen(fullfile(folder, sprintf('I%d_%05d', g.SeriesNumber, mod(c * 7919, 99991))), 'w', 'ieee-le');
     fwrite(fid, zeros(1, 128, 'uint8'));
     fwrite(fid, 'DICM');
     if g.Implicit, ts = '1.2.840.10008.1.2'; else, ts = '1.2.840.10008.1.2.1'; end

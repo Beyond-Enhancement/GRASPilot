@@ -63,14 +63,27 @@ folder** scans a folder and its subfolders. For these inputs there is no load di
   slices are shown on their own grid, not resampled). Everything exported (images, masks,
   parameter maps) carries the scanner coordinates of the input, so the files overlay on the
   original series in ITK-SNAP, 3D Slicer, FSLeyes etc.
-- **Frame timing.** DICOM: from the acquisition, trigger or content times of the frames
-  (median interval). NIfTI: from a JSON sidecar written by GRASPilot, else `pixdim[4]` if it
+- **Frame timing.** DICOM: from the acquisition (or trigger) times of the frames. When the
+  frames are unevenly spaced (more than 5% from the median interval) the measured time of
+  every frame is used: curves are plotted at the true times, and slopes, AUC, TTP, the
+  analysis endpoint and binned frame times all use them. The data panel shows "uneven
+  x-y s/frame" and the NIfTI sidecar stores the frame times (re-opened exports get them
+  back). Typing a value in the s/frame box replaces them with a uniform spacing (re-open the
+  data to restore them); `app.setFrameTimes(t)` sets measured times for any input. NIfTI: from a JSON sidecar written by GRASPilot, else `pixdim[4]` if it
   is a plausible frame time (0.5-600 s; shorter values are usually the sequence TR). When
   the header gives no frame time the status bar says so: enter s/frame in the time strip.
 - **Signal.** Values are kept as stored (rescale slope/intercept applied), not normalized.
 - **DICOM series.** If the folder holds several series a list appears (description, slices
-  x frames, matrix); pick the dynamic series, or several series when every time frame was
-  stored as its own 3D series. Frames are ordered by temporal position, acquisition time,
+  x frames, matrix) with the likely dynamic series preselected: the group of series with the
+  same image grid and the same description apart from numbers that holds the most frames.
+  This covers newer exports (one series with all frames) and older ones (one 3D series per
+  frame); several series can also be blocks of frames. Selected series are joined as
+  consecutive frames, ordered by their acquisition times (a note appears when that differs
+  from the series numbers) or, when the series have no distinct acquisition times, by series
+  number; frame times are pooled across the series. They must share the same grid (matrix,
+  slice positions, orientation); a slab split by slices into several series is not joined.
+  Opening one image of a one-frame series reads the whole group, also when every frame is in
+  its own folder (the sibling folders are searched). Frames are ordered by temporal position, acquisition time,
   trigger time, acquisition number, content time or instance number (the first that
   separates the frames of every slice; the status bar reports which).
 - **Supported DICOM.** Classic (one file per slice and frame) and enhanced multi-frame MR

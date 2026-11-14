@@ -385,6 +385,65 @@ D3 = GRASPilotData.fromNifti(f3, 'dt', 4);
 okF = okF && D3.NTRaw == 2 && D3.dt == 4 && isequal(D3.canonVolume(2), Dd.canonVolume(2));
 nfail = nfail + check('NIfTI in (4D, flipped axes, 3D files per frame)', okN && okF, 0);
 
+% ---------------------------------------------------------------- 4f. series-per-frame DICOM and uneven timing
+rand('state', 6); %#ok<RAND>
+Vs = uint16(round(2000 * rand(16, 14, 4, 12)));
+ds = fullfile(out, 'dicom_split');
+g0 = struct('X', [1 0 0], 'Y', [0 1 0], 'ipp0', [-50 -60 10], 'ps', [1 1], 'dz', 3, 'dt', 4, 'Implicit', false);
+for f = 1:12            % older export: one 3D series per frame, numbered in time order
+    gf = g0; gf.SeriesNumber = 100 + f; gf.Description = sprintf('GRASP_t%d', f); gf.T0 = 36300 + 4 * (f - 1);
+    graspilot_dicom_write(fullfile(ds, sprintf('s%02d', f)), Vs(:, :, :, f), gf);
+end
+gp = g0; gp.SeriesNumber = 50; gp.Description = 'T1 pre';            % same grid, other series
+graspilot_dicom_write(fullfile(ds, 'pre'), Vs(:, :, :, 1) + 5, gp);
+gl = g0; gl.SeriesNumber = 1; gl.Description = 'localizer'; gl.ipp0 = [-50 -60 -40];
+graspilot_dicom_write(fullfile(ds, 'loc'), Vs(:, :, 1:2, 1), gl);
+sc = graspilot_dicom_read(ds, 'ScanOnly', true);
+[Vj, ij] = graspilot_dicom_read(sc);                                 % default = suggested series
+f1 = dir(fullfile(ds, 's05')); f1 = f1(~[f1.isdir]);
+[Vk, ik] = graspilot_dicom_read(fullfile(ds, 's05', f1(1).name));    % one image of one frame
+okS = numel(sc.Suggested) == 12 && isequal(Vj, single(Vs)) && abs(ij.dt - 4) < 1e-6 && ...
+    isequal(ij.SeriesNumber, 101:112) && isequal(Vk, Vj) && ~isempty(strfind(ij.Message, 'acquisition time'));
+nfail = nfail + check('one series per frame: suggested, joined, timed', okS, numel(sc.Suggested));
+% renumbered export (series numbers reversed) -> time order wins, with a note
+dr = fullfile(out, 'dicom_rev');
+for f = 1:6
+    gf = g0; gf.SeriesNumber = 200 - f; gf.Description = 'dyn'; gf.T0 = 36300 + 4 * (f - 1);
+    graspilot_dicom_write(fullfile(dr, sprintf('s%02d', f)), Vs(:, :, :, f), gf);
+end
+[Vr, ir] = graspilot_dicom_read(dr);
+% identical acquisition times in every series -> series-number order, timing unknown
+dn = fullfile(out, 'dicom_same');
+for f = 1:5
+    gf = g0; gf.SeriesNumber = 10 + f; gf.Description = 'dyn'; gf.T0 = 36300;
+    graspilot_dicom_write(fullfile(dn, sprintf('s%02d', f)), Vs(:, :, :, f), gf);
+end
+[Vn, in] = graspilot_dicom_read(dn);
+okO = isequal(Vr, single(Vs(:, :, :, 1:6))) && ~isempty(strfind(ir.Message, 'differs')) && ...
+    isequal(Vn, single(Vs(:, :, :, 1:5))) && isnan(in.dt) && ~isempty(strfind(in.Message, 'series number'));
+nfail = nfail + check('series order by time, else by series number', okO, ir.dt);
+% newer export: one multi-frame series with uneven timing; and blocks of frames in 3 series
+tu = [0 4 8 12 20 28 36 44 48 52 56 60];
+du = fullfile(out, 'dicom_uneven');
+gu = g0; gu.SeriesNumber = 7; gu.Description = 'GRASP dyn'; gu.Times = tu;
+graspilot_dicom_write(du, Vs, gu);
+Du = GRASPilotData.fromDicom(du);
+[un, rg] = Du.unevenTiming();
+Pu = graspilot_curve_params(double(Du.timecourses(1:5)), Du.paramTimes(), 1:3);
+okU = un && isequal(rg, [4 8]) && max(abs(Du.rawTimes() - tu)) < 1e-6 && Du.dt == 4 && ...
+    all(ismember(Pu.TTP, tu - tu(3)));
+Du.setBinning(2);
+okU = okU && max(abs(Du.frameTimes() - (tu(1:2:end) + tu(2:2:end)) / 2)) < 1e-6;
+db = fullfile(out, 'dicom_blocks');
+for b = 1:3
+    gb = g0; gb.SeriesNumber = 30 + b; gb.Description = sprintf('dyn part %d', b);
+    gb.Times = tu(4 * b - 3:4 * b) - tu(4 * b - 3); gb.T0 = 36300 + tu(4 * b - 3);
+    graspilot_dicom_write(fullfile(db, sprintf('b%d', b)), Vs(:, :, :, 4 * b - 3:4 * b), gb);
+end
+[Vb3, ib3] = graspilot_dicom_read(db);
+okU = okU && isequal(Vb3, single(Vs)) && max(abs(ib3.Times - tu)) < 1e-6 && ~isempty(strfind(ib3.Message, 'Uneven'));
+nfail = nfail + check('uneven frame times (one series; blocks of frames)', okU, rg(2));
+
 % ---------------------------------------------------------------- 5. NIfTI round trip
 D.setOrientation('coronal', true, [1 0 1]);
 D.VoxNative = [0.9 1.1 2.5]; D.dt = 3.2; D.t0 = 0;

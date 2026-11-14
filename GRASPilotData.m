@@ -88,6 +88,7 @@ classdef GRASPilotData < handle
         VoxNative = [1 1 1];        % mm: [row spacing, col spacing, slice spacing]
         dt = NaN;                   % s per frame
         t0 = 0;                     % s, time of frame 1
+        RawTimes = [];              % measured times of the raw frames (s from frame 1); [] = uniform dt
         SourceFile = '';
         SourceVars = '';
         ParamOpts = struct('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1, ...
@@ -278,7 +279,7 @@ classdef GRASPilotData < handle
             % V [nx ny nz T] (or 3D), A 4x4 voxel (0-based) -> RAS mm. The
             % anatomical orientation (axis codes) and voxel size are taken
             % from A; signal values are kept as they are (not normalized).
-            q = struct('dt', NaN, 't0', 0, 'SourceFile', '', 'SourceType', 'array');
+            q = struct('dt', NaN, 't0', 0, 'SourceFile', '', 'SourceType', 'array', 'Times', []);
             for i = 1:2:numel(varargin)
                 fn = fieldnames(q);
                 m = find(strcmpi(fn, varargin{i}), 1);
@@ -294,6 +295,7 @@ classdef GRASPilotData < handle
             obj.setAxisCodes(GRASPilotData.codesFromAffine(A));
             if isfinite(q.dt) && q.dt > 0, obj.dt = q.dt; else, obj.dt = NaN; end
             obj.t0 = q.t0;
+            if ~isempty(q.Times), obj.setFrameTimes(q.Times); end
             obj.SourceFile = q.SourceFile;
             obj.SourceType = q.SourceType;
             obj.SourceVars = q.SourceType;
@@ -345,7 +347,7 @@ classdef GRASPilotData < handle
                     V = cat(4, V, img);
                 end
             end
-            dt = NaN; src = 'header';
+            dt = NaN; src = 'header'; ftimes = [];
             if ~isempty(q.dt)
                 dt = q.dt; src = 'given';
             else
@@ -355,13 +357,20 @@ classdef GRASPilotData < handle
                     t = fileread(js);
                     tk = regexp(t, '"TemporalResolution_s"\s*:\s*([-+0-9.eE]+)', 'tokens', 'once');
                     if ~isempty(tk), dt = str2double(tk{1}); src = 'sidecar'; end
+                    tb = regexp(t, '"BinSize"\s*:\s*([0-9]+)', 'tokens', 'once');
+                    tf = regexp(t, '"FrameTimes_s"\s*:\s*\[([^\]]*)\]', 'tokens', 'once');
+                    if ~isempty(tf) && (isempty(tb) || str2double(tb{1}) == 1)
+                        ftimes = str2double(regexp(tf{1}, ',', 'split'));
+                    end
                 end
                 if ~(isfinite(dt) && dt > 0) && numel(files) == 1 && h1.dtSeconds >= 0.5 && h1.dtSeconds <= 600
                     dt = h1.dtSeconds;       % shorter values are usually the sequence TR, not the frame time
                 end
             end
             if ~(isfinite(dt) && dt > 0), dt = NaN; src = 'not found'; end
-            obj = GRASPilotData.fromVolume(V, h1.Affine, 'dt', dt, 'SourceFile', files{1}, 'SourceType', 'nifti');
+            if numel(ftimes) ~= size(V, 4) || any(~isfinite(ftimes)) || any(diff(ftimes) <= 0), ftimes = []; end
+            obj = GRASPilotData.fromVolume(V, h1.Affine, 'dt', dt, 'Times', ftimes, 'SourceFile', files{1}, ...
+                'SourceType', 'nifti');
             obj.SourceVars = sprintf('NIfTI (s/frame from %s)', src);
             GRASPilotData.report(q.Progress, 1, 'Done');
         end
@@ -372,7 +381,8 @@ classdef GRASPilotData < handle
             [V, info] = graspilot_dicom_read(src, varargin{:});
             name = info.Folder;
             if ischar(src) && exist(src, 'file') == 2, name = src; end
-            obj = GRASPilotData.fromVolume(V, info.Affine, 'dt', info.dt, 'SourceFile', name, 'SourceType', 'dicom');
+            obj = GRASPilotData.fromVolume(V, info.Affine, 'dt', info.dt, 'Times', info.Times, ...
+                'SourceFile', name, 'SourceType', 'dicom');
             obj.SourceVars = sprintf('DICOM series %g: %s', info.SeriesNumber, info.Series);
         end
 
@@ -578,11 +588,41 @@ classdef GRASPilotData < handle
 
         function t = frameTimes(obj)
             % time of each (binned) frame = mean time of its raw frames
-            if obj.hasTiming()
-                t = (obj.t0 + (0:obj.NTRaw - 1) * obj.dt) * obj.BinW;
+            t = obj.rawTimes() * obj.BinW;
+        end
+
+        function t = rawTimes(obj)
+            % times of the raw frames (s): measured times if known, else t0 + (f - 1) dt
+            if ~obj.hasTiming()
+                t = NaN(1, obj.NTRaw);
+            elseif numel(obj.RawTimes) == obj.NTRaw
+                t = obj.t0 + obj.RawTimes;
             else
-                t = NaN(1, obj.NT);
+                t = obj.t0 + (0:obj.NTRaw - 1) * obj.dt;
             end
+        end
+
+        function setFrameTimes(obj, t)
+            % measured (possibly uneven) times of the raw frames, s; [] = uniform dt
+            if isempty(t)
+                obj.RawTimes = [];
+                return
+            end
+            t = double(t(:)');
+            if numel(t) ~= obj.NTRaw || any(~isfinite(t)) || any(diff(t) <= 0)
+                error('GRASPilotData:times', 'Frame times must be %d increasing values.', obj.NTRaw);
+            end
+            obj.RawTimes = t - t(1);
+            if obj.NTRaw > 1, obj.dt = median(diff(t)); end
+        end
+
+        function [tf, rng] = unevenTiming(obj)
+            % true when the measured frame intervals differ by > 5% from their median
+            tf = false; rng = [NaN NaN];
+            if numel(obj.RawTimes) ~= obj.NTRaw || obj.NTRaw < 3, return; end
+            d = diff(obj.RawTimes);
+            rng = [min(d) max(d)];
+            tf = max(abs(d - median(d))) > 0.05 * median(d);
         end
 
         function b = memoryBytes(obj)
@@ -849,7 +889,7 @@ classdef GRASPilotData < handle
         end
 
         function k = mapsKey(obj)
-            k = {obj.ParamOpts, obj.dt, obj.t0, obj.BinSize, obj.NT};
+            k = {obj.ParamOpts, obj.dt, obj.t0, obj.BinSize, obj.NT, obj.RawTimes};
         end
 
         function t = paramTimes(obj)

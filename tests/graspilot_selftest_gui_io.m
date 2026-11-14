@@ -65,6 +65,23 @@ f1 = dir(fullfile(dd, 's3')); f1 = f1(~[f1.isdir]);
 app.openFile(fullfile(dd, 's3', f1(1).name));                % one image of a series
 okD = okD && app.Data.NTRaw == 6;
 nfail = nfail + check('viewer opens DICOM (folder, series choice, single file)', okD, app.Data.NTRaw);
+% uneven frame timing: display, parameters, export / re-import, typed s/frame
+tu = [0 4 8 12 20 28];
+gu = gd; gu.SeriesNumber = 5; gu.Description = 'uneven'; gu.Times = tu;
+du = fullfile(out, 'dcm_uneven');
+graspilot_dicom_write(du, Vu, gu);
+app.openFile(du);
+D = app.Data;
+info = get(app.H.info, 'String'); if iscell(info), info = strjoin(info, ' '); end
+okT = D.unevenTiming() && isequal(D.frameTimes(), tu) && ~isempty(strfind(info, 'uneven')) && ...
+    isequal(D.paramTimes(), tu);
+fe = fullfile(out, 'uneven_dce.nii.gz');
+app.exportImageNifti(fe, 1:D.NT);
+De = GRASPilotData.fromNifti(fe);
+okT = okT && max(abs(De.rawTimes() - tu)) < 1e-4;
+app.setTemporalResolution(5);
+okT = okT && ~D.unevenTiming() && isequal(D.frameTimes(), (0:5) * 5);
+nfail = nfail + check('uneven frame times: shown, used, exported, overridable', okT, D.dt);
 end
 
 function f = check(name, cond, val)

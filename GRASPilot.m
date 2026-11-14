@@ -246,13 +246,13 @@ classdef GRASPilot < handle
                         sel = [];                         % the series of the chosen file
                         scan = src;
                     elseif numel(scan.Series) > 1
-                        [~, big] = max([scan.Series.NImages]);
-                        sel = big;
+                        sel = scan.Suggested;
                         if ~obj.Quiet
                             obj.wbClose(wb);
-                            [sel, okd] = listdlg('ListString', {scan.Series.Label}, 'InitialValue', big, ...
-                                'Name', 'DICOM series', 'ListSize', [520 300], 'PromptString', ...
-                                'Series to open (several = one 3D series per time frame):');
+                            [sel, okd] = listdlg('ListString', {scan.Series.Label}, 'InitialValue', scan.Suggested, ...
+                                'Name', 'DICOM series', 'ListSize', [560 320], 'PromptString', ...
+                                {'Series to open. Several = consecutive time frames (one 3D series per frame,', ...
+                                'or blocks of frames); the likely dynamic series are preselected.'});
                             if ~okd || isempty(sel), return; end
                             wb = obj.wbOpen('Loading...');
                             prog = @(f, m) obj.wbUpdate(wb, f, m);
@@ -270,7 +270,10 @@ classdef GRASPilot < handle
             if iscell(src), src = src{1}; end
             if exist(src, 'dir') == 7, obj.LastDir = src; else, obj.LastDir = fileparts(src); end
             obj.setData(D);
-            if D.hasTiming()
+            [un, rg] = D.unevenTiming();
+            if un
+                ts = sprintf('UNEVEN frame timing %.3g-%.3g s (median %.3g): measured frame times used', rg, D.dt);
+            elseif D.hasTiming()
                 ts = sprintf('%.3g s/frame from the header', D.dt);
             else
                 ts = 'frame time not in the header: enter s/frame';
@@ -1445,6 +1448,7 @@ classdef GRASPilot < handle
                 obj.Pos = max(1, round((D.canonSize() + 1) / 2));
             end
             if isempty(D.SrcAffine), D.VoxNative = vox(:)'; end   % NIfTI / DICOM: voxel size is the header's
+            if ~isequaln(dt, D.dt), D.setFrameTimes([]); end      % a typed s/frame replaces measured times
             D.dt = dt;
             D.t0 = t0;
             if isempty(D.SrcAffine)          % defaults for the next .mat; header geometry is not a default
@@ -1469,12 +1473,32 @@ classdef GRASPilot < handle
         function setTemporalResolution(obj, dt)
             if ~obj.requireData(), return; end
             if ~isfinite(dt) || dt <= 0, dt = NaN; end
-            obj.Data.dt = dt;
-            if isempty(obj.Data.SrcAffine), obj.LoadOpts.dt = dt; end
+            D = obj.Data;
+            had = ~isempty(D.RawTimes);
+            if had && isfinite(dt) && abs(dt - D.dt) < 5e-4 * D.dt, return; end   % unchanged (rounded display)
+            D.setFrameTimes([]);
+            D.dt = dt;
+            if isempty(D.SrcAffine), obj.LoadOpts.dt = dt; end
             obj.savePrefs();
             obj.updateDataInfo();
             obj.updateTimeWidgets();
             obj.refreshTIC();
+            obj.refreshParamWindow();
+            if had
+                obj.setStatus(sprintf(['The measured (uneven) frame times were replaced by a uniform %.4g s/frame. ' ...
+                    'Re-open the data to restore them.'], dt));
+            end
+        end
+
+        function setFrameTimes(obj, t)
+            % measured times of the raw frames (s), e.g. from the scanner log
+            % when frames are unevenly spaced; [] = uniform s/frame
+            if ~obj.requireData(), return; end
+            obj.Data.setFrameTimes(t);
+            obj.updateDataInfo();
+            obj.updateTimeWidgets();
+            obj.refreshTIC();
+            obj.refreshParamWindow();
         end
 
         function r = autoSSS(obj)
@@ -1625,6 +1649,7 @@ classdef GRASPilot < handle
             S.VoxNative = D.VoxNative;
             S.dt = D.dt;
             S.t0 = D.t0;
+            S.RawTimes = D.RawTimes;
             S.BaseFrames = obj.BaseFrames;
             S.BinSize = D.BinSize;
             S.BinKeepPartial = D.BinKeepPartial;
@@ -1671,8 +1696,10 @@ classdef GRASPilot < handle
                 [pm, fl] = GRASPilotData.presetOrientation(S.Plane, logical(S.SwapInPlane), logical(S.UserFlip(:)'));
                 sCodes = GRASPilotData.permFlipToCodes(pm, fl);
             end
+            sRT = [];
+            if isfield(S, 'RawTimes'), sRT = S.RawTimes; end
             geoDiff = ~strcmp(sCodes, D.AxisCodes) || any(abs(S.VoxNative(:)' - D.VoxNative) > 1e-6) ...
-                || ~isequaln(S.dt, D.dt);
+                || ~isequaln(S.dt, D.dt) || ~isequal(sRT(:)', D.RawTimes(:)');
             sBin = 1;
             if isfield(S, 'BinSize'), sBin = S.BinSize; end
             binDiff = sBin ~= D.BinSize;
@@ -1684,6 +1711,9 @@ classdef GRASPilot < handle
                 applied = strcmp(b, 'Apply');
                 if applied && geoDiff
                     obj.applyGeometry(sCodes, S.VoxNative, S.dt, S.t0);
+                end
+                if applied && isfield(S, 'RawTimes') && numel(S.RawTimes) == D.NTRaw
+                    D.setFrameTimes(S.RawTimes);
                 end
                 if applied && binDiff
                     kp = false;
@@ -3564,7 +3594,7 @@ classdef GRASPilot < handle
             if fid < 0, error('GRASPilot:motion', 'Cannot write %s.', file); end
             fprintf(fid, ['RawFrame,Time_s,TransL_mm,TransP_mm,TransS_mm,RotLR_deg,RotAP_deg,RotIS_deg,' ...
                 'MeanDispRef_mm,MaxDispRef_mm,MeanDispPrev_mm,MaxDispPrev_mm,Excess\n']);
-            tt = D.t0 + (0:D.NTRaw - 1) * D.dt;
+            tt = D.rawTimes();
             for f = 1:D.NTRaw
                 v = [M.Params(f, :) M.AbsMean(f) M.AbsMax(f) M.RelMean(f) M.RelMax(f)];
                 c = arrayfun(@(x) GRASPilot.ternaryStr(isfinite(x), sprintf('%.4f', x), ''), v, 'UniformOutput', false);
@@ -3691,7 +3721,7 @@ classdef GRASPilot < handle
             col = [0.95 0.40 0.35; 0.40 0.85 0.45; 0.40 0.65 1.00];
             x = 1:D.NTRaw;
             xl = 'Raw frame';
-            if D.hasTiming(), x = D.t0 + (0:D.NTRaw - 1) * D.dt; xl = 'Time (s)'; end
+            if D.hasTiming(), x = D.rawTimes(); xl = 'Time (s)'; end
             lbl = {{'L (R->L)', 'P (A->P)', 'S (I->S)'}, {'about L-R', 'about A-P', 'about I-S'}};
             for i = 1:2
                 ax = obj.MW.Ax(i);
@@ -4185,6 +4215,8 @@ classdef GRASPilot < handle
             v = D.VoxNative;
             n = D.NativeSize;
             if D.hasTiming(), dts = sprintf('%.3g s/frame', D.effectiveDt()); else, dts = 's/frame unknown'; end
+            [un, rg] = D.unevenTiming();
+            if un, dts = sprintf('uneven %.3g-%.3g s/frame', rg * D.BinSize); end
             if strcmp(D.Mode, 'subspace'), md = sprintf('subspace K=%d', D.NK); else, md = 'dense'; end
             if D.MotionCorrected
                 md = 'motion-corrected';
