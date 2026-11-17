@@ -1,5 +1,5 @@
 function [C, valid] = graspilot_signal2conc(S, S0, T10, TR, FA, r1)
-%GRASPILOT_SIGNAL2CONC Contrast agent concentration from DCE signal: signal-ratio (RATIO) method.
+%GRASPILOT_SIGNAL2CONC Contrast agent concentration from DCE signal: signal-ratio method.
 %
 %   [C, valid] = graspilot_signal2conc(S, S0, T10, TR, FA, r1)
 %

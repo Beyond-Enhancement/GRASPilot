@@ -373,7 +373,7 @@ only. The colour bar appears in the sagittal panel; the status bar shows the val
 the cursor. ROIs are drawn as outlines while a map is shown.
 
 **Statistics.** The table lists, for every tumor ROI (all ROIs except the reference; tick
-Include the reference to add it) and every parameter: N voxels, mean, SD, median, Q1, Q3,
+Include the reference to add it; the arterial ROI of the VCAI is treated the same way) and every parameter: N voxels, mean, SD, median, Q1, Q3,
 10th and 90th percentile, min, max (voxel values; NaN voxels are ignored) and the
 parameter of the ROI mean curve ("ROI curve"). Voxel-wise statistics describe
 heterogeneity; the ROI-curve value is less noisy.
@@ -402,7 +402,7 @@ P = graspilot_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 
 The parameter maps take about 50 MB of memory each for a 12-million-voxel volume (13 maps).
 
-## Pharmacokinetic models (Tofts, extended Tofts, 2CXM)
+## Pharmacokinetic models (Tofts, extended Tofts, 2CXM, RATIO)
 
 Analysis > **Pharmacokinetic models** (or **Pharmacokinetic models...** in the Parameters
 window) fits tracer-kinetic models voxel by voxel. The fitted maps are added to the
@@ -414,8 +414,9 @@ statistics/voxel export and the NIfTI map export all include them.
 | Standard Tofts | Ktrans (`KT_TM`), ve (`VE_TM`), kep = Ktrans/ve (`KEP_TM`), fit R2 (`R2_TM`) | 1/min, fraction, 1/min |
 | Extended Tofts | Ktrans (`KT_ETM`), ve (`VE_ETM`), vp (`VP_ETM`), kep (`KEP_ETM`), R2 (`R2_ETM`) | 1/min, fraction, fraction, 1/min |
 | Two-compartment exchange (2CXM) | plasma flow Fp (`FP_2CXM`), permeability-surface area product PS (`PS_2CXM`), vp (`VP_2CXM`), ve (`VE_2CXM`), Ktrans = E Fp with E = PS/(PS + Fp) (`KT_2CXM`), R2 (`R2_2CXM`) | ml/100 ml/min, ml/100 ml/min, fraction, fraction, 1/min |
+| RATIO | gain-free kep, kpe, MTT, E, ve/vp; class and leakage call; apparent vp, Ktrans, Fp, ve (see below) | 1/min, s, fraction |
 
-**Signal to concentration: RATIO method with a global baseline T1 (T10).** No T1 map is
+**Signal to concentration: signal ratio with a global baseline T1 (T10).** No T1 map is
 needed. For every voxel the signal is divided by its baseline S0 (mean of the baseline
 frames), which removes M0, coil sensitivity and the arbitrary scaling of the reconstruction,
 and the spoiled gradient echo equation is solved for R1:
@@ -443,6 +444,7 @@ concentration).
   broadened. **AIF shift** moves the AIF in time (negative = earlier) to compensate.
 - *Population (Parker et al. 2006)*: the published population-averaged blood AIF
   (0.1 mmol/kg), with the injection at the last baseline frame.
+- *VCAI*: an arterial ROI calibrated against the SSS (see RATIO below).
 
 The window plots the AIF (plasma and blood) and the concentration curve of a chosen ROI with
 the fitted curves of each model and their parameters; the plots follow the settings at once,
@@ -470,6 +472,81 @@ analysis endpoint, the frame times or the reference ROI marks them as out of dat
 disappear from the parameter list until the next fit). ROI sessions and the preferences
 keep the PK settings.
 
+### RATIO and the venous-calibrated arterial input (VCAI)
+
+RATIO (Rate-based, Amplitude-invariant, Transit-resolved kinetics with an Input anchored to
+the venous Outflow; M. Lee, *RATIO for GRASP DCE without T1 mapping*, unpublished, 2026) is
+the two-compartment exchange model refitted so that it needs no concentration scale. Tick
+**RATIO** under Models. Every curve gets its own free gain G and delay d:
+
+    two-compartment (2C):  y(t) = G [h(.; kF, E, rho) * u](t - d)
+    one-compartment (1C):  y(t) = G [k exp(-k .) * u](t - d)
+
+with kF = Fp/vp, E = PS/(Fp + PS), rho = kE/kF (kE = PS/ve) and rho <= 0.5 (interstitial
+exchange slower than vascular transit, which fixes which exponential is vascular). The gain
+absorbs vp, T10, B1, relaxivity and the input amplitude, so the primary outputs are gain-free
+rates. AICc chooses 2C or 1C for every curve, and each curve gets a class:
+
+| Class (`CLASS_RATIO`) | Condition | Reported |
+|---|---|---|
+| 1 two-compartment | AICc prefers 2C | kep = rho kF (1 - E) (`KEP_RATIO`), kpe = kF E = E/MTT (`KPE_RATIO`), MTT = 1/kF (`MTT_RATIO`, s), E (`E_RATIO`), ve/vp = kpe/kep (`VEVP_RATIO`); leakage (`LEAK_RATIO`) = 1 if E >= 0.03 |
+| 2 one-compartment, fast | k >= 4 /min | MTT = 1/k; leakage 0 |
+| 3 one-compartment, slow | k <= 1.5 /min | kep = k |
+| 4 one-compartment, indeterminate | 1.5 < k < 4 /min | k only (`K1_RATIO`): transit and leakage cannot be separated; no leakage call |
+
+Apparent values from the gain are exploratory and depend on the assumed T10 and the input
+amplitude: vp = G (`VP_RATIO`), Ktrans = G kpe (`KT_RATIO`), Fp = G kF (`FP_RATIO`),
+ve = Ktrans/kep (`VE_RATIO`); in the 1C classes G is vp when fast and ve when slow (Ktrans
+= G k). The delay (`DELAY_RATIO`, positive = tissue later than the input) and the R2 of the
+selected model (`R2_RATIO`) are mapped too. The ROI statistics list the share of voxels in
+each class; the mean of `LEAK_RATIO` is the share of voxels called leaking. kep and kpe are
+the primary endpoints; MTT and E depend on the assumed shape of the vascular transit.
+
+**Fitting in the temporal basis.** With a subspace reconstruction (vk_all, basis_all), each
+voxel curve carries at most K independent numbers. "RATIO fitted to: Temporal basis
+coefficients" (default) projects the data and the model onto an orthonormal real basis of
+the (binned, analysed) reconstruction basis of the voxel's slices and fits those
+coefficients; AICc then counts the coefficients as observations, so the two-compartment
+model (5 parameters with gain and delay) is only selectable with at least 7 coefficients
+(rank rule) and curves fall back to the one-compartment classes otherwise. The PK window
+shows the number of coefficients. A real basis gives K coefficients; a complex basis can
+give up to 2K (real and imaginary parts). NIfTI/DICOM input and motion-corrected data are
+fitted on the frames.
+
+**VCAI** (AIF: "VCAI: artery calibrated to SSS"). An arterial ROI has the right timing but a
+distorted amplitude (blood saturation, partial volume); the superior sagittal sinus is large
+and, through its phase, linear in concentration, but delayed and dispersed. The VCAI fits the
+signal-weighted blood fraction w of the arterial ROI, the venous dispersion tau and the delay
+delta so that the dispersed, calibrated arterial curve reproduces the sinus curve up to a free
+gain:
+
+    A(t)/A0 = w Sb(ca(t))/Sb(0) + (1 - w) N(t)/N0
+    phi(t) - phi0 ~ g [k_tau * ca](t - delta),   k_tau(t) = exp(-t/tau)/tau
+
+A is the arterial ROI (**+ Artery**, or any ROI named artery, AIF, MCA or ICA; a few voxels
+in the MCA or distal ICA), N a ring of neighbouring tissue around it (partial-volume
+correction; width 2 voxels, excluding every ROI and the background), Sb the blood SPGR
+signal with the blood T10, and phi the mean phase of the SSS ROI relative to its baseline.
+Sinus phase is available when the reconstruction is complex (subspace .mat files; frames are
+otherwise synthesized as magnitudes); without phase, or with "Sinus anchor: Magnitude", the
+SSS magnitude converted with the blood T10 is the anchor (less accurate in the simulations
+of the RATIO document). "Partial volume: None" assumes a static background (N/N0 = 1). The
+VCAI output is the arterial blood curve ca with the fitted w (plasma = ca/(1 - Hct)); it can
+also serve as the input of the Tofts and 2CXM models. The PK window plots the sinus curve
+(scaled) against the dispersed VCAI and lists w, tau (expected about 3-8 s), delta and the
+R2 of the sinus fit; check them before the voxel fit.
+
+On a complex subspace phantom (`tests/graspilot_ratio_phantom.m`: artery with a 30% blood
+volume fraction, sinus dispersed with tau 5 s and delayed 6 s), the VCAI recovered w, tau,
+delta and the arterial curve exactly with either anchor, and RATIO assigned the 2C, slow and
+fast lesions to their classes with kep, kpe, E and MTT within 5% (2 s frames). RATIO is
+slower than the other models (about 300 curves per second in GNU Octave): fit "ROI voxels
+only" for lesion ROIs.
+
+Not implemented from the RATIO document: the amplitude of the input from the sinus phase
+(needs TE, field strength, susceptibility and the sinus angle to B0; Section 12), calibration
+of the classes and intervals by bootstrap, and fitting on complex time courses.
+
 Scripting:
 
 ```matlab
@@ -484,9 +561,14 @@ app.exportMaps(folder, 'case01', {'KT_TM', 'VE_TM', 'VP_ETM', 'FP_2CXM', 'PS_2CX
 D.setPKOptions('T10', 1400, 'TR', 3.9, 'FlipAngle', 12, 'r1', 5.0);
 D.computePK(1:5, sssMeanSignal, headMask);             % canonical mask; [] = all voxels
 Ktrans = D.canonPK('KT_TM');
-C  = graspilot_signal2conc(S, S0, 1.4, 3.9e-3, 12, 5.0);  % RATIO conversion (s, deg)
+C  = graspilot_signal2conc(S, S0, 1.4, 3.9e-3, 12, 5.0);  % signal-ratio conversion (s, deg)
 R  = graspilot_pk_fit(C, t, Cp, {'tofts', 'etofts', '2cxm'});   % R.tofts.Ktrans, R.cxm.Fp, ...
 Cb = graspilot_pop_aif(t - tInjection);                % population AIF (blood, mM)
+
+% RATIO with the VCAI (arterial ROI named "Artery", SSS ROI)
+app.computePK('Models', {'ratio'}, 'AIF', 'vcai', 'VCAIAnchor', 'phase', 'Region', 'rois');
+[ca, vi] = graspilot_vcai(A, N, sinusPhase, t, 1:5, struct('TR', 3.9e-3, 'FlipAngle', 12));
+R = graspilot_ratio_fit(C, t, ca / 0.55, struct('Basis', Q));  % R.kep, R.kpe, R.MTT, R.E, R.Class
 ```
 
 ## Motion check and correction
@@ -601,7 +683,9 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `graspilot_export_timeseries.m` | voxel time series -> .xlsx/.csv |
 | `graspilot_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
 | `graspilot_ref_window.m`, `graspilot_end_frame.m` | SSS wash-in period; analysis endpoint |
-| `graspilot_signal2conc.m` | signal -> concentration, RATIO method (SPGR equation, global T10) |
+| `graspilot_signal2conc.m` | signal -> concentration, signal ratio (SPGR equation, global T10) |
+| `graspilot_ratio_fit.m`, `graspilot_vcai.m` | RATIO kinetic core (classes, gain-free rates); venous-calibrated arterial input |
+| `graspilot_expconv.m`, `graspilot_varpro_lm.m` | exact exponential convolution; batched Levenberg-Marquardt (variable projection) |
 | `graspilot_pk_fit.m` | Tofts, extended Tofts and 2CXM fits (vectorized over curves) |
 | `graspilot_pop_aif.m`, `graspilot_pk_defaults.m` | population AIF (Parker 2006); default PK settings |
 | `graspilot_motion_estimate.m` | rigid frame-by-frame motion (normalized mutual information) and excess-motion check |
@@ -617,7 +701,8 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `tests/graspilot_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
 | `tests/graspilot_sss_phantom.m` | venous phantom (SSS, torcula, transverse/straight sinuses, scalp vein, artery) |
 | `tests/graspilot_motion_phantom.m` | the venous phantom with known rigid motion of chosen frames |
-| `tests/graspilot_pk_phantom.m`, `tests/graspilot_selftest_pk.m` | SPGR phantom with known Tofts / extended Tofts / 2CXM parameters and its tests |
+| `tests/graspilot_pk_phantom.m`, `tests/graspilot_selftest_pk.m` | SPGR phantom with known Tofts / extended Tofts / 2CXM parameters and the PK tests |
+| `tests/graspilot_ratio_phantom.m` | complex subspace phantom: artery with partial volume, dispersed sinus with phase, RATIO lesion classes |
 
 ## Notes and limitations
 
@@ -638,8 +723,10 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
   compare absolute values only between scans with the same protocol and scaling, or use the
   /SSS values. The pharmacokinetic models convert signal to concentration with one global
   T10 (no T1 map): their values depend on the assumed T10, TR, flip angle and r1, and on the
-  AIF (a venous SSS curve, or a population AIF); GRASP reconstruction (temporal basis,
-  compressed sensing) can smooth the first pass of the AIF.
+  AIF (a venous SSS curve, a population AIF or the VCAI); GRASP reconstruction (temporal
+  basis, compressed sensing) can smooth the first pass of the AIF. RATIO's rates do not
+  depend on the concentration scale, but its classes and thresholds (E >= 0.03, 1.5-4 /min)
+  come from simulation and have not been calibrated on patient data.
 - Voxel-wise slopes are noisy at high temporal resolution; binning or the ROI-curve values
   are more robust.
 - Fill holes is 2D (slice by slice). Grow from crosshair is the connected-component tool

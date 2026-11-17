@@ -1,5 +1,5 @@
 function nfail = graspilot_selftest_pk(out, doGUI)
-%GRASPILOT_SELFTEST_PK Pharmacokinetic models: RATIO conversion, Tofts, extended Tofts, 2CXM.
+%GRASPILOT_SELFTEST_PK Pharmacokinetic models: signal-ratio conversion, Tofts, extended Tofts, 2CXM, RATIO.
 %
 %   nfail = graspilot_selftest_pk(out, doGUI)   (called from graspilot_selftest)
 %
@@ -17,7 +17,7 @@ C = [0 0.01 0.1 0.5 1 3 8];
 S = 0.37 * spgr(1 / T10 + r1 * C);
 [Cc, valid] = graspilot_signal2conc([S; 2 * S], [S(1); 2 * S(1)], T10, TR, FA, r1);
 e = max(max(abs(Cc - [C; C])));
-nfail = nfail + check('RATIO conversion inverts the SPGR equation', e < 1e-9 && all(valid(:)), e);
+nfail = nfail + check('signal-ratio conversion inverts the SPGR equation', e < 1e-9 && all(valid(:)), e);
 [Cc, valid] = graspilot_signal2conc([1 1 100], 1, T10, TR, FA, r1);
 nfail = nfail + check('signal ratio above the SPGR limit -> NaN', ~valid(3) && isnan(Cc(3)) && abs(Cc(1)) < 1e-12, 0);
 Cg = graspilot_signal2conc(S(1:5), S(1), 1.0, TR, FA, r1);
@@ -56,7 +56,7 @@ truth = {'Tofts', 'KT_TM', 0.25; 'Tofts', 'VE_TM', 0.25; 'Tofts', 'KEP_TM', 1; .
     'CXM', 'FP_2CXM', 50; 'CXM', 'PS_2CXM', 12; 'CXM', 'VP_2CXM', 0.08; 'CXM', 'VE_2CXM', 0.25; ...
     'CXM', 'KT_2CXM', tr.P.CXM.Ktrans};
 e = pkErr(D, tr, truth);
-nfail = nfail + check('maps (SSS AIF, RATIO): Tofts, ext. Tofts, 2CXM', e < 0.01, e);
+nfail = nfail + check('maps (SSS AIF, signal ratio): Tofts, ETofts, 2CXM', e < 0.01, e);
 A = D.canonPK('KT_TM');
 nfail = nfail + check('voxels outside the region are not fitted (NaN)', all(isnan(A(~tr.Head))) && ...
     all(isfinite(A(tr.Head))), 0);
@@ -91,6 +91,71 @@ aif = mean(double(Dn.timecourses(find(tr.SSS))), 1);
 Dn.computePK(bf, aif, tr.Head, []);
 e = pkErr(Dn, tr, truth);
 nfail = nfail + check('maps with noise (2% of S0): medians unbiased', e < 0.03, e);
+
+% ---- RATIO kinetic core: classes and gain-free rates
+t = 0:1.5:240;
+u = graspilot_pop_aif(t - 15) / 0.55;
+tf = 0:0.01:t(end); d = 0.01 / 60;
+ex = @(k, del) interp1(tf, filter(d * [0.5 0.5], [1 -exp(-k * d)], interp1(t, u, max(tf - del, 0), ...
+    'linear', 0)), t);
+Fp = 0.5; PS = 0.12; vp = 0.08; ve = 0.25;
+kpo = Fp / vp; kpe = PS / vp; kep = PS / ve; a = kpo + kpe; b = kep;
+sq = sqrt((a + b) ^ 2 - 4 * kpo * b);
+Kp = (a + b + sq) / 2; Km = (a + b - sq) / 2; A = (Kp - (kep + kpe)) / (Kp - Km);
+E = PS / (PS + Fp);
+Y = [7 * Fp * (A * ex(Kp, 3) + (1 - A) * ex(Km, 3)); 0.9 * ex(0.5, 4); 0.6 * 12 * ex(12, 2); 0.5 * ex(2.5, 2)];
+randn('state', 5); %#ok<RAND>
+Y = Y + 0.003 * repmat(max(Y, [], 2), 1, numel(t)) .* randn(size(Y));    % AICc needs noise, not round-off
+R = graspilot_ratio_fit(Y, t, u);
+e = max(abs([R.kep(1) / (kep * (1 - E)), R.kpe(1) / (kpo * E), R.MTT(1) / (60 / kpo), R.E(1) / E] - 1));
+nfail = nfail + check('RATIO 2C: kep, kpe, MTT, E (arbitrary gain, delay)', R.Class(1) == 1 && e < 0.03 && ...
+    abs(R.Delay(1) - 3) < 0.1 && R.Leak(1) == 1, e);
+nfail = nfail + check('RATIO 1C classes: slow (kep = k), fast (MTT), indeterminate', isequal(R.Class(2:4)', [3 2 4]) && ...
+    abs(R.kep(2) - 0.5) < 0.01 && abs(R.MTT(3) - 5) < 0.15 && R.Leak(3) == 0 && isnan(R.Leak(4)) && ...
+    abs(R.k1(4) - 2.5) < 0.05 && isnan(R.kpe(4)), R.k1(4));
+Q = orth([ones(numel(t), 1), t(:), t(:) .^ 2, exp(-t(:) / 30), exp(-t(:) / 100)]);
+R = graspilot_ratio_fit(Y, t, u, struct('Basis', Q));
+nfail = nfail + check('RATIO rank rule: 5 basis coefficients -> no 2C class', ~any(R.Class == 1) && ...
+    all(R.NObs == 5), 0);
+
+% ---- VCAI and RATIO on a complex subspace phantom
+[Dr, tr] = graspilot_ratio_phantom();
+bf = tr.BaseFrames;
+nfail = nfail + check('complex subspace data: phase and temporal basis', Dr.hasPhase() && ~D.hasPhase() && ...
+    size(Dr.pkBasis(1:8), 2) == 8, size(Dr.pkBasis(1:8), 2));
+mtc = @(M) mean(double(Dr.timecourses(find(M))), 1);
+ringM = false(size(tr.Artery)); ringM(13:18, 4:9, 2:7) = true; ringM(tr.Artery) = false;
+aif = struct('Ref', mtc(tr.SSS), 'Art', mtc(tr.Artery), 'Ring', mtc(ringM), ...
+    'Phase', Dr.phaseCurve(find(tr.SSS), bf));
+Dr.setPKOptions('AIF', 'vcai', 'Models', {'ratio'});
+[~, ~, Cb, vi] = Dr.pkAIF(bf, aif);
+e = max(abs(Cb - tr.ca)) / max(tr.ca);
+nfail = nfail + check('VCAI (sinus phase): w, tau, delay, arterial curve', strcmp(vi.Anchor, 'phase') && ...
+    abs(vi.w - tr.WSignal) < 0.005 && abs(vi.Tau - tr.Tau) < 0.1 && abs(vi.Delta - tr.Delta) < 0.1 && e < 1e-3, e);
+Dr.setPKOptions('VCAIAnchor', 'magnitude');
+[~, ~, Cb, vi] = Dr.pkAIF(bf, aif);
+nfail = nfail + check('VCAI (sinus magnitude anchor)', strcmp(vi.Anchor, 'magnitude') && ...
+    max(abs(Cb - tr.ca)) / max(tr.ca) < 1e-3, vi.w);
+Dr.setPKOptions('VCAIAnchor', 'phase');
+cls = [1 3 2]; nm = {'Lesion2C', 'LesionSlow', 'LesionFast'};
+okc = true;
+for i = 1:3
+    R = Dr.fitPKCurves(mtc(tr.(nm{i})), bf, aif, find(tr.(nm{i})));
+    okc = okc && R.ratio.Class == cls(i);
+    if i == 1
+        P = tr.P2C;
+        e = max(abs([R.ratio.kep / P.kep, R.ratio.kpe / P.kpe, R.ratio.MTT / P.MTT, R.ratio.E / P.E, ...
+            R.ratio.vp / P.vp, R.ratio.Ktrans / P.Ktrans] - 1));
+        nobs = R.ratio.NObs;
+    end
+end
+nfail = nfail + check('RATIO on the phantom: classes, 2C rates and apparent vp, Ktrans', okc && e < 0.06 && ...
+    nobs == 8, e);
+Dr.computePK(bf, aif, tr.Lesion2C | tr.LesionSlow, []);
+A = Dr.canonPK('CLASS_RATIO'); B = Dr.canonPK('KPE_RATIO');
+nfail = nfail + check('RATIO maps (basis coefficients per slice)', all(A(tr.Lesion2C) == 1) && ...
+    all(A(tr.LesionSlow) == 3) && abs(median(B(tr.Lesion2C)) / tr.P2C.kpe - 1) < 0.05 && ...
+    all(isnan(B(tr.LesionSlow))) && Dr.PKMaps.Info.RatioNObs == 8, median(B(tr.Lesion2C)));
 
 if ~doGUI, return; end
 % ---- viewer: fit, statistics, maps, exports, invalidation, sessions
@@ -127,7 +192,7 @@ files = app.exportParams(fullfile(out, 'pk.csv'));
 fid = fopen(files{2}); hl = fgetl(fid); fclose(fid);
 txt = fileread(files{3});
 nfail = nfail + check('parameter export: PK columns and settings', ~isempty(strfind(hl, 'KT_TM [1/min]')) && ...
-    ~isempty(strfind(hl, 'FP_2CXM [ml/100ml/min]')) && ~isempty(strfind(txt, 'RATIO method')) && ...
+    ~isempty(strfind(hl, 'FP_2CXM [ml/100ml/min]')) && ~isempty(strfind(txt, 'signal-ratio conversion')) && ...
     ~isempty(strfind(txt, 'PK tissue T10')), 0);
 fs = fullfile(out, 'pk_session.mat');
 D.setPKOptions('T10', 1300);
@@ -145,6 +210,34 @@ app.setVoxels(rs, find(tr.SSS, 4), false); app.afterMaskChange();
 nfail = nfail + check('editing the SSS (AIF) invalidates the maps', ~app.pkReady(), 0);
 app.refreshPKWindow();
 nfail = nfail + check('PK window refreshes', ishghandle(app.KW.Fig), 0);
+clear cleanup
+
+% ---- viewer: RATIO with the VCAI (artery ROI, neighbour ring, SSS phase)
+[Dr, tr] = graspilot_ratio_phantom(0.003);
+app = GRASPilot(Dr);
+app.Quiet = true;
+cleanup = onCleanup(@() app.close(true));
+app.BaseFrames = [1 5];
+r = app.addROI('SSS', [1 0 0]); app.setVoxels(r, find(tr.SSS), true);
+ra = app.addROI('Artery', [1 0.5 0]); app.setVoxels(ra, find(tr.Artery), true);
+r = app.addROI('Lesion 2C', [1 1 0]); app.setVoxels(r, find(tr.Lesion2C), true);
+app.afterMaskChange();
+app.openPKWindow();
+ring = app.ringMask(ra);
+nfail = nfail + check('arterial ROI found by name; neighbour ring', app.arteryIndex() == ra && any(ring(:)) && ...
+    ~any(ring(:) & (tr.Artery(:) | tr.SSS(:))), nnz(ring));
+ok = app.computePK('Models', {'etofts', 'ratio'}, 'AIF', 'vcai', 'Region', 'rois');
+[~, rows] = app.paramStatsTable();
+v1 = statVal(rows, 'Lesion 2C', 'RATIO kpe = E/MTT', 7);
+v2 = statVal(rows, 'Lesion 2C', 'RATIO class: two-compartment fraction', 5);
+nfail = nfail + check('viewer: RATIO kpe and class fraction; vessels not in tumor stats', ok && ...
+    abs(v1 / tr.P2C.kpe - 1) < 0.06 && v2 > 95 && ~any(strcmp(rows(:, 1), 'Artery')), v1);
+S = app.pkSettings();
+nfail = nfail + check('settings: RATIO model, VCAI fit', any(strcmp(S(:, 1), 'RATIO model')) && ...
+    any(strcmp(S(:, 1), 'VCAI fit')), 0);
+app.setVoxels(ra, find(tr.Artery, 2), false); app.afterMaskChange();
+nfail = nfail + check('editing the arterial ROI invalidates the maps', ~app.pkReady(), 0);
+app.refreshPKWindow();
 end
 
 function e = pkErr(D, tr, truth)

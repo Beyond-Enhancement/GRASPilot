@@ -282,81 +282,12 @@ end
 
 % =====================================================================
 function th = lm(f, th, bounds, maxIter)
-% Levenberg-Marquardt on the nonlinear parameters th [N x M] (log rate
-% constants) of the projected residual: the linear coefficients are
-% re-solved at every evaluation. [sse, coef, r] = f(th, rows) evaluates the
-% curves C(rows, :); the Jacobian of r is formed by forward differences.
-[N, M] = size(th);
-act = all(isfinite(th), 2);
-if ~any(act) || maxIter < 1, return; end
-lam = 1e-2 * ones(N, 1);
-h = 1e-4;
-for it = 1:maxIter
-    idx = find(act);
-    if isempty(idx), break; end
-    [s0, ~, r0] = f(th(idx, :), idx);
-    good = isfinite(s0);
-    T = size(r0, 2);
-    Jc = zeros(numel(idx), T, M);
-    for q = 1:M
-        tq = th(idx, :);
-        tq(:, q) = tq(:, q) + h;
-        [~, ~, rq] = f(tq, idx);
-        Jc(:, :, q) = (rq - r0) / h;
-    end
-    Jc(~isfinite(Jc)) = 0;
-    r0(~isfinite(r0)) = 0;
-    L = lam(idx);
-    if M == 1
-        A11 = sum(Jc(:, :, 1) .^ 2, 2);
-        g1 = sum(Jc(:, :, 1) .* r0, 2);
-        d = -g1 ./ (A11 .* (1 + L) + 1e-12);
-    else
-        A11 = sum(Jc(:, :, 1) .^ 2, 2); A22 = sum(Jc(:, :, 2) .^ 2, 2);
-        A12 = sum(Jc(:, :, 1) .* Jc(:, :, 2), 2);
-        g1 = sum(Jc(:, :, 1) .* r0, 2); g2 = sum(Jc(:, :, 2) .* r0, 2);
-        A11d = A11 .* (1 + L) + 1e-12; A22d = A22 .* (1 + L) + 1e-12;
-        dt = A11d .* A22d - A12 .^ 2;
-        d = [-(A22d .* g1 - A12 .* g2) ./ dt, -(A11d .* g2 - A12 .* g1) ./ dt];
-    end
-    d(~isfinite(d)) = 0;
-    d = max(-2, min(2, d));                    % at most a factor e^2 per step
-    tn = max(bounds(1), min(bounds(2), th(idx, :) + d));
-    sn = f(tn, idx);
-    better = sn < s0 & good;
-    th(idx(better), :) = tn(better, :);
-    lam(idx(better)) = max(1e-6, lam(idx(better)) / 3);
-    lam(idx(~better)) = lam(idx(~better)) * 4;
-    done = (better & (s0 - sn) <= 1e-8 * s0) | (~better & lam(idx) > 1e3) | ~good;
-    act(idx(done)) = false;
-end
+% Levenberg-Marquardt on log rate constants (graspilot_varpro_lm)
+M = size(th, 2);
+th = graspilot_varpro_lm(f, th, bounds(1) * ones(1, M), bounds(2) * ones(1, M), maxIter, ...
+    1e-4 * ones(1, M), 2 * ones(1, M));
 end
 
-% =====================================================================
 function F = expconv(Cp, tm, k)
-% F(k, t) = int_0^t Cp(u) exp(-k (t - u)) du for an input linear between
-% the frames; k [n x 1] (1/min), tm (min) -> F [n x T]
-k = k(:);
-n = numel(k);
-T = numel(tm);
-F = zeros(n, T);
-d = diff(tm);
-if T < 2, return; end
-uni = all(abs(d - d(1)) <= 1e-6 * max(abs(d(1)), eps));
-if uni, [E, g1, g2] = coefs(k * d(1)); end
-for i = 1:T - 1
-    if ~uni, [E, g1, g2] = coefs(k * d(i)); end
-    F(:, i + 1) = E .* F(:, i) + d(i) * (Cp(i) * g1 + (Cp(i + 1) - Cp(i)) * g2);
-end
-end
-
-function [E, g1, g2] = coefs(x)
-% E = exp(-x), g1 = (1 - E)/x, g2 = (1 - g1)/x (series for small x)
-E = exp(-x);
-g1 = (1 - E) ./ x;
-g2 = (1 - g1) ./ x;
-s = abs(x) < 1e-3;
-xs = x(s);
-g1(s) = 1 - xs / 2 + xs .^ 2 / 6;
-g2(s) = 0.5 - xs / 6 + xs .^ 2 / 24;
+F = graspilot_expconv(Cp, tm, k);
 end
