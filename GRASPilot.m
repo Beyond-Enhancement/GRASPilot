@@ -59,6 +59,9 @@ classdef GRASPilot < handle
         RefROIName = '';        % reference ROI for /SSS normalization ('' = first ROI named SSS*)
         IncludeRefStats = false;
         PW = struct();          % parameter window handles
+        KW = struct();          % pharmacokinetic model window handles
+        KWRoi = '';             % ROI whose curve is shown in the PK window
+        PKPrefs = [];           % PK acquisition settings remembered between sessions
         MW = struct();          % motion window handles
         MotionStop = false;     % stop request for the motion estimate
         CB = struct();          % colour bar in the sagittal panel
@@ -340,8 +343,15 @@ classdef GRASPilot < handle
             obj.ParamCLims = struct();
             obj.ParamCache = struct('key', '', 'V', []);
             obj.RefCache = [];
+            if ~isempty(obj.PKPrefs)
+                try
+                    D.setPKOptions(obj.PKPrefs);
+                catch
+                end
+            end
             obj.updateColorbar();
             obj.refreshMotionWindow();
+            obj.refreshPKWindow();
             obj.setupTimeSlider();
             obj.resetViewsGeometry();
             obj.autoContrast(false);
@@ -1001,7 +1011,12 @@ classdef GRASPilot < handle
         function V = paramVolume(obj, key)
             % canonical map of a parameter (key from ParamKeys); [] if not available
             V = [];
-            if isempty(obj.Data) || ~obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)), return; end
+            if isempty(obj.Data), return; end
+            if GRASPilot.isPKKey(key)
+                if obj.pkReady(), V = obj.Data.canonPK(key); end
+                return
+            end
+            if ~obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)), return; end
             [name, fld, norm] = GRASPilot.paramInfo(key);
             ck = sprintf('%s_%d', key, obj.Data.MapsVersion);
             ref = [];
@@ -1055,6 +1070,10 @@ classdef GRASPilot < handle
         end
 
         function u = paramUnit(obj, key)
+            if GRASPilot.isPKKey(key)
+                u = GRASPilotData.PKTable{strcmp(GRASPilotData.PKTable(:, 1), key), 5};
+                return
+            end
             [~, ~, norm] = GRASPilot.paramInfo(key);
             if norm, u = 'ratio'; return; end
             ts = 's';
@@ -1070,10 +1089,21 @@ classdef GRASPilot < handle
             end
         end
 
-        function [vals, cval] = paramValues(obj, key, lin, cp)
+        function [vals, cval] = paramValues(obj, key, lin, cp, pk)
             % voxel values of a parameter at canonical indices lin, and the value
-            % from an ROI mean curve (cp = graspilot_curve_params output)
+            % from an ROI mean curve (cp = graspilot_curve_params output, pk =
+            % graspilot_pk_fit output for PK parameters)
             vals = []; cval = NaN;
+            if GRASPilot.isPKKey(key)
+                A = obj.paramVolume(key);
+                if isempty(A), vals = NaN(numel(lin), 1); else, vals = double(A(lin(:))); end
+                if nargin > 4 && ~isempty(pk)
+                    row = GRASPilotData.PKTable(strcmp(GRASPilotData.PKTable(:, 1), key), :);
+                    fld = row{2}; if strcmp(fld, '2cxm'), fld = 'cxm'; end
+                    if isfield(pk, fld), cval = pk.(fld).(row{3}); end
+                end
+                return
+            end
             [name, fld, norm] = GRASPilot.paramInfo(key);
             A = obj.Data.canonMap(name);
             vals = double(A(lin(:)));
@@ -1106,8 +1136,13 @@ classdef GRASPilot < handle
                 if ~obj.ensureMaps(false), on = false; end
             end
             if on && isempty(obj.paramVolume(obj.ParamKey))
-                obj.inform(['Normalized maps need a reference ROI in the superior sagittal sinus: press ' ...
-                    'Auto SSS (or draw an ROI whose name contains SSS).'], 'Parameter map');
+                if GRASPilot.isPKKey(obj.ParamKey)
+                    obj.inform(['The pharmacokinetic maps are not computed for the current settings: ' ...
+                        'press Fit models (Analysis > Pharmacokinetic models).'], 'Parameter map');
+                else
+                    obj.inform(['Normalized maps need a reference ROI in the superior sagittal sinus: press ' ...
+                        'Auto SSS (or draw an ROI whose name contains SSS).'], 'Parameter map');
+                end
                 on = false;
             end
             obj.ParamOn = on;
@@ -1115,13 +1150,16 @@ classdef GRASPilot < handle
             obj.refreshOverlays();
             if on
                 obj.setStatus(sprintf('Showing %s [%s] as a colour map (%.4g to %.4g). M toggles it.', ...
-                    obj.ParamLabels{strcmp(obj.ParamKeys, obj.ParamKey)}, obj.paramUnit(obj.ParamKey), ...
+                    obj.paramLabel(obj.ParamKey), obj.paramUnit(obj.ParamKey), ...
                     obj.paramCLim()));
             end
         end
 
         function setParamKey(obj, key)
-            if isnumeric(key), key = obj.ParamKeys{key}; end
+            if isnumeric(key)
+                keys = obj.paramKeyList();
+                key = keys{key};
+            end
             obj.ParamKey = key;
             if obj.ParamOn && isempty(obj.paramVolume(key))
                 obj.setParamDisplay(false);
@@ -1196,6 +1234,8 @@ classdef GRASPilot < handle
             rows = cell(0, numel(hdr));
             if isempty(obj.Data) || ~obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)), return; end
             rr = obj.refIndex();
+            pkOn = obj.pkReady();
+            keys = obj.paramKeyList(pkOn);
             for r = 1:numel(obj.ROIs)
                 if r == rr && ~obj.IncludeRefStats, continue; end
                 lin = find(obj.Masks{r});
@@ -1203,11 +1243,13 @@ classdef GRASPilot < handle
                 if obj.ROIs(r).Dirty || isempty(obj.ROIs(r).Stats), obj.computeStats(r); end
                 cp = graspilot_curve_params(obj.ROIs(r).Stats.mean, obj.Data.paramTimes(), ...
                     obj.BaseFrames(1):obj.BaseFrames(2), obj.Data.ParamOpts);
-                for k = 1:numel(obj.ParamKeys)
-                    key = obj.ParamKeys{k};
-                    [vals, cval] = obj.paramValues(key, lin, cp);
+                pk = [];
+                if pkOn, pk = obj.roiPK(r); end
+                for k = 1:numel(keys)
+                    key = keys{k};
+                    [vals, cval] = obj.paramValues(key, lin, cp, pk);
                     d = GRASPilot.describeVals(vals);
-                    rows(end + 1, :) = {obj.ROIs(r).Name, obj.ParamLabels{k}, obj.paramUnit(key), d.n, d.mean, ...
+                    rows(end + 1, :) = {obj.ROIs(r).Name, obj.paramLabel(key), obj.paramUnit(key), d.n, d.mean, ...
                         d.sd, d.median, d.q1, d.q3, d.p10, d.p90, d.min, d.max, cval}; %#ok<AGROW>
                 end
                 ct = obj.paramValues('CT', lin);
@@ -1230,19 +1272,20 @@ classdef GRASPilot < handle
                 return
             end
             rr = obj.refIndex();
+            keys = obj.paramKeyList();
             blocks = struct('id', {}, 'name', {}, 'lin', {}, 'values', {});
             for r = 1:numel(obj.ROIs)
                 if r == rr && ~obj.IncludeRefStats, continue; end
                 lin = find(obj.Masks{r});
                 if isempty(lin), continue; end
-                X = zeros(numel(lin), numel(obj.ParamKeys));
-                for k = 1:numel(obj.ParamKeys)
-                    X(:, k) = obj.paramValues(obj.ParamKeys{k}, lin);
+                X = zeros(numel(lin), numel(keys));
+                for k = 1:numel(keys)
+                    X(:, k) = obj.paramValues(keys{k}, lin);
                 end
                 blocks(end + 1) = struct('id', r, 'name', obj.ROIs(r).Name, 'lin', lin, 'values', X); %#ok<AGROW>
             end
-            units = cellfun(@(k) obj.paramUnit(k), obj.ParamKeys, 'UniformOutput', false);
-            files = graspilot_export_params(file, obj.Data, hdr, rows, blocks, obj.ParamKeys, units, ...
+            units = cellfun(@(k) obj.paramUnit(k), keys, 'UniformOutput', false);
+            files = graspilot_export_params(file, obj.Data, hdr, rows, blocks, keys, units, ...
                 obj.paramSettings());
             obj.setStatus(['Wrote ' strjoin(files, ', ')]);
         end
@@ -1292,6 +1335,7 @@ classdef GRASPilot < handle
             end
             S(end + 1, :) = {'Normalized (/SSS)', 'parameter divided by the same parameter of the reference ROI mean curve'};
             S(end + 1, :) = {'ROI mean curve column', 'parameter computed from the ROI mean time-intensity curve'};
+            if obj.pkReady(), S = [S; obj.pkSettings()]; end
         end
 
         % ------------------------------------------------------------ display
@@ -1484,6 +1528,7 @@ classdef GRASPilot < handle
             obj.updateTimeWidgets();
             obj.refreshTIC();
             obj.refreshParamWindow();
+            obj.refreshPKWindow();
             if had
                 obj.setStatus(sprintf(['The measured (uneven) frame times were replaced by a uniform %.4g s/frame. ' ...
                     'Re-open the data to restore them.'], dt));
@@ -1499,6 +1544,7 @@ classdef GRASPilot < handle
             obj.updateTimeWidgets();
             obj.refreshTIC();
             obj.refreshParamWindow();
+            obj.refreshPKWindow();
         end
 
         function r = autoSSS(obj)
@@ -1608,9 +1654,10 @@ classdef GRASPilot < handle
             files = {};
             if ~obj.ensureMaps(false), return; end
             D = obj.Data;
-            if nargin < 4 || isempty(keys), keys = [{'Baseline', 'Max'}, obj.ParamKeys]; end
+            allKeys = [{'Baseline', 'Max'}, obj.paramKeyList()];
+            if nargin < 4 || isempty(keys), keys = allKeys; end
             if ischar(keys), keys = {keys}; end
-            bad = setdiff(keys, [{'Baseline', 'Max'}, obj.ParamKeys]);
+            bad = setdiff(keys, [allKeys, GRASPilotData.PKTable(:, 1)']);
             if ~isempty(bad), error('GRASPilot:param', 'Unknown map %s.', bad{1}); end
             hdr = struct('Dim', D.canonSize(), 'Vox', D.canonVox(), 'Affine', D.affine(), ...
                 'Datatype', 'float32', 'Descrip', 'GRASPilot map');
@@ -1629,7 +1676,8 @@ classdef GRASPilot < handle
             msg = sprintf('Wrote %d maps to %s (baseline frames %d-%d).', numel(files), folder, ...
                 obj.BaseFrames(1), obj.BaseFrames(2));
             if ~isempty(skipped)
-                msg = sprintf('%s Not written (no SSS reference ROI): %s.', msg, strjoin(skipped, ', '));
+                msg = sprintf('%s Not written (no SSS reference ROI or PK models not fitted): %s.', msg, ...
+                    strjoin(skipped, ', '));
             end
             obj.setStatus(msg);
         end
@@ -1655,6 +1703,7 @@ classdef GRASPilot < handle
             S.BinKeepPartial = D.BinKeepPartial;
             S.SubFrames = obj.SubFrames;
             S.ParamOpts = D.ParamOpts;
+            S.PKOpts = D.PKOpts;
             S.RefROIName = obj.RefROIName;
             S.MotionCorrected = D.MotionCorrected;
             if D.MotionCorrected
@@ -1755,6 +1804,12 @@ classdef GRASPilot < handle
                 obj.setSubFrames(S.SubFrames(1), S.SubFrames(2), false);
             end
             if isfield(S, 'ParamOpts'), D.setParamOptions(S.ParamOpts); end
+            if isfield(S, 'PKOpts')
+                try
+                    D.setPKOptions(S.PKOpts);
+                catch
+                end
+            end
             if isfield(S, 'RefROIName'), obj.RefROIName = S.RefROIName; end
             obj.UndoStack = {}; obj.RedoStack = {};
             obj.afterMaskChange();
@@ -1811,6 +1866,7 @@ classdef GRASPilot < handle
             catch
             end
             if isfield(obj.PW, 'Fig') && ishghandle(obj.PW.Fig), delete(obj.PW.Fig); end
+            if isfield(obj.KW, 'Fig') && ishghandle(obj.KW.Fig), delete(obj.KW.Fig); end
             if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig), delete(obj.MW.Fig); end
             if ~isempty(obj.Fig) && ishghandle(obj.Fig), delete(obj.Fig); end
         end
@@ -1934,6 +1990,8 @@ classdef GRASPilot < handle
             m = uimenu(obj.Fig, 'Label', 'Analysis');
             uimenu(m, 'Label', 'Semi-quantitative parameters (wash-in, washout, AUC, PE)...', ...
                 'Callback', @(s, e) obj.openParamWindow());
+            uimenu(m, 'Label', 'Pharmacokinetic models (Tofts, extended Tofts, 2CXM)...', ...
+                'Callback', @(s, e) obj.openPKWindow());
             uimenu(m, 'Label', 'Show / hide parameter map   (M)', 'Callback', @(s, e) obj.setParamDisplay(~obj.ParamOn));
             uimenu(m, 'Label', 'Export parameter statistics and voxel values...', 'Callback', @(s, e) obj.onExportParams());
             uimenu(m, 'Label', 'Export parameter maps -> NIfTI...', 'Callback', @(s, e) obj.onExportMaps());
@@ -2512,10 +2570,9 @@ classdef GRASPilot < handle
             set(obj.CB.Img, 'CData', reshape(cm, [128 1 3]), 'Visible', 'on');
             set(obj.CB.Ax, 'Visible', 'off', 'XLim', [0.5 1.5], 'YLim', [0.5 128.5]);
             c = obj.paramCLim();
-            k = find(strcmp(obj.ParamKeys, obj.ParamKey));
             set(obj.CB.Hi, 'String', sprintf('%.3g', c(2)), 'Visible', 'on');
             set(obj.CB.Lo, 'String', sprintf('%.3g', c(1)), 'Visible', 'on');
-            set(obj.CB.Title, 'String', sprintf('%s [%s]', obj.ParamKeys{k}, obj.paramUnit(obj.ParamKey)), ...
+            set(obj.CB.Title, 'String', sprintf('%s [%s]', obj.ParamKey, obj.paramUnit(obj.ParamKey)), ...
                 'Visible', 'on');
         end
 
@@ -3194,6 +3251,9 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.onParamRef());
             obj.ctl(P, x1, 232, 170, 28, 'pushbutton', 'Compute parameters', 'FontWeight', 'bold', ...
                 'Callback', @(s, e) obj.onParamCompute());
+            obj.ctl(P, x1 + 176, 232, 200, 28, 'pushbutton', 'Pharmacokinetic models...', ...
+                'TooltipString', 'Tofts, extended Tofts and 2CXM fits (Ktrans, ve, vp, kep, Fp, PS)', ...
+                'Callback', @(s, e) obj.openPKWindow());
             obj.PW.info = obj.ctl(P, x1, 264, 376, 58, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
             % parameter map
             hdr(x2, 'PARAMETER MAP');
@@ -3329,26 +3389,16 @@ classdef GRASPilot < handle
             end
             set(obj.PW.info, 'String', msgI);
             [~, rows] = obj.paramStatsTable();
-            dsp = rows;
-            for i = 1:size(rows, 1)
-                for j = 4:size(rows, 2)
-                    if j == 4
-                        dsp{i, j} = sprintf('%d', rows{i, j});
-                    else
-                        dsp{i, j} = sprintf('%.4g', rows{i, j});
-                        if numel(dsp{i, j}) > 9, dsp{i, j} = sprintf('%.3g', rows{i, j}); end
-                        if isnan(rows{i, j}), dsp{i, j} = ''; end
-                    end
-                end
-            end
-            set(obj.PW.table, 'Data', dsp);
+            set(obj.PW.table, 'Data', GRASPilot.formatStatsRows(rows));
             obj.syncParamWindow();
         end
 
         function syncParamWindow(obj)
             if ~isfield(obj.PW, 'Fig') || ~ishghandle(obj.PW.Fig) || isempty(obj.Data), return; end
-            k = find(strcmp(obj.ParamKeys, obj.ParamKey));
-            set(obj.PW.key, 'Value', k);
+            keys = obj.paramKeyList();
+            k = find(strcmp(keys, obj.ParamKey));
+            if isempty(k), k = 1; end
+            set(obj.PW.key, 'String', cellfun(@(q) obj.paramLabel(q), keys, 'UniformOutput', false), 'Value', k);
             set(obj.PW.show, 'Value', double(obj.ParamOn));
             set(obj.PW.cmap, 'Value', find(strcmp(obj.CmapNames, obj.ParamCmap)));
             c = obj.paramCLim();
@@ -3390,6 +3440,7 @@ classdef GRASPilot < handle
             obj.syncRefWindow();
             obj.refreshTIC();
             obj.refreshParamWindow();
+            obj.refreshPKWindow();
             if obj.ParamOn, obj.refreshParamDisplay(); end
         end
 
@@ -3404,6 +3455,7 @@ classdef GRASPilot < handle
             obj.ParamCache = struct('key', '', 'V', []);
             obj.refreshParamDisplay();
             obj.refreshParamWindow();
+            obj.refreshPKWindow();
         end
 
         function onParamCompute(obj)
@@ -3452,6 +3504,477 @@ classdef GRASPilot < handle
             end
             if ~isempty(files)
                 obj.inform(sprintf('Wrote:\n%s', strjoin(files, char(10))), 'Parameter export');
+            end
+        end
+
+        % ------------------------------------------------------------ pharmacokinetic models
+        function a = aifSignal(obj)
+            % mean signal curve of the reference (SSS) ROI: the AIF source ([] if none)
+            a = [];
+            r = obj.refIndex();
+            if isempty(obj.Data) || r == 0 || ~any(obj.Masks{r}(:)), return; end
+            if obj.ROIs(r).Dirty || isempty(obj.ROIs(r).Stats), obj.computeStats(r); end
+            a = obj.ROIs(r).Stats.mean;
+        end
+
+        function M = pkRegion(obj)
+            % canonical mask of the voxels fitted ([] = all voxels)
+            M = [];
+            switch obj.Data.PKOpts.Region
+                case 'head'
+                    M = obj.headMask();
+                case 'rois'
+                    M = false(obj.Data.canonSize());
+                    for r = 1:numel(obj.Masks), M = M | obj.Masks{r}; end
+            end
+        end
+
+        function tf = pkReady(obj)
+            % PK maps exist for the current settings, baseline, timing, AIF (and ROIs)
+            tf = false;
+            D = obj.Data;
+            if isempty(D) || isempty(D.PKMaps), return; end
+            h = D.PKMaps.Key{end};
+            if strcmp(D.PKOpts.Region, 'rois'), h = GRASPilotData.maskHash(obj.pkRegion()); end
+            tf = D.hasPK(obj.BaseFrames(1):obj.BaseFrames(2), obj.aifSignal(), h);
+        end
+
+        function keys = paramKeyList(obj, pkOn)
+            % semi-quantitative keys, then the PK keys of the fitted models
+            keys = obj.ParamKeys;
+            if isempty(obj.Data), return; end
+            if nargin < 2, pkOn = obj.pkReady(); end
+            if pkOn, keys = [keys, obj.Data.PKMaps.Keys]; end
+        end
+
+        function L = paramLabel(obj, key)
+            k = find(strcmp(obj.ParamKeys, key), 1);
+            if ~isempty(k), L = obj.ParamLabels{k}; return; end
+            k = find(strcmp(GRASPilotData.PKTable(:, 1), key), 1);
+            if isempty(k), L = key; else, L = GRASPilotData.PKTable{k, 4}; end
+        end
+
+        function [R, Fit, C, Cp, t] = roiPK(obj, r)
+            % PK model fits of the mean signal curve of ROI r
+            if obj.ROIs(r).Dirty || isempty(obj.ROIs(r).Stats), obj.computeStats(r); end
+            [R, Fit, C, Cp, t] = obj.Data.fitPKCurves(obj.ROIs(r).Stats.mean, ...
+                obj.BaseFrames(1):obj.BaseFrames(2), obj.aifSignal());
+        end
+
+        function ok = computePK(obj, varargin)
+            % Fit the pharmacokinetic models voxel-wise (maps for the parameter
+            % window, statistics and exports). Options as in
+            % GRASPilotData.setPKOptions, e.g. 'Models', {'tofts', 'etofts'},
+            % 'T10', 1400 (ms), 'TR', 4 (ms), 'FlipAngle', 12, 'AIF', 'ref'.
+            ok = false;
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            if ~isempty(varargin)
+                D.setPKOptions(varargin{:});
+                obj.rememberPK();
+            end
+            if ~D.hasTiming()
+                obj.inform(['Pharmacokinetic models need the frame times: enter the temporal resolution ' ...
+                    '(s/frame) in the time strip.'], 'Pharmacokinetic models');
+                return
+            end
+            if isempty(D.PKOpts.Models)
+                obj.inform('Select at least one model.', 'Pharmacokinetic models');
+                return
+            end
+            if ~obj.ensureMaps(false), return; end
+            aif = obj.aifSignal();
+            if strcmp(D.PKOpts.AIF, 'ref') && isempty(aif)
+                obj.inform(['The AIF is taken from the reference ROI in the superior sagittal sinus: press ' ...
+                    'Auto SSS (or draw an ROI whose name contains SSS), or choose the population AIF.'], ...
+                    'Pharmacokinetic models');
+                return
+            end
+            region = obj.pkRegion();
+            if ~isempty(region) && ~any(region(:))
+                obj.inform('There are no voxels to fit: draw an ROI or fit inside the head.', 'Pharmacokinetic models');
+                return
+            end
+            wb = obj.wbOpen('Fitting pharmacokinetic models...');
+            try
+                D.computePK(obj.BaseFrames(1):obj.BaseFrames(2), aif, region, @(f, m) obj.wbUpdate(wb, f, m));
+            catch err
+                obj.wbClose(wb);
+                obj.showError(err, 'Pharmacokinetic model fit failed');
+                return
+            end
+            obj.wbClose(wb);
+            obj.ParamCache = struct('key', '', 'V', []);
+            obj.setStatus(sprintf('Fitted %s in %d voxels (%.1f s).', strjoin(D.PKOpts.Models, ', '), ...
+                D.PKMaps.Info.NVoxels, D.PKMaps.Info.Seconds));
+            if obj.ParamOn, obj.refreshParamDisplay(); end
+            obj.refreshParamWindow();
+            obj.refreshPKWindow();
+            ok = true;
+        end
+
+        function rememberPK(obj)
+            % keep the acquisition settings (T10, TR, flip angle, r1, Hct) for the next files
+            o = obj.Data.PKOpts;
+            obj.PKPrefs = struct('Models', {o.Models}, 'T10', o.T10, 'T10Blood', o.T10Blood, 'TR', o.TR, ...
+                'FlipAngle', o.FlipAngle, 'r1', o.r1, 'Hct', o.Hct, 'AIF', o.AIF, 'Region', o.Region, ...
+                'Refine', o.Refine);
+            obj.savePrefs();
+        end
+
+        function S = pkSettings(obj)
+            % description of the PK fit for the Settings sheet
+            D = obj.Data; o = D.PKOpts;
+            names = struct('tofts', 'standard Tofts', 'etofts', 'extended Tofts', 'x2cxm', ...
+                'two-compartment exchange (2CXM)');
+            mdl = cellfun(@(m) names.(regexprep(m, '^2', 'x2')), o.Models, 'UniformOutput', false);
+            if strcmp(o.AIF, 'population')
+                aif = sprintf(['population AIF (Parker et al. 2006, 0.1 mmol/kg), injection at the end of the ' ...
+                    'baseline (frame %d)'], obj.BaseFrames(2));
+            else
+                r = obj.refIndex();
+                aif = sprintf(['reference ROI %s (%d voxels): mean signal converted with the blood T10, ' ...
+                    'plasma = blood / (1 - Hct)'], obj.ROIs(r).Name, nnz(obj.Masks{r}));
+            end
+            rg = struct('head', 'voxels inside the head (Otsu threshold of the baseline signal)', ...
+                'rois', 'ROI voxels only', 'all', 'all voxels');
+            I = D.PKMaps.Info;
+            S = {'PK models', strjoin(mdl, ', ');
+                'PK signal -> concentration', ['RATIO method: S/S0 with the spoiled gradient echo equation, ' ...
+                'R1 = -ln(E1)/TR, C = (R1 - 1/T10)/r1; S0 = mean of the baseline frames'];
+                'PK tissue T10 (ms, global)', o.T10;
+                'PK blood T10 (ms, AIF)', o.T10Blood;
+                'PK TR (ms)', o.TR;
+                'PK flip angle (deg)', o.FlipAngle;
+                'PK relaxivity r1 (1/(mM s))', o.r1;
+                'PK hematocrit', o.Hct;
+                'PK AIF', aif;
+                'PK AIF shift (s, positive = later)', o.AIFShift;
+                'PK frames fitted', sprintf('1-%d (%.4g-%.4g s; time origin = frame 1)', numel(I.t), I.t(1), I.t(end));
+                'PK voxels fitted', sprintf('%d: %s', I.NVoxels, rg.(o.Region));
+                'PK fit', GRASPilot.ternaryStr(o.Refine, ['log-spaced grid search of the rate constants with ' ...
+                'exact linear coefficients (variable projection), then Levenberg-Marquardt'], ...
+                'log-spaced grid search of the rate constants with exact linear coefficients');
+                'PK units', ['Ktrans, kep: 1/min; ve, vp: fraction (ml/ml); Fp, PS: ml/100 ml/min; ' ...
+                '2CXM Ktrans = E Fp, E = PS/(PS + Fp); R2 = coefficient of determination of the fit']};
+        end
+
+        function openPKWindow(obj)
+            if ~obj.requireData(), return; end
+            if isfield(obj.KW, 'Fig') && ishghandle(obj.KW.Fig)
+                figure(obj.KW.Fig);
+                obj.refreshPKWindow();
+                return
+            end
+            obj.Layout = obj.Layout(arrayfun(@(L) ishghandle(L.h), obj.Layout));
+            C = obj.Col;
+            W = 1180; Hh = 840;
+            ss = get(0, 'ScreenSize');
+            f = figure('Name', 'Pharmacokinetic models (Tofts, extended Tofts, 2CXM)', 'NumberTitle', 'off', ...
+                'MenuBar', 'none', 'ToolBar', 'none', 'Units', 'pixels', 'Color', C.bg, ...
+                'Position', [max(1, round((ss(3) - W) / 2)), max(40, round((ss(4) - Hh) / 2)), W, Hh], ...
+                'KeyPressFcn', @(s, e) obj.onKey(e));
+            P = uipanel('Parent', f, 'Units', 'pixels', 'Position', [1 1 W Hh], 'BorderType', 'none', ...
+                'BackgroundColor', C.panel);
+            obj.KW = struct('Fig', f, 'Panel', P);
+            x1 = 12;
+            hdr = @(y, s) obj.ctl(P, x1, y, 370, 18, 'text', s, 'FontWeight', 'bold', 'ForegroundColor', C.accent);
+            lab = @(x, y, w, s) obj.ctl(P, x, y + 2, w, 18, 'text', s);
+            dim = @(x, y, w, s) obj.ctl(P, x, y + 2, w, 18, 'text', s, 'ForegroundColor', C.dim);
+            edt = @(x, y, tip) obj.ctl(P, x, y, 64, 22, 'edit', '', 'TooltipString', tip, ...
+                'Callback', @(s, e) obj.onPKOptions());
+            hdr(10, 'MODELS');
+            obj.KW.mTofts = obj.ctl(P, x1, 34, 80, 20, 'checkbox', 'Tofts', ...
+                'TooltipString', 'Standard Tofts: Ktrans, ve, kep', 'Callback', @(s, e) obj.onPKOptions());
+            obj.KW.mETofts = obj.ctl(P, x1 + 84, 34, 130, 20, 'checkbox', 'Extended Tofts', ...
+                'TooltipString', 'Extended Tofts: Ktrans, ve, vp, kep', 'Callback', @(s, e) obj.onPKOptions());
+            obj.KW.m2CXM = obj.ctl(P, x1 + 220, 34, 150, 20, 'checkbox', '2CXM', ...
+                'TooltipString', 'Two-compartment exchange model: Fp, PS, vp, ve (slowest)', ...
+                'Callback', @(s, e) obj.onPKOptions());
+            hdr(64, 'SIGNAL -> CONCENTRATION (RATIO METHOD)');
+            lab(x1, 88, 130, 'Tissue T10 (ms)');
+            obj.KW.t10 = edt(x1 + 132, 88, 'Pre-contrast T1 of the tissue, one global value for every voxel');
+            dim(x1 + 202, 88, 170, 'global baseline T1');
+            lab(x1, 116, 130, 'Blood T10 (ms)');
+            obj.KW.t10b = edt(x1 + 132, 116, 'Pre-contrast T1 of blood, used for the AIF (reference ROI)');
+            dim(x1 + 202, 116, 170, 'AIF (SSS); 3T ~1650');
+            lab(x1, 144, 130, 'TR (ms)');
+            obj.KW.tr = edt(x1 + 132, 144, 'Repetition time of the DCE sequence');
+            lab(x1 + 202, 144, 96, 'Flip angle (deg)');
+            obj.KW.fa = edt(x1 + 300, 144, 'Flip angle of the DCE sequence');
+            lab(x1, 172, 130, 'r1 (1/(mM s))');
+            obj.KW.r1 = edt(x1 + 132, 172, 'Longitudinal relaxivity of the contrast agent at the field strength');
+            lab(x1 + 202, 172, 96, 'Hematocrit');
+            obj.KW.hct = edt(x1 + 300, 172, 'Large-vessel hematocrit: plasma AIF = blood AIF / (1 - Hct)');
+            hdr(204, 'ARTERIAL INPUT FUNCTION');
+            lab(x1, 228, 130, 'AIF');
+            obj.KW.aif = obj.ctl(P, x1 + 132, 228, 232, 22, 'popupmenu', ...
+                {'Reference ROI (SSS, venous)', 'Population (Parker 2006)'}, 'Callback', @(s, e) obj.onPKOptions());
+            lab(x1, 256, 130, 'AIF shift (s)');
+            obj.KW.shift = edt(x1 + 132, 256, ['Shift of the AIF in time: negative = earlier (the SSS ' ...
+                'bolus arrives a few seconds after the arteries)']);
+            dim(x1 + 202, 256, 170, 'negative = earlier');
+            lab(x1, 284, 130, 'Reference ROI');
+            obj.KW.ref = obj.ctl(P, x1 + 132, 284, 232, 22, 'popupmenu', {'(auto)'}, ...
+                'Callback', @(s, e) obj.onPKRef());
+            hdr(316, 'FIT');
+            lab(x1, 340, 130, 'Voxels');
+            obj.KW.region = obj.ctl(P, x1 + 132, 340, 232, 22, 'popupmenu', ...
+                {'Inside the head', 'ROI voxels only (fast)', 'All voxels'}, 'Callback', @(s, e) obj.onPKOptions());
+            obj.KW.refine = obj.ctl(P, x1, 368, 370, 20, 'checkbox', ...
+                'Levenberg-Marquardt refinement of the grid fit', 'Callback', @(s, e) obj.onPKOptions());
+            obj.ctl(P, x1, 394, 150, 28, 'pushbutton', 'Fit models', 'FontWeight', 'bold', ...
+                'TooltipString', 'Fit the selected models voxel by voxel', 'Callback', @(s, e) obj.computePK());
+            obj.ctl(P, x1 + 156, 394, 100, 28, 'pushbutton', 'Defaults', ...
+                'TooltipString', 'Reset T10, TR, flip angle, r1, Hct and the AIF options', ...
+                'Callback', @(s, e) obj.onPKDefaults());
+            obj.ctl(P, x1 + 262, 394, 108, 28, 'pushbutton', 'Parameters...', ...
+                'TooltipString', 'Parameter window: colour map, statistics and exports', ...
+                'Callback', @(s, e) obj.openParamWindow());
+            obj.KW.info = obj.ctl(P, x1, 428, 370, 84, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
+            % map display
+            hdr(520, 'MAP');
+            obj.KW.key = obj.ctl(P, x1, 544, 232, 22, 'popupmenu', {'(fit the models first)'}, ...
+                'Callback', @(s, e) obj.onPKKey());
+            obj.KW.show = obj.ctl(P, x1 + 238, 543, 132, 24, 'togglebutton', 'Show on images', ...
+                'Callback', @(s, e) obj.onPKShow(get(s, 'Value')));
+            % curves
+            obj.ctl(P, 420, 10, 300, 18, 'text', 'CONCENTRATION CURVES', 'FontWeight', 'bold', ...
+                'ForegroundColor', C.accent);
+            obj.ctl(P, -380, 10, 30, 18, 'text', 'ROI');
+            obj.KW.roi = obj.ctl(P, -346, 8, 220, 22, 'popupmenu', {'(none)'}, 'Callback', @(s, e) obj.onPKRoi());
+            obj.KW.png = obj.ctl(P, -118, 8, 106, 22, 'pushbutton', 'PNG...', 'Callback', @(s, e) obj.onPKPng());
+            obj.KW.Ax = GRASPilot.handleArray(2);
+            ttl = {'AIF: plasma concentration Cp (mM)', 'ROI mean concentration (mM) and model fits'};
+            for i = 1:2
+                ax = axes('Parent', P, 'Units', 'pixels', 'Position', [470 400 400 120], 'Color', [0.07 0.07 0.08], ...
+                    'XColor', [0.8 0.8 0.8], 'YColor', [0.8 0.8 0.8], 'Box', 'on', 'FontSize', 8, 'NextPlot', 'add');
+                title(ax, ttl{i}, 'Color', [0.85 0.85 0.85], 'FontSize', 9);
+                obj.KW.Ax(i) = ax;
+            end
+            obj.KW.table = uitable('Parent', P, 'Units', 'pixels', 'Position', [12 12 W - 24 200], ...
+                'ColumnName', {'ROI', 'Parameter', 'Unit', 'N', 'Mean', 'SD', 'Median', 'Q1', 'Q3', 'P10', ...
+                'P90', 'Min', 'Max', 'ROI curve'}, 'RowName', [], 'Data', cell(0, 14), 'FontSize', 9, ...
+                'ColumnWidth', {110, 195, 100, 50, 70, 70, 70, 70, 70, 70, 70, 70, 70, 70});
+            obj.reg(obj.KW.table, P, 12, 584, -12, -12);
+            set(f, 'SizeChangedFcn', @(s, e) obj.layoutPKWindow());
+            obj.layoutPKWindow();
+            obj.refreshPKWindow();
+        end
+
+        function layoutPKWindow(obj)
+            if ~isfield(obj.KW, 'Fig') || ~ishghandle(obj.KW.Fig), return; end
+            fp = get(obj.KW.Fig, 'Position');
+            set(obj.KW.Panel, 'Position', [1 1 fp(3) fp(4)]);
+            obj.layoutRecords(obj.KW.Panel);
+            x0 = 456; top = 52; gap = 48; tbl = 584;
+            h = max(60, (tbl - top - gap - 40) / 2);
+            for i = 1:2
+                y = fp(4) - top - i * h - (i - 1) * gap;
+                set(obj.KW.Ax(i), 'Position', [x0 y max(100, fp(3) - x0 - 20) h]);
+            end
+        end
+
+        function refreshPKWindow(obj)
+            if ~isfield(obj.KW, 'Fig') || ~ishghandle(obj.KW.Fig) || isempty(obj.Data), return; end
+            D = obj.Data; o = D.PKOpts;
+            set(obj.KW.mTofts, 'Value', any(strcmp(o.Models, 'tofts')));
+            set(obj.KW.mETofts, 'Value', any(strcmp(o.Models, 'etofts')));
+            set(obj.KW.m2CXM, 'Value', any(strcmp(o.Models, '2cxm')));
+            set(obj.KW.t10, 'String', num2str(o.T10));
+            set(obj.KW.t10b, 'String', num2str(o.T10Blood));
+            set(obj.KW.tr, 'String', num2str(o.TR));
+            set(obj.KW.fa, 'String', num2str(o.FlipAngle));
+            set(obj.KW.r1, 'String', num2str(o.r1));
+            set(obj.KW.hct, 'String', num2str(o.Hct));
+            set(obj.KW.aif, 'Value', 1 + strcmp(o.AIF, 'population'));
+            set(obj.KW.shift, 'String', num2str(o.AIFShift));
+            set(obj.KW.region, 'Value', find(strcmp({'head', 'rois', 'all'}, o.Region)));
+            set(obj.KW.refine, 'Value', double(o.Refine));
+            names = {obj.ROIs.Name};
+            r = obj.refIndex();
+            val = 1;
+            if ~isempty(obj.RefROIName) && r > 0, val = r + 1; end
+            set(obj.KW.ref, 'String', [{'(auto: first ROI named SSS)'}, names], 'Value', val);
+            % info
+            ready = obj.pkReady();
+            msg = {};
+            if ~D.hasTiming()
+                msg{end + 1} = 'Enter the temporal resolution (s/frame) first: the models need the frame times.';
+            elseif strcmp(o.AIF, 'ref') && r == 0
+                msg{end + 1} = 'No reference ROI for the AIF: press Auto SSS, or use the population AIF.';
+            end
+            if ready
+                I = D.PKMaps.Info;
+                msg{end + 1} = sprintf('Fitted: %s, %d voxels, frames 1-%d (%.1f s).', strjoin(o.Models, ', '), ...
+                    I.NVoxels, numel(I.t), I.Seconds);
+                msg{end + 1} = 'Maps, statistics and exports: Parameters window.';
+            elseif ~isempty(D.PKMaps)
+                msg{end + 1} = 'Settings, baseline, AIF or ROIs changed since the last fit: press Fit models.';
+            else
+                msg{end + 1} = 'Curves below update with the settings; Fit models computes the voxel maps.';
+            end
+            % ROI list for the curve plot
+            keep = obj.KWRoi;
+            rv = find(strcmp(names, keep), 1);
+            if isempty(rv)
+                cand = setdiff(1:numel(names), r);
+                cand = cand(arrayfun(@(q) any(obj.Masks{q}(:)), cand));
+                if isempty(cand), rv = []; else, rv = cand(1); end
+            end
+            if isempty(names)
+                set(obj.KW.roi, 'String', {'(no ROI)'}, 'Value', 1);
+            else
+                set(obj.KW.roi, 'String', names, 'Value', max(1, min(numel(names), max([rv 1]))));
+            end
+            if ~isempty(rv), obj.KWRoi = names{rv}; end
+            % curves
+            for i = 1:2, cla(obj.KW.Ax(i)); end
+            try
+                obj.plotPKCurves(rv);
+            catch err
+                msg{end + 1} = ['Curves: ' err.message];
+            end
+            set(obj.KW.info, 'String', msg);
+            % map selector and statistics of the PK parameters
+            if ready
+                keys = D.PKMaps.Keys;
+                k = find(strcmp(keys, obj.ParamKey), 1);
+                set(obj.KW.key, 'String', cellfun(@(q) obj.paramLabel(q), keys, 'UniformOutput', false), ...
+                    'Value', max([k 1]));
+                set(obj.KW.show, 'Value', double(obj.ParamOn && ~isempty(k)));
+                [~, rows] = obj.paramStatsTable();
+                rows = rows(cellfun(@(q) any(strcmp(cellfun(@(z) obj.paramLabel(z), keys, ...
+                    'UniformOutput', false), q)), rows(:, 2)), :);
+            else
+                set(obj.KW.key, 'String', {'(fit the models first)'}, 'Value', 1);
+                set(obj.KW.show, 'Value', 0);
+                rows = cell(0, 14);
+            end
+            set(obj.KW.table, 'Data', GRASPilot.formatStatsRows(rows));
+        end
+
+        function plotPKCurves(obj, r)
+            % AIF and the concentration curve of ROI r with the model fits
+            D = obj.Data;
+            if ~D.hasTiming(), return; end
+            aif = obj.aifSignal();
+            bf = obj.BaseFrames(1):obj.BaseFrames(2);
+            [Cp, t, Cb] = D.pkAIF(bf, aif);
+            ax = obj.KW.Ax(1);
+            h1 = plot(ax, t, Cp, '-', 'Color', [1 0.35 0.3], 'LineWidth', 1.6);
+            h2 = plot(ax, t, Cb, ':', 'Color', [1 0.7 0.6], 'LineWidth', 1);
+            lg = {'plasma Cp', 'blood'};
+            hh = [h1 h2];
+            if strcmp(D.PKOpts.AIF, 'ref') && ~isempty(aif)
+                lg{1} = sprintf('plasma Cp (%s)', obj.ROIs(obj.refIndex()).Name);
+            end
+            obj.motionLegend(ax, hh, lg);
+            set(ax, 'XLim', [t(1) t(end) + eps]);
+            xlabel(ax, 'Time (s)', 'Color', [0.85 0.85 0.85]);
+            ax = obj.KW.Ax(2);
+            if isempty(r) || ~any(obj.Masks{r}(:)), return; end
+            [R, Fit, C] = obj.roiPK(r);
+            hh = plot(ax, t, C, 'o', 'Color', obj.ROIs(r).Color, 'MarkerSize', 3, 'MarkerFaceColor', obj.ROIs(r).Color);
+            lg = {sprintf('%s (data)', obj.ROIs(r).Name)};
+            col = struct('tofts', [0.4 0.75 1], 'etofts', [0.45 1 0.45], 'cxm', [1 0.75 0.25]);
+            nm = struct('tofts', 'Tofts', 'etofts', 'Ext. Tofts', 'cxm', '2CXM');
+            fn = fieldnames(Fit);
+            for i = 1:numel(fn)
+                P = R.(fn{i});
+                switch fn{i}
+                    case 'tofts', s = sprintf('Ktrans %.3g, ve %.3g', P.Ktrans, P.ve);
+                    case 'etofts', s = sprintf('Ktrans %.3g, ve %.3g, vp %.3g', P.Ktrans, P.ve, P.vp);
+                    otherwise, s = sprintf('Fp %.3g, PS %.3g, vp %.3g, ve %.3g', P.Fp, P.PS, P.vp, P.ve);
+                end
+                hh(end + 1) = plot(ax, t, Fit.(fn{i}), '-', 'Color', col.(fn{i}), 'LineWidth', 1.4); %#ok<AGROW>
+                lg{end + 1} = sprintf('%s: %s (R2 %.3f)', nm.(fn{i}), s, P.R2); %#ok<AGROW>
+            end
+            obj.motionLegend(ax, hh, lg);
+            y = C(:);
+            if ~isempty(fn), y = [y; Fit.(fn{1})(:)]; end
+            y = y(isfinite(y));
+            if ~isempty(y) && max(y) > min(0, min(y))
+                set(ax, 'YLim', [min(0, min(y)), max(y) + 0.6 * (max(y) - min(0, min(y)))]);   % room for the legend
+            end
+            set(ax, 'XLim', [t(1) t(end) + eps]);
+            xlabel(ax, 'Time (s)', 'Color', [0.85 0.85 0.85]);
+        end
+
+        function onPKOptions(obj)
+            if isempty(obj.Data), return; end
+            mdl = {'tofts', 'etofts', '2cxm'};
+            on = [get(obj.KW.mTofts, 'Value'), get(obj.KW.mETofts, 'Value'), get(obj.KW.m2CXM, 'Value')] > 0;
+            num = @(h) str2double(get(h, 'String'));
+            aifs = {'ref', 'population'}; regs = {'head', 'rois', 'all'};
+            try
+                obj.Data.setPKOptions('Models', mdl(on), 'T10', num(obj.KW.t10), 'T10Blood', num(obj.KW.t10b), ...
+                    'TR', num(obj.KW.tr), 'FlipAngle', num(obj.KW.fa), 'r1', num(obj.KW.r1), ...
+                    'Hct', num(obj.KW.hct), 'AIF', aifs{get(obj.KW.aif, 'Value')}, ...
+                    'AIFShift', num(obj.KW.shift), 'Region', regs{get(obj.KW.region, 'Value')}, ...
+                    'Refine', get(obj.KW.refine, 'Value') > 0);
+                obj.rememberPK();
+            catch err
+                obj.showError(err, 'Pharmacokinetic model settings');
+            end
+            obj.ParamCache = struct('key', '', 'V', []);
+            if obj.ParamOn && GRASPilot.isPKKey(obj.ParamKey), obj.refreshParamDisplay(); end
+            obj.refreshPKWindow();
+            obj.refreshParamWindow();
+        end
+
+        function onPKDefaults(obj)
+            o = graspilot_pk_defaults();
+            obj.Data.setPKOptions('T10', o.T10, 'T10Blood', o.T10Blood, 'TR', o.TR, 'FlipAngle', o.FlipAngle, ...
+                'r1', o.r1, 'Hct', o.Hct, 'AIF', o.AIF, 'AIFShift', o.AIFShift, 'Refine', o.Refine);
+            obj.rememberPK();
+            obj.refreshPKWindow();
+            obj.refreshParamWindow();
+        end
+
+        function onPKRef(obj)
+            v = get(obj.KW.ref, 'Value');
+            if v == 1, obj.RefROIName = ''; else, obj.RefROIName = obj.ROIs(v - 1).Name; end
+            obj.RefCache = [];
+            obj.ParamCache = struct('key', '', 'V', []);
+            obj.syncRefWindow();
+            obj.refreshParamDisplay();
+            obj.refreshParamWindow();
+            obj.refreshPKWindow();
+        end
+
+        function onPKRoi(obj)
+            names = {obj.ROIs.Name};
+            v = get(obj.KW.roi, 'Value');
+            if v <= numel(names), obj.KWRoi = names{v}; end
+            obj.refreshPKWindow();
+        end
+
+        function onPKKey(obj)
+            if ~obj.pkReady(), return; end
+            keys = obj.Data.PKMaps.Keys;
+            obj.setParamKey(keys{get(obj.KW.key, 'Value')});
+            if obj.ParamOn, obj.setParamDisplay(true); end
+            obj.refreshPKWindow();
+        end
+
+        function onPKShow(obj, on)
+            if obj.pkReady() && on
+                keys = obj.Data.PKMaps.Keys;
+                obj.setParamKey(keys{get(obj.KW.key, 'Value')});
+            end
+            obj.setParamDisplay(on);
+            obj.refreshPKWindow();
+        end
+
+        function onPKPng(obj)
+            file = obj.putFile({'*.png', 'PNG image (*.png)'}, 'Save the concentration curves', '_pk_curves.png');
+            if isempty(file), return; end
+            try
+                print(obj.KW.Fig, file, '-dpng', '-r150');
+                obj.setStatus(['Wrote ' file]);
+            catch err
+                obj.showError(err, 'Could not save the PNG');
             end
         end
 
@@ -3572,6 +4095,7 @@ classdef GRASPilot < handle
             obj.updateThrSliderRange();
             obj.refreshParamDisplay();
             obj.refreshParamWindow();
+            obj.refreshPKWindow();
             obj.refreshMotionWindow();
         end
 
@@ -3855,6 +4379,7 @@ classdef GRASPilot < handle
             obj.refreshPreviews();
             obj.refreshTIC();
             obj.updateThrInfo();
+            obj.refreshPKWindow();
         end
 
         function onThrEdit(obj)
@@ -3983,8 +4508,10 @@ classdef GRASPilot < handle
 
         function onExportMaps(obj)
             if ~obj.requireData(), return; end
-            keys = [{'Baseline', 'Max'}, obj.ParamKeys];
-            lbl = [{'Baseline signal S0', 'Maximum signal after baseline'}, obj.ParamLabels];
+            pk = obj.paramKeyList();
+            keys = [{'Baseline', 'Max'}, pk];
+            lbl = [{'Baseline signal S0', 'Maximum signal after baseline'}, ...
+                cellfun(@(q) obj.paramLabel(q), pk, 'UniformOutput', false)];
             if ~obj.Quiet
                 [sel, okd] = listdlg('ListString', lbl, 'InitialValue', 1:numel(lbl), 'Name', 'Parameter maps -> NIfTI', ...
                     'ListSize', [320 360], 'PromptString', 'Maps to save (one NIfTI file each):');
@@ -4110,6 +4637,12 @@ classdef GRASPilot < handle
                 '  Peak enhancement, wash-in and washout slopes, AUC, TTP, absolute and'
                 '  normalized to the SSS ROI mean curve; colour maps (M), ROI statistics,'
                 '  export of statistics and voxel values'
+                ''
+                'PHARMACOKINETIC MODELS (Analysis menu)'
+                '  Tofts, extended Tofts, 2CXM: Ktrans, ve, vp, kep, Fp, PS maps'
+                '  Signal -> concentration by the RATIO method with a global T10'
+                '  (tissue and blood), TR, flip angle, r1; AIF from the SSS ROI or'
+                '  the population AIF (shift adjustable); maps join the parameter list'
                 ''
                 'TEMPORAL BINNING'
                 '  Average every n frames + Apply binning: each frame becomes the mean'
@@ -4274,13 +4807,18 @@ classdef GRASPilot < handle
             obj.syncRefWindow();
             obj.refreshROIList();
             if obj.ParamOn
-                [~, ~, nrm] = GRASPilot.paramInfo(obj.ParamKey);
+                if GRASPilot.isPKKey(obj.ParamKey)
+                    nrm = true;                  % the AIF (SSS) or the fitted ROIs may have changed
+                else
+                    [~, ~, nrm] = GRASPilot.paramInfo(obj.ParamKey);
+                end
                 if nrm, obj.refreshParamDisplay(); end
             end
             obj.refreshOverlays();
             obj.refreshTIC();
             obj.updateThrInfo();
             obj.refreshParamWindow();
+            obj.refreshPKWindow();
         end
 
         function applyChanges(obj, ch, inverse)
@@ -4467,6 +5005,9 @@ classdef GRASPilot < handle
                 if ispref('GRASPilot', 'LastDir')
                     obj.LastDir = getpref('GRASPilot', 'LastDir');
                 end
+                if ispref('GRASPilot', 'PK')
+                    obj.PKPrefs = getpref('GRASPilot', 'PK');
+                end
                 if ~ispref('GRASPilot', 'Geometry') && ispref('GraspDCEViewer', 'Geometry')
                     % settings saved under the tool's former name
                     g = getpref('GraspDCEViewer', 'Geometry');
@@ -4486,6 +5027,7 @@ classdef GRASPilot < handle
                     'dt', obj.LoadOpts.dt, 't0', obj.LoadOpts.t0);
                 setpref('GRASPilot', 'Geometry', g);
                 setpref('GRASPilot', 'LastDir', obj.LastDir);
+                if ~isempty(obj.PKPrefs), setpref('GRASPilot', 'PK', obj.PKPrefs); end
             catch
             end
         end
@@ -4536,6 +5078,26 @@ classdef GRASPilot < handle
 
         function s = ternaryStr(c, a, b)
             if c, s = a; else, s = b; end
+        end
+
+        function dsp = formatStatsRows(rows)
+            % statistics rows (paramStatsTable) as strings for a uitable
+            dsp = rows;
+            for i = 1:size(rows, 1)
+                for j = 4:size(rows, 2)
+                    if j == 4
+                        dsp{i, j} = sprintf('%d', rows{i, j});
+                    else
+                        dsp{i, j} = sprintf('%.4g', rows{i, j});
+                        if numel(dsp{i, j}) > 9, dsp{i, j} = sprintf('%.3g', rows{i, j}); end
+                        if isnan(rows{i, j}), dsp{i, j} = ''; end
+                    end
+                end
+            end
+        end
+
+        function tf = isPKKey(key)
+            tf = any(strcmp(GRASPilotData.PKTable(:, 1), key));
         end
 
         function [name, fld, norm] = paramInfo(key)

@@ -402,6 +402,93 @@ P = graspilot_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 
 The parameter maps take about 50 MB of memory each for a 12-million-voxel volume (13 maps).
 
+## Pharmacokinetic models (Tofts, extended Tofts, 2CXM)
+
+Analysis > **Pharmacokinetic models** (or **Pharmacokinetic models...** in the Parameters
+window) fits tracer-kinetic models voxel by voxel. The fitted maps are added to the
+parameter list: colour map, ROI statistics (with the fit of the ROI mean curve), the
+statistics/voxel export and the NIfTI map export all include them.
+
+| Model | Parameters (map key) | Unit |
+|---|---|---|
+| Standard Tofts | Ktrans (`KT_TM`), ve (`VE_TM`), kep = Ktrans/ve (`KEP_TM`), fit R2 (`R2_TM`) | 1/min, fraction, 1/min |
+| Extended Tofts | Ktrans (`KT_ETM`), ve (`VE_ETM`), vp (`VP_ETM`), kep (`KEP_ETM`), R2 (`R2_ETM`) | 1/min, fraction, fraction, 1/min |
+| Two-compartment exchange (2CXM) | plasma flow Fp (`FP_2CXM`), permeability-surface area product PS (`PS_2CXM`), vp (`VP_2CXM`), ve (`VE_2CXM`), Ktrans = E Fp with E = PS/(PS + Fp) (`KT_2CXM`), R2 (`R2_2CXM`) | ml/100 ml/min, ml/100 ml/min, fraction, fraction, 1/min |
+
+**Signal to concentration: RATIO method with a global baseline T1 (T10).** No T1 map is
+needed. For every voxel the signal is divided by its baseline S0 (mean of the baseline
+frames), which removes M0, coil sensitivity and the arbitrary scaling of the reconstruction,
+and the spoiled gradient echo equation is solved for R1:
+
+    A  = (S/S0) (1 - E10) / (1 - cos(a) E10),   E10 = exp(-TR/T10)
+    E1 = (1 - A) / (1 - A cos(a)),   R1 = -ln(E1)/TR,   C = (R1 - 1/T10) / r1
+
+T10 is one global value for all tissue voxels (**Tissue T10**, default 1400 ms) and a
+separate value for the AIF (**Blood T10**, default 1664 ms, blood at 3 T). Both are
+adjustable, as are TR, flip angle, relaxivity r1 and hematocrit. The defaults (TR 4 ms,
+flip angle 12 deg, r1 4.5 /mM/s, Hct 0.45) are placeholders: **enter the values of your
+protocol and contrast agent** (r1 in plasma at 3 T, 37 C: gadobutrol ~5.0, gadoterate ~3.5,
+gadopentetate ~3.7 /mM/s; Rohrer et al. 2005). Ktrans scales roughly with the assumed T10
+(a 15% shorter T10 gives a ~15-25% higher Ktrans), so keep T10 fixed when comparing scans.
+Signal ratios above what the equation allows for TR/flip angle/T10 give NaN; the baseline
+frames must be strictly pre-contrast (an enhancing frame in the baseline biases every
+concentration).
+
+**Arterial input function.**
+
+- *Reference ROI (SSS, default)*: the mean signal of the reference ROI (Auto SSS, or the ROI
+  chosen under Reference ROI) converted with the blood T10; plasma AIF = blood / (1 - Hct).
+  The superior sagittal sinus is large (little partial volume) and is a venous output
+  function: its bolus arrives a few seconds after the arteries and its first-pass peak is
+  broadened. **AIF shift** moves the AIF in time (negative = earlier) to compensate.
+- *Population (Parker et al. 2006)*: the published population-averaged blood AIF
+  (0.1 mmol/kg), with the injection at the last baseline frame.
+
+The window plots the AIF (plasma and blood) and the concentration curve of a chosen ROI with
+the fitted curves of each model and their parameters; the plots follow the settings at once,
+so T10, TR, flip angle and the AIF shift can be checked before the (slower) voxel fit.
+
+**Fitting.** The models are fitted to the frames up to the analysis endpoint ("Analyze up
+to" in the Parameters window), with frame 1 as time origin; uneven (measured) frame times
+are supported. Convolutions with the AIF are computed exactly for an AIF that is linear
+between frames. The rate constants (kep; K+ and K- of the 2CXM) are searched on a
+log-spaced grid with the linear parameters (Ktrans, vp; Fp A, Fp (1 - A)) solved exactly
+at every grid point (variable projection, nonnegative Ktrans and vp; only physically valid
+2CXM solutions), then refined per voxel by Levenberg-Marquardt (option). Voxels: inside the
+head (Otsu threshold of the baseline signal, default), ROI voxels only (fast) or all voxels.
+On a synthetic phantom with SPGR signals, an SSS-derived AIF and 2% noise, the median map
+values are within 1% of the true Ktrans, ve, vp, Fp and PS
+(`tests/graspilot_selftest_pk.m`). Speed measured in GNU Octave: about 15,000 voxels per
+second for the Tofts model, 4,000 for the 2CXM and 2,500 for all three models together
+(MATLAB is usually faster); "ROI voxels only" is the quick option for large volumes.
+
+Notes: the 2CXM is poorly determined when the tissue has no measurable vascular phase (a
+pure Tofts-like curve also fits as a large vp with very low PS); check R2 and the ROI
+curves, and prefer the extended Tofts values in weakly vascularized tissue. The maps are
+recomputed only when you press Fit models; changing the settings, the baseline, the
+analysis endpoint, the frame times or the reference ROI marks them as out of date (they
+disappear from the parameter list until the next fit). ROI sessions and the preferences
+keep the PK settings.
+
+Scripting:
+
+```matlab
+app.autoSSS();
+app.computePK('Models', {'tofts', 'etofts', '2cxm'}, 'T10', 1400, 'T10Blood', 1664, ...
+    'TR', 3.9, 'FlipAngle', 12, 'r1', 5.0, 'Hct', 0.45, 'AIF', 'ref', 'AIFShift', -2);
+app.setParamKey('KT_ETM'); app.setParamDisplay(true);
+[hdr, rows] = app.paramStatsTable();                   % includes the PK parameters
+app.exportMaps(folder, 'case01', {'KT_TM', 'VE_TM', 'VP_ETM', 'FP_2CXM', 'PS_2CXM'});
+
+% without the GUI
+D.setPKOptions('T10', 1400, 'TR', 3.9, 'FlipAngle', 12, 'r1', 5.0);
+D.computePK(1:5, sssMeanSignal, headMask);             % canonical mask; [] = all voxels
+Ktrans = D.canonPK('KT_TM');
+C  = graspilot_signal2conc(S, S0, 1.4, 3.9e-3, 12, 5.0);  % RATIO conversion (s, deg)
+R  = graspilot_pk_fit(C, t, Cp, {'tofts', 'etofts', '2cxm'});   % R.tofts.Ktrans, R.cxm.Fp, ...
+Cb = graspilot_pop_aif(t - tInjection);                % population AIF (blood, mM)
+```
+
 ## Motion check and correction
 
 Analysis > **Motion check and correction** opens the Motion window.
@@ -456,7 +543,7 @@ graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true); 
 | Image -> NIfTI | 4D float32 `.nii.gz`/`.nii` (all frames, streamed frame by frame) or the current frame (3D), plus a JSON sidecar (frame times, source, geometry, normalization) |
 | Mask -> NIfTI | uint8 label map (value = ROI number), `<name>_labels.txt` (label, name, RGB, voxels, mL), `<name>_itksnap_labels.txt`; optionally one binary mask per ROI |
 | ROI voxel time series -> spreadsheet | `.xlsx`: sheets Info, Summary (per-ROI mean, SD, median, relative enhancement, n per frame) and one sheet per ROI with one row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn. `.csv`: `_voxels.csv` (all ROIs, ROI_ID/ROI_Name columns), `_summary.csv`, `_info.txt`. After binning the file name ends in `_<N>frames` |
-| File or Analysis > Export parameter maps -> NIfTI (also in the Parameters window) | choose the maps in a list (baseline, maximum and every parameter; PE, WIS, WOS, AUC also /SSS); one float32 `<base>_<key>.nii.gz` per map in the geometry of the image export. Scripting: `app.exportMaps(folder, base, {'PE', 'WIS_SSS'})` |
+| File or Analysis > Export parameter maps -> NIfTI (also in the Parameters window) | choose the maps in a list (baseline, maximum and every parameter; PE, WIS, WOS, AUC also /SSS; the pharmacokinetic maps once fitted); one float32 `<base>_<key>.nii.gz` per map in the geometry of the image export. Scripting: `app.exportMaps(folder, base, {'PE', 'WIS_SSS', 'KT_TM'})` |
 | Parameters > Export statistics + voxel values | parameter statistics per tumor ROI and voxel values (see above) |
 | (binning) | binned series everywhere; JSON sidecar and Info sheet record bin size, raw frames per frame and dropped frames |
 | Save / Load ROIs | `.mat` session (ROI names, colors, voxels in native indices, geometry); reloads onto any reconstruction with the same matrix, e.g. the 8-, 16- and 32-spoke versions of one scan |
@@ -514,6 +601,9 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `graspilot_export_timeseries.m` | voxel time series -> .xlsx/.csv |
 | `graspilot_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
 | `graspilot_ref_window.m`, `graspilot_end_frame.m` | SSS wash-in period; analysis endpoint |
+| `graspilot_signal2conc.m` | signal -> concentration, RATIO method (SPGR equation, global T10) |
+| `graspilot_pk_fit.m` | Tofts, extended Tofts and 2CXM fits (vectorized over curves) |
+| `graspilot_pop_aif.m`, `graspilot_pk_defaults.m` | population AIF (Parker 2006); default PK settings |
 | `graspilot_motion_estimate.m` | rigid frame-by-frame motion (normalized mutual information) and excess-motion check |
 | `graspilot_rigid_matrix.m`, `graspilot_motion_summary.m` | rotation matrix; motion summary text |
 | `graspilot_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
@@ -527,6 +617,7 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
 | `tests/graspilot_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
 | `tests/graspilot_sss_phantom.m` | venous phantom (SSS, torcula, transverse/straight sinuses, scalp vein, artery) |
 | `tests/graspilot_motion_phantom.m` | the venous phantom with known rigid motion of chosen frames |
+| `tests/graspilot_pk_phantom.m`, `tests/graspilot_selftest_pk.m` | SPGR phantom with known Tofts / extended Tofts / 2CXM parameters and its tests |
 
 ## Notes and limitations
 
@@ -543,9 +634,12 @@ Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GR
   to < 0.1 mm mean error); on real GRASP frames check the plots for implausible jumps
   (e.g. in noisy early frames) before applying the correction.
 - Signal is the magnitude of the reconstruction (normalized to the global maximum when
-  ReadData.m normalization is on); no T1 mapping or concentration conversion is done.
-  Parameters are therefore semi-quantitative (signal-based): compare absolute values only
-  between scans with the same protocol and scaling, or use the /SSS values.
+  ReadData.m normalization is on). The semi-quantitative parameters are signal-based:
+  compare absolute values only between scans with the same protocol and scaling, or use the
+  /SSS values. The pharmacokinetic models convert signal to concentration with one global
+  T10 (no T1 map): their values depend on the assumed T10, TR, flip angle and r1, and on the
+  AIF (a venous SSS curve, or a population AIF); GRASP reconstruction (temporal basis,
+  compressed sensing) can smooth the first pass of the AIF.
 - Voxel-wise slopes are noisy at high temporal resolution; binning or the ROI-curve values
   are more robust.
 - Fill holes is 2D (slice by slice). Grow from crosshair is the connected-component tool

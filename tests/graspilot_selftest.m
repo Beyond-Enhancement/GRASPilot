@@ -2,7 +2,8 @@ function ok = graspilot_selftest(doGUI)
 %GRASPILOT_SELFTEST Synthetic end-to-end test of the GRASPilot toolbox.
 %
 %   graspilot_selftest          core tests (data model vs ReadData.m, orientation,
-%                          NIfTI round trip, mask reorientation, exports)
+%                          NIfTI round trip, mask reorientation, exports,
+%                          pharmacokinetic models)
 %   graspilot_selftest(true)    also opens the viewer and drives it by script
 %
 %   The reference is the original ReadData.m logic using the TempPCASub
@@ -499,7 +500,10 @@ if exist('writecell', 'file') == 2
     nfail = nfail + check('XLSX export', exist(fx, 'file') == 2, 0);
 end
 
-% ---------------------------------------------------------------- 8. GUI
+% ---------------------------------------------------------------- 8. pharmacokinetic models
+nfail = nfail + graspilot_selftest_pk(out, doGUI);
+
+% ---------------------------------------------------------------- 9. GUI
 if doGUI
     nfail = nfail + graspilot_selftest_gui(D, ref, out);
     nfail = nfail + graspilot_selftest_gui_sss(out);

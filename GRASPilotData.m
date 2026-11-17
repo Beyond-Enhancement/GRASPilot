@@ -74,6 +74,7 @@ classdef GRASPilotData < handle
         Perm = [2 1 3];             % canonical axis a <- native dim Perm(a)
         Flip = [false false false]; % flip along canonical axis a
         Maps = [];                  % native-space enhancement maps
+        PKMaps = [];                % native-space pharmacokinetic model maps (computePK)
         CanonMapCache = struct();
         MapsVersion = 0;            % incremented whenever maps or orientation change
         Motion = [];                % last motion estimate (graspilot_motion_estimate)
@@ -94,6 +95,30 @@ classdef GRASPilotData < handle
         ParamOpts = struct('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1, ...
             'WashInFrames', [], 'EndFrame', Inf, 'EndTime', Inf, 'EarlyTime', 60, 'LateTime', Inf, ...
             'CurveTol', 10, 'RefSlopeFrac', 0.5);
+        % pharmacokinetic models (setPKOptions / computePK): global T10 (ms) of tissue and
+        % blood, TR (ms), flip angle (deg), relaxivity r1 (1/(mM s)), hematocrit, AIF source
+        % ('ref' = reference (SSS) ROI | 'population' = Parker 2006), AIF shift (s), region
+        % fitted ('head' | 'rois' | 'all'), LM refinement
+        PKOpts = graspilot_pk_defaults();
+    end
+
+    properties (Constant)
+        % key, model (graspilot_pk_fit), field, label, unit
+        PKTable = {'KT_TM', 'tofts', 'Ktrans', 'Tofts Ktrans', '1/min';
+            'VE_TM', 'tofts', 've', 'Tofts ve', 'fraction';
+            'KEP_TM', 'tofts', 'kep', 'Tofts kep', '1/min';
+            'R2_TM', 'tofts', 'R2', 'Tofts fit R2', 'R2';
+            'KT_ETM', 'etofts', 'Ktrans', 'Extended Tofts Ktrans', '1/min';
+            'VE_ETM', 'etofts', 've', 'Extended Tofts ve', 'fraction';
+            'VP_ETM', 'etofts', 'vp', 'Extended Tofts vp', 'fraction';
+            'KEP_ETM', 'etofts', 'kep', 'Extended Tofts kep', '1/min';
+            'R2_ETM', 'etofts', 'R2', 'Extended Tofts fit R2', 'R2';
+            'FP_2CXM', '2cxm', 'Fp', '2CXM plasma flow Fp', 'ml/100ml/min';
+            'PS_2CXM', '2cxm', 'PS', '2CXM permeability-surface PS', 'ml/100ml/min';
+            'VP_2CXM', '2cxm', 'vp', '2CXM vp', 'fraction';
+            'VE_2CXM', '2cxm', 've', '2CXM ve', 'fraction';
+            'KT_2CXM', '2cxm', 'Ktrans', '2CXM Ktrans = E Fp', '1/min';
+            'R2_2CXM', '2cxm', 'R2', '2CXM fit R2', 'R2'};
     end
 
     % ------------------------------------------------------------------
@@ -415,6 +440,13 @@ classdef GRASPilotData < handle
             end
         end
 
+        function h = maskHash(M)
+            % cheap identity of a logical mask (for the PK map key)
+            if isempty(M), h = []; return; end
+            lin = find(M);
+            h = [numel(M), numel(lin), sum(mod(lin, 104729)), sum(lin .^ 2) / numel(M) ^ 2];
+        end
+
         function s = ternary(c, a, b)
             if c, s = a; else, s = b; end
         end
@@ -568,6 +600,7 @@ classdef GRASPilotData < handle
             obj.BinW = W;
             obj.NT = nb;
             obj.Maps = [];
+            obj.PKMaps = [];
             obj.CanonMapCache = struct();
             obj.MapsVersion = obj.MapsVersion + 1;
         end
@@ -946,14 +979,7 @@ classdef GRASPilotData < handle
             P = nx * ny;
             blk = 16384;
             for z = 1:nz
-                if strcmp(obj.Mode, 'subspace')
-                    S = abs(reshape(obj.C(:, :, :, z), P, obj.NK) * obj.Phi(:, :, z)');
-                else
-                    S = reshape(obj.D(:, :, z, :), P, obj.NTRaw);
-                end
-                if obj.BinSize > 1 || T ~= obj.NTRaw
-                    S = single(double(S) * obj.BinW);
-                end
+                S = obj.sliceTC(z);
                 out = cell(1, numel(names));
                 for i = 1:numel(names), out{i} = zeros(P, 1, 'single'); end
                 for b0 = 1:blk:P
@@ -973,6 +999,191 @@ classdef GRASPilotData < handle
             obj.MapsVersion = obj.MapsVersion + 1;
         end
 
+        function S = sliceTC(obj, z)
+            % time courses of every voxel of native slice z: [nx*ny x NT] (binned series)
+            P = obj.NativeSize(1) * obj.NativeSize(2);
+            if strcmp(obj.Mode, 'subspace')
+                S = abs(reshape(obj.C(:, :, :, z), P, obj.NK) * obj.Phi(:, :, z)');
+            else
+                S = reshape(obj.D(:, :, z, :), P, obj.NTRaw);
+            end
+            if obj.BinSize > 1 || obj.NT ~= obj.NTRaw
+                S = single(double(S) * obj.BinW);
+            end
+        end
+
+        % ---------- pharmacokinetic models ----------
+        function setPKOptions(obj, varargin)
+            % 'Models' (cell of 'tofts' | 'etofts' | '2cxm'), 'T10' (ms, global
+            % tissue T10), 'T10Blood' (ms, AIF), 'TR' (ms), 'FlipAngle' (deg),
+            % 'r1' (1/(mM s)), 'Hct', 'AIF' ('ref' | 'population'), 'AIFShift'
+            % (s; positive = later), 'Region' ('head' | 'rois' | 'all'), 'Refine'
+            p = GRASPilotData.parseOpts(varargin, obj.PKOpts);
+            if ischar(p.Models), p.Models = {p.Models}; end
+            p.Models = lower(p.Models(:)');
+            bad = setdiff(p.Models, {'tofts', 'etofts', '2cxm'});
+            if ~isempty(bad), error('GRASPilotData:pk', 'Unknown model "%s".', bad{1}); end
+            p.Models = intersect({'tofts', 'etofts', '2cxm'}, p.Models, 'stable');
+            pos = {'T10', 'T10Blood', 'TR', 'FlipAngle', 'r1'};
+            for i = 1:numel(pos)
+                v = p.(pos{i});
+                if ~isnumeric(v) || ~isscalar(v) || ~(v > 0) || ~isfinite(v)
+                    error('GRASPilotData:pk', '%s must be a positive number.', pos{i});
+                end
+            end
+            if ~(p.FlipAngle < 180), error('GRASPilotData:pk', 'FlipAngle must be below 180 degrees.'); end
+            if ~(p.Hct >= 0 && p.Hct < 1), error('GRASPilotData:pk', 'Hct must be in [0, 1).'); end
+            if isempty(p.AIFShift) || ~isfinite(p.AIFShift), p.AIFShift = 0; end
+            p.AIF = lower(p.AIF);
+            if ~any(strcmp(p.AIF, {'ref', 'population'}))
+                error('GRASPilotData:pk', 'AIF must be ''ref'' or ''population''.');
+            end
+            p.Region = lower(p.Region);
+            if ~any(strcmp(p.Region, {'head', 'rois', 'all'}))
+                error('GRASPilotData:pk', 'Region must be ''head'', ''rois'' or ''all''.');
+            end
+            p.Refine = logical(p.Refine);
+            obj.PKOpts = p;
+        end
+
+        function k = pkKey(obj, baseFrames, aifSignal, regionHash)
+            % everything the PK maps depend on
+            if strcmp(obj.PKOpts.AIF, 'population'), aifSignal = []; end
+            k = {obj.PKOpts, baseFrames, obj.dt, obj.t0, obj.BinSize, obj.NT, obj.RawTimes, ...
+                obj.analysisEnd(), double(aifSignal(:)'), regionHash};
+        end
+
+        function tf = hasPK(obj, baseFrames, aifSignal, regionHash)
+            tf = ~isempty(obj.PKMaps) && isequaln(obj.PKMaps.Key, obj.pkKey(baseFrames, aifSignal, regionHash));
+        end
+
+        function [Cp, t, Cb] = pkAIF(obj, baseFrames, aifSignal)
+            % plasma AIF (mM) on the analysed frames 1..analysisEnd and their
+            % times t (s). AIF 'ref': aifSignal (mean signal of the reference
+            % ROI, all frames) converted with the blood T10, Cp = Cb/(1 - Hct);
+            % 'population': Parker 2006 with the injection at the last baseline
+            % frame. Shifted by AIFShift seconds (positive = later).
+            if ~obj.hasTiming()
+                error('GRASPilotData:pk', ['Pharmacokinetic models need the frame times: enter the ' ...
+                    'temporal resolution (s/frame).']);
+            end
+            o = obj.PKOpts;
+            ke = obj.analysisEnd();
+            tt = obj.paramTimes();
+            t = tt(1:ke);
+            bf = baseFrames(baseFrames >= 1 & baseFrames <= ke);
+            if isempty(bf), bf = 1; end
+            if strcmp(o.AIF, 'population')
+                Cb = graspilot_pop_aif(t - t(max(bf)) - o.AIFShift);
+            else
+                if isempty(aifSignal) || numel(aifSignal) < ke || ~all(isfinite(aifSignal(1:ke)))
+                    error('GRASPilotData:pk', ['The AIF needs a reference ROI in the superior sagittal ' ...
+                        'sinus (Auto SSS) or the population AIF.']);
+                end
+                a = double(aifSignal(:)');
+                [Cb, valid] = graspilot_signal2conc(a(1:ke), mean(a(bf)), o.T10Blood / 1000, o.TR / 1000, ...
+                    o.FlipAngle, o.r1);
+                if ~all(valid)
+                    error('GRASPilotData:pk', ['The reference ROI signal rises %.3g-fold, more than the ' ...
+                        'spoiled gradient echo equation allows for TR %g ms, flip angle %g deg and blood ' ...
+                        'T10 %g ms: check these values.'], max(a(1:ke)) / mean(a(bf)), o.TR, o.FlipAngle, o.T10Blood);
+                end
+                if o.AIFShift ~= 0
+                    tq = min(max(t - o.AIFShift, t(1)), t(end));
+                    Cb = interp1(t, Cb, tq, 'linear');
+                end
+            end
+            Cp = Cb / (1 - o.Hct);
+        end
+
+        function C = pkConc(obj, S, baseFrames)
+            % tissue concentration (mM) of signal curves S [N x >= analysisEnd]
+            % on the analysed frames (global tissue T10, signal-ratio method)
+            o = obj.PKOpts;
+            ke = obj.analysisEnd();
+            bf = baseFrames(baseFrames >= 1 & baseFrames <= ke);
+            if isempty(bf), bf = 1; end
+            S = double(S(:, 1:ke));
+            C = graspilot_signal2conc(S, mean(S(:, bf), 2), o.T10 / 1000, o.TR / 1000, o.FlipAngle, o.r1);
+        end
+
+        function [R, Fit, C, Cp, t] = fitPKCurves(obj, S, baseFrames, aifSignal)
+            % PK model fits of signal curves S [N x NT] (e.g. ROI mean curves)
+            [Cp, t] = obj.pkAIF(baseFrames, aifSignal);
+            C = obj.pkConc(S, baseFrames);
+            o = obj.PKOpts;
+            R = struct(); Fit = struct();
+            if isempty(o.Models), return; end
+            [R, Fit] = graspilot_pk_fit(C, t, Cp, o.Models, struct('Refine', o.Refine));
+        end
+
+        function computePK(obj, baseFrames, aifSignal, region, progress)
+            % Voxel-wise Tofts / extended Tofts / 2CXM maps. region: canonical
+            % logical mask of the voxels to fit ([] = all voxels)
+            if nargin < 5, progress = []; end
+            o = obj.PKOpts;
+            if isempty(o.Models), error('GRASPilotData:pk', 'Select at least one model.'); end
+            [Cp, t] = obj.pkAIF(baseFrames, aifSignal);
+            nx = obj.NativeSize(1); ny = obj.NativeSize(2); nz = obj.NativeSize(3);
+            if isempty(region)
+                nm = true(nx, ny, nz);
+            else
+                nm = obj.canon2native(logical(region));
+            end
+            keys = obj.PKTable(ismember(obj.PKTable(:, 2), o.Models), :);
+            M = struct();
+            M.Key = obj.pkKey(baseFrames, aifSignal, GRASPilotData.maskHash(region));
+            M.Keys = keys(:, 1)';
+            M.Lin = uint32(find(nm));                 % fitted voxels (native), values per key in columns
+            M.Values = NaN(numel(M.Lin), size(keys, 1), 'single');
+            ntot = max(1, nnz(nm)); ndone = 0;
+            blk = 8192;
+            fo = struct('Refine', o.Refine);
+            tic0 = tic;
+            for z = 1:nz
+                rows = find(reshape(nm(:, :, z), [], 1));
+                if isempty(rows), continue; end
+                S = obj.sliceTC(z);
+                S = S(rows, :);
+                for b0 = 1:blk:numel(rows)
+                    q = b0:min(numel(rows), b0 + blk - 1);
+                    R = graspilot_pk_fit(obj.pkConc(S(q, :), baseFrames), t, Cp, o.Models, fo);
+                    for i = 1:size(keys, 1)
+                        fld = keys{i, 2}; if strcmp(fld, '2cxm'), fld = 'cxm'; end
+                        M.Values(ndone + (1:numel(q)), i) = R.(fld).(keys{i, 3});
+                    end
+                    ndone = ndone + numel(q);
+                    GRASPilotData.report(progress, ndone / ntot, sprintf(['Pharmacokinetic models: slice %d/%d, ' ...
+                        '%d of %d voxels'], z, nz, ndone, ntot));
+                end
+            end
+            M.Info = struct('t', t, 'Cp', Cp, 'NVoxels', nnz(nm), 'Seconds', toc(tic0), ...
+                'BaseFrames', baseFrames);
+            obj.PKMaps = M;
+            fn = fieldnames(obj.CanonMapCache);
+            for i = 1:numel(fn)
+                if strncmp(fn{i}, 'PK_', 3), obj.CanonMapCache = rmfield(obj.CanonMapCache, fn{i}); end
+            end
+            obj.MapsVersion = obj.MapsVersion + 1;
+        end
+
+        function A = canonPK(obj, key)
+            % canonical map of a PK parameter (key from PKTable); [] if not computed
+            A = [];
+            if isempty(obj.PKMaps), return; end
+            k = find(strcmp(obj.PKMaps.Keys, key), 1);
+            if isempty(k), return; end
+            ck = ['PK_' key];
+            if isfield(obj.CanonMapCache, ck)
+                A = obj.CanonMapCache.(ck);
+                return
+            end
+            A = NaN(obj.NativeSize, 'single');
+            A(obj.PKMaps.Lin) = obj.PKMaps.Values(:, k);
+            A = obj.native2canon(A);
+            obj.CanonMapCache.(ck) = A;
+        end
+
         function A = canonSubtraction(obj, post, pre)
             % Subtraction map frame(post) - frame(pre), canonical order (cached)
             key = sprintf('Sub_%d_%d', post, pre);
@@ -990,6 +1201,7 @@ classdef GRASPilotData < handle
 
         function clearMaps(obj)
             obj.Maps = [];
+            obj.PKMaps = [];
             obj.CanonMapCache = struct();
             obj.MapsVersion = obj.MapsVersion + 1;
         end
