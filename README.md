@@ -1,554 +1,422 @@
 # GRASPilot (MATLAB)
 
-3-plane viewer and ROI analysis platform for dynamic GRASP DCE-MRI: reconstructions
-stored as MATLAB `.mat` files (deep learning subspace recon: `vk_all` + `basis_all`),
-4D NIfTI files and DICOM series.
+3-plane viewer and ROI analysis platform for dynamic GRASP DCE-MRI: subspace
+reconstructions in MATLAB `.mat` files (`vk_all` + `basis_all`), 4D NIfTI and DICOM series.
+Segmentation, time-intensity curves, semi-quantitative parameters, pharmacokinetic models
+(Tofts, extended Tofts, 2CXM, RATIO), motion correction and NIfTI/spreadsheet exports.
 
 - No toolboxes required (own NIfTI and DICOM readers, own drawing tools). MATLAB R2019b or
-  newer recommended; `.xlsx` export needs R2019a+ (`writecell`/`writematrix`), `.csv` works anywhere.
-- Runs fully offline. Nothing is written except the files you export.
+  newer recommended; `.xlsx` export needs R2019a+, `.csv` works anywhere.
+- Runs offline; nothing is written except the files you export.
 
-![Frame view with SSS control and enhancing-tumor ROIs and their time-intensity curves](docs/screenshot_main.png)
+![Frame view with SSS control and tumor ROIs and their time-intensity curves](docs/screenshot_main.png)
 
-![Subtraction map (last - first frame) with the enhancing rim grown from the crosshair](docs/screenshot_subtraction.png)
-
-![Auto SSS: ROI along the posterior superior sagittal sinus above the torcula](docs/screenshot_sss.png)
-
-![Wash-in slope normalized to the SSS as a colour map](docs/screenshot_params.png)
-
-![Parameters window: settings, colour scale and tumor ROI statistics](docs/screenshot_param_window.png)
-
-![Motion window: rigid motion per frame and the excess-motion warning](docs/screenshot_motion.png)
-
-*Synthetic phantoms, rendered with GNU Octave; controls look slightly different in MATLAB.
-Top: frame view after 2x temporal binning with the SSS control and the tumor ROI. Middle:
-subtraction map (frame 60 - frame 1), threshold preview in green and the enhancing rim grown
-from the crosshair (necrotic core excluded). Third: Auto SSS on a venous phantom - the ROI
-(red) follows the posterior SSS from just above the torcula toward the vertex (sagittal
-view); the straight sinus (anterior to it on the axial view), the transverse sinuses and a
-scalp vein are excluded. Next:
-wash-in slope / SSS as a jet colour map with the ROI outlines (analysis limited to the first
-100 s, orange line on the curves), and the Parameters window with the tumor ROI statistics.
-Last: Motion window for a phantom whose head moves 1-1.5 mm and 1.5-2 deg from frame 9 on
-(warning in red, flagged frames as red dots).*
+*Frame view after 2x temporal binning with the SSS control and tumor ROIs. All screenshots
+show synthetic phantoms rendered with GNU Octave; controls look slightly different in MATLAB.*
 
 ## Quick start
 
 ```matlab
 addpath('/path/to/GRASPilot')
-GRASPilot                               % then File > Open .mat (or the Open button)
-GRASPilot('recon.mat')             % opens the load dialog for this file
-GRASPilot(vk_all, basis_all)       % variables already in the workspace
-GRASPilot(data1)                   % output of ReadData.m ([nx ny t nz])
+GRASPilot                              % then File > Open
+GRASPilot('recon.mat')                 % load dialog for this file
+GRASPilot(vk_all, basis_all)           % variables in the workspace
+GRASPilot(data1)                       % output of ReadData.m ([nx ny t nz])
 GRASPilot('recon.mat', 'Voxel', [1 1 1], 'dt', 3.3, 'NoDialog', true)
 GRASPilot('recon.mat', 'BinSize', 2)   % average every 2 frames on load
 GRASPilot('dce_4d.nii.gz')             % 4D NIfTI
-GRASPilot('/path/to/dicom_folder')     % DICOM series (or one of its image files)
+GRASPilot('/path/to/dicom_folder')     % DICOM series (or one of its files)
 ```
 
-The load dialog lists the variables in the file, detects `vk_all`/`basis_all`, shows the
-resulting matrix/K/T and a memory estimate, and asks for the acquisition geometry: voxel
-orientation (default LPS, see below), pixel spacing, slice spacing and temporal resolution.
-The geometry is remembered between sessions and can be changed later under View > Geometry.
+For `.mat` files the load dialog detects `vk_all`/`basis_all`, shows matrix, K, T and a
+memory estimate, and asks for orientation (default LPS), voxel size and s/frame. These are
+remembered and can be changed under View > Geometry.
 
-## NIfTI and DICOM input
+## Input
 
-File > **Open** also takes a 4D NIfTI (`.nii`, `.nii.gz`), several 3D NIfTI files (one per
-frame, multi-select, sorted by name) or one image of a DICOM series; File > **Open DICOM
-folder** scans a folder and its subfolders. For these inputs there is no load dialog:
+**`.mat` subspace reconstructions** are synthesized exactly as in ReadData.m:
 
-- **Geometry from the header.** Voxel size, position and orientation come from the NIfTI
-  affine or the DICOM image position/orientation. The images are shown in the same
-  radiological layout as `.mat` data (axis codes are derived from the header; oblique
-  slices are shown on their own grid, not resampled). Everything exported (images, masks,
-  parameter maps) carries the scanner coordinates of the input, so the files overlay on the
-  original series in ITK-SNAP, 3D Slicer, FSLeyes etc.
-- **Frame timing.** DICOM: from the acquisition (or trigger) times of the frames. When the
-  frames are unevenly spaced (more than 5% from the median interval) the measured time of
-  every frame is used: curves are plotted at the true times, and slopes, AUC, TTP, the
-  analysis endpoint and binned frame times all use them. The data panel shows "uneven
-  x-y s/frame" and the NIfTI sidecar stores the frame times (re-opened exports get them
-  back). Typing a value in the s/frame box replaces them with a uniform spacing (re-open the
-  data to restore them); `app.setFrameTimes(t)` sets measured times for any input. NIfTI: from a JSON sidecar written by GRASPilot, else `pixdim[4]` if it
-  is a plausible frame time (0.5-600 s; shorter values are usually the sequence TR). When
-  the header gives no frame time the status bar says so: enter s/frame in the time strip.
-- **Signal.** Values are kept as stored (rescale slope/intercept applied), not normalized.
-- **DICOM series.** If the folder holds several series a list appears (description, slices
-  x frames, matrix) with the likely dynamic series preselected: the group of series with the
-  same image grid and the same description apart from numbers that holds the most frames.
-  This covers newer exports (one series with all frames) and older ones (one 3D series per
-  frame); several series can also be blocks of frames. Selected series are joined as
-  consecutive frames, ordered by their acquisition times (a note appears when that differs
-  from the series numbers) or, when the series have no distinct acquisition times, by series
-  number; frame times are pooled across the series. They must share the same grid (matrix,
-  slice positions, orientation); a slab split by slices into several series is not joined.
-  Opening one image of a one-frame series reads the whole group, also when every frame is in
-  its own folder (the sibling folders are searched). Frames are ordered by temporal position, acquisition time,
-  trigger time, acquisition number, content time or instance number (the first that
-  separates the frames of every slice; the status bar reports which).
-- **Supported DICOM.** Classic (one file per slice and frame) and enhanced multi-frame MR
-  images, uncompressed transfer syntaxes. Compressed images (JPEG, JPEG 2000, RLE) need
-  `dicomread` from the Image Processing Toolbox; without it, convert first (e.g. with
-  dcm2niix to NIfTI) and open the NIfTI. No patient-identifying elements are read.
+    data1(:,:,t,z) = abs( reshape(vk_all(z,:,:,:), nx*ny, K) * Phi_z' ),   Phi_z = basis_all(z,:,:) as [T x K]
 
-Scripting:
+followed by the `CropImg` central crop (factor 2) and division by the global maximum. Only
+the cropped coefficients are kept; frames, time courses and maps are computed on demand (a
+~2 GB file needs ~0.5 GB). `tests/graspilot_validate_readdata('recon.mat')` compares with
+the original ReadData.m on a real file (expected difference ~1e-7). Bases stored as
+`[slices K T]` or one shared `[T K]` are accepted.
+
+**NIfTI and DICOM** (File > Open, File > Open DICOM folder) need no dialog:
+
+- Geometry from the header; exports keep the scanner coordinates of the input, so they
+  overlay on the original series. Oblique slices are shown on their own grid.
+- Frame times: DICOM acquisition (or trigger) times; uneven spacing (> 5% from the median)
+  keeps the measured time of every frame for curves and parameters. NIfTI: GRASPilot JSON
+  sidecar, else `pixdim[4]` if plausible (0.5-600 s). Otherwise enter s/frame.
+- Values as stored (rescale slope/intercept applied), not normalized.
+- A folder with several series shows a list with the likely dynamic series preselected.
+  Series with the same grid are joined as consecutive frames (by acquisition time, else
+  series number), which covers one-series-per-frame exports.
+- Classic and enhanced multi-frame MR, uncompressed. Compressed images need `dicomread`
+  (Image Processing Toolbox), or convert with dcm2niix first. No patient-identifying
+  elements are read.
 
 ```matlab
-D = GRASPilotData.fromNifti('dce_4d.nii.gz');              % or {'f001.nii', 'f002.nii', ...}, 'dt', 3.3
-scan = graspilot_dicom_read(folder, 'ScanOnly', true);     % scan.Series(k).Label
+D = GRASPilotData.fromNifti('dce_4d.nii.gz');           % or {'f001.nii', ...}, 'dt', 3.3
+scan = graspilot_dicom_read(folder, 'ScanOnly', true);  % scan.Series(k).Label
 D = GRASPilotData.fromDicom(scan, 'Series', 2);
-[V, info] = graspilot_dicom_read(folder);                  % array [nx ny nz T] + affine, dt
-D = GRASPilotData.fromVolume(V, affine, 'dt', 3.3);        % any 4D array with a voxel -> RAS affine
+D = GRASPilotData.fromVolume(V, affine, 'dt', 3.3);     % any 4D array + voxel -> RAS affine
 ```
 
-## How frames are computed (identical to ReadData.m)
+## Orientation and coordinates
 
-For slice z and frame t:
-
-    data1(:,:,t,z) = abs( reshape(vk_all(z,:,:,:), nx*ny, K) * Phi_z' )     Phi_z = basis_all(z,:,:) as [T x K]
-
-i.e. the `TempPCASub` adjoint (`PCA' * Recon`), followed by the `CropImg` central crop
-(factor 2, removes the 2x readout oversampling) and division by the global maximum over
-all slices and frames (taken before the crop, as in ReadData.m). The viewer keeps only
-the cropped coefficients and synthesizes frames, slices, voxel time courses and maps on
-demand. A ~2 GB file therefore needs roughly 0.5 GB after loading (peak ~2.5 GB while
-reading), and the uncropped 4D array that ReadData.m builds is never created.
-
-`tests/graspilot_validate_readdata('recon.mat')` re-runs the original ReadData.m arithmetic
-with your `@TempPCASub` class on a real file and reports the difference (expected
-~1e-7, single-precision rounding). Basis arrays stored as `[slices K T]` or a single
-shared `[T K]` basis are also accepted.
-
-## Orientation
-
-The stored array `data1(:,:,t,z)` has rows, columns and slices (partitions). Its orientation
-is described by three **axis codes**: the anatomical direction in which the row, column and
-slice index increases (L/R, P/A, S/I), as in NIfTI.
+Three **axis codes** give the direction in which row, column and slice index increase:
 
 | Code | Rows | Columns | Slices | Use |
 |---|---|---|---|---|
-| **LPS** (default) | R -> L | A -> P | I -> S | scanner x, y, z order; the deep-learning GRASP reconstructions are stored this way: `imagesc(data1(:,:,t,z))` shows the axial slice with anterior on the **left** |
-| PLS | A -> P | R -> L | I -> S | arrays that `imagesc` already shows radiologically |
-| ILP | S -> I | R -> L | A -> P | coronal slices |
-| IPL | S -> I | A -> P | R -> L | sagittal slices |
+| **LPS** (default) | R -> L | A -> P | I -> S | scanner order; GRASP reconstructions (`imagesc(data1(:,:,t,z))` shows anterior on the left) |
+| PLS | A -> P | R -> L | I -> S | arrays `imagesc` already shows radiologically |
+| ILP / IPL | S -> I | R -> L / A -> P | A -> P / R -> L | coronal / sagittal slices |
 
-Earlier versions assumed PLS, which showed the GRASP brains rotated 90 degrees (anterior to
-the left on the axial view) with coronal and sagittal anatomy swapped between the two
-reformat panels. LPS is now the default for new files.
+**Left-right cannot be judged from symmetric anatomy**: confirm it once per reconstruction
+pipeline with a lateralized finding, and press Flip L-R if mirrored. View > Geometry has
+the codes, presets, Rotate axial 90 CW and Flip L-R/A-P/S-I; ROIs follow. A check after
+loading warns if the head looks wider than long (view probably rotated).
 
-**Left-right cannot be judged from symmetric anatomy.** LPS follows from the anterior-left,
-superior-up appearance of the stored data (scanner axis order); confirm left-right once per
-reconstruction pipeline with a lateralized finding (lesion side in the report) or a marker.
-If it is mirrored, press Flip L-R.
+Exports use one voxel order (i = R->L, j = A->P, k = I->S) with an affine to RAS mm, so
+image, mask and map NIfTIs overlay in ITK-SNAP, 3D Slicer, FSLeyes and nibabel. For `.mat`
+input the affine is centred at 0 (geometry from the dialog).
 
-View > Geometry shows the three codes as menus, preset buttons (LPS, PLS, ILP, IPL) and
-**Rotate axial 90 CW**, **Flip L-R / A-P / S-I** buttons that apply immediately. The
-setting is remembered for the next files, stored in ROI sessions and in the NIfTI JSON
-sidecar. ROIs follow orientation changes. After loading, a quick check warns in the status
-bar if the head looks wider left-right than front-back (view probably rotated 90 degrees).
+## Window, mouse and keys
 
-## Coordinates
+Left: data, segmentation, threshold, display, export. Top: axial/coronal/sagittal views.
+Middle: frame slider, s/frame, time, play. Bottom: time-intensity curves and ROI manager.
 
-All exports use one canonical voxel order: i = Right->Left, j = Anterior->Posterior,
-k = Inferior->Superior (LPS), with a NIfTI sform/qform that maps voxels to RAS mm with the
-volume centred at 0. Image, mask and map NIfTIs therefore overlay in ITK-SNAP, 3D Slicer,
-FSLeyes, nibabel etc. The geometry is approximate (voxel sizes and orientation from the
-dialog, not scanner coordinates); masks are meant to be used with the image NIfTI exported
-from this tool.
+Mouse: left = tool, right-drag = window/level, shift/middle-drag = pan, wheel = slice,
+Ctrl+wheel = zoom, click on the curves = jump to that frame. Keys: Left/Right frame
+(Shift: 10), Up/Down slice, Space play, N/C/B/E tools, [ ] brush size, D 3D, P preview,
+S subtraction view, G grow, M parameter map, Ctrl+Z/Y undo/redo (Help lists all).
 
-## Window layout
+## Segmentation
 
-- Left: data info, segmentation tools, threshold, display, export.
-- Top: axial / coronal / sagittal views with crosshair and orientation labels.
-- Middle strip: frame slider (1-frame steps), first/prev/next/last buttons, typed frame
-  number, temporal resolution (s/frame), time of the frame, play/pause with fps.
-- Bottom: time-intensity curves (all visible ROIs overlaid) and the ROI manager.
+- **Tools:** Navigate (the crosshair voxel's curve is shown dashed), Circle (sphere in 3D),
+  Brush/Eraser (radius in mm, 2D or 3D). Exclusive ROIs (default) prevent overlap. 100 undo
+  steps. Clear slice/ROI, Fill holes (2D).
+- **ROIs:** Auto SSS, + SSS, + Tumor (numbered), + Custom; rename, recolor, hide, delete;
+  voxels and mL listed.
+- **Threshold maps:** signal at the frame, subtraction post - pre (default), frame -
+  baseline, relative enhancement, peak - baseline, peak relative enhancement (baseline =
+  mean of the pre-contrast frames, default 1-5). Each works with Preview, Otsu, Keep:
+  slice/3D, Grow, All -> ROI and Constrain brush/circle.
 
-Mouse: left = active tool, right-drag = window/level, shift- or middle-drag = pan,
-wheel = slice, Ctrl+wheel = zoom, click on the TIC plot = jump to that frame.
-Keys: Left/Right = frame -/+1 (Shift: 10), Home/End, PgUp/PgDn, Up/Down = slice,
-Space = play, N/C/B/E = tools, [ ] = brush radius, D = 3D toggle, P = threshold preview,
-S = subtraction view, G = grow from crosshair, M = parameter colour map on/off,
-Ctrl+Z / Ctrl+Y = undo / redo. Help > Mouse and keyboard lists everything.
+### Enhancing tumor from the subtraction map
 
-## Segmentation tools
+![Subtraction map with the enhancing rim grown from the crosshair](docs/screenshot_subtraction.png)
 
-- Navigate: click/drag moves the crosshair; the crosshair voxel's curve is shown dashed in
-  the TIC plot (Cursor TIC), useful for locating the superior sagittal sinus.
-- Circle: press at the centre, drag to the radius (radius shown in mm, anisotropic voxels
-  handled). With 3D on it fills a sphere.
-- Brush / Eraser: radius in mm; 2D (disk in the plane of the view) or 3D (sphere).
-- Exclusive ROIs (default on): painting removes the voxels from other ROIs, so the label
-  map has no overlap.
-- Undo / redo: 100 steps, stored as voxel diffs (Ctrl+Z, Ctrl+Y).
-- Multiple ROIs: `Auto SSS` (below), `+ SSS` (empty SSS control ROI to draw by hand),
-  `+ Tumor` (auto-numbered Tumor 1..n), `+ Custom`. Rename, recolor, show/hide, delete;
-  the table shows voxels and mL.
-- Clear slice / Clear ROI, Fill holes (slice by slice in the plane of the last-used view).
+*Subtraction map (frame 60 - frame 1), threshold preview in green and the enhancing rim
+grown from the crosshair, necrotic core excluded.*
 
-## Automatic superior sagittal sinus ROI (Auto SSS)
+1. + Tumor, Map = *Subtraction: post - pre frame* (default last - first), **Show** (key S).
+2. Set the window: type Low, drag the slider, or draw a rough sphere and press **Otsu**;
+   **Preview** shows in-window voxels in green.
+3. **Grow from crosshair** (G): adds the 6-connected in-window region touching the
+   crosshair, up to *max* mm away, so vessels and the necrotic core stay out. Or **Keep:
+   3D/slice** inside a drawn sphere/circle, or **All -> ROI**.
 
-**Auto SSS** (ROI panel, or Edit > Detect superior sagittal sinus) places the control ROI
-`SSS (auto)` in the posterior superior sagittal sinus, from its thickest part just above the
-torcula up along the sinus toward the vertex, excluding the transverse sinuses and the
-straight sinus. Requires correct
-orientation (LPS etc., see Orientation).
+### Automatic superior sagittal sinus ROI (Auto SSS)
 
-1. Peak enhancement map (maximum over time minus baseline) and a head mask (Otsu on the
-   baseline image).
-2. Venous structure: voxels enhancing >= 35% of the brightest voxel near the posterior
-   midline; the largest 3D connected region grown from the brightest posterior-midline
-   voxels (the SSS-torcula-transverse sinus complex; arteries and scalp veins form small
-   separate regions).
-3. Torcula level: the most superior axial slice where this structure is wider than 30 mm
-   left-right (transverse sinuses leaving the midline).
-4. On slices 5-40 mm above the torcula where the structure stays within 20 mm of width
-   (midline SSS only), the SSS cross-section is its most posterior part against the
-   occipital inner table, no deeper front-to-back than it is wide (excludes the straight
-   sinus, which joins from anterior). The thickest cross-section (3-slice average) is chosen.
-5. ROI: from 2 mm below the thickest slice up to 50 mm above it, following the sinus slice
-   by slice. It stops earlier where the sinus cross-section is lost, wider than 20 mm or
-   not continuous with the slice below, or where the sinus turns forward over the vertex
-   (posterior edge moving forward by more than 1 mm per mm of height: axial cuts become
-   oblique and partial-volumed). In each slice, the cross-section voxels enhancing >= 50%
-   of their maximum (partial-volume edges excluded).
+![Auto SSS ROI along the posterior superior sagittal sinus](docs/screenshot_sss.png)
 
-The crosshair moves to the ROI and the status bar reports the torcula slice, ROI slices,
-extent, voxels, volume and why the ROI ends where it does. Running it again replaces `SSS (auto)`; Undo removes it; the eraser and
-brush can edit it. If the transverse sinuses are not in the slab, the lowest posterior SSS
-segment is used and the status bar says so. Always check the ROI on the three views.
-Scripting: `[lin, info] = graspilot_detect_sss(D)` (options for every threshold in `help
-graspilot_detect_sss`; e.g. `'SuperiorMM', 30` for a shorter ROI, `'SlabMM', 5` for the former
-5 mm slab at the thickest slice).
+*Auto SSS on a venous phantom: the ROI (red) follows the posterior SSS from above the
+torcula toward the vertex; straight and transverse sinuses and a scalp vein are excluded.*
 
-## Enhancing tumor from the subtraction map
+**Auto SSS** places `SSS (auto)` in the posterior SSS. It finds the venous complex (largest
+connected region enhancing >= 35% of the brightest posterior-midline voxel), the torcula
+level (structure wider than 30 mm), then the most posterior midline cross-section against
+the inner table on the slices above, from 2 mm below the thickest cross-section up to
+50 mm. It stops where the sinus is lost, widens, jumps or turns forward over the vertex.
+Partial-volume edges (< 50% of the maximum) are excluded. The status bar explains the
+result; always check the ROI. Needs correct orientation. Scripting:
+`[lin, info] = graspilot_detect_sss(D)` (thresholds in `help graspilot_detect_sss`).
 
-The subtraction map is `frame(post) - frame(pre)`, by default **last GRASP volume minus
-first GRASP volume** (post = last, pre = first; both editable). It is the default threshold
-map, and **Show** (or key S) displays it in all three views instead of the current frame,
-with its own window/level.
+## Time, binning and curves
 
-1. `+ Tumor`, Map = *Subtraction: post - pre frame*, press **Show**.
-2. Set the window: type Low (High = Inf), drag the slider, or draw a rough sphere around the
-   lesion and press **Otsu**. Tick **Preview** to see in-window voxels in green.
-3. Turn the subtracted enhancement into the ROI mask, either:
-   - **Grow from crosshair** (key G): put the crosshair on the enhancing rim (Navigate) and
-     add the 3D, 6-connected region of in-window voxels touching it, up to *max* mm from the
-     crosshair. Vessels, choroid plexus and dura that do not touch the lesion stay out, and a
-     non-enhancing necrotic core is excluded.
-   - **Keep: 3D / Keep: slice**: draw a generous circle/sphere first, then keep only its
-     in-window voxels.
-   - **All -> ROI**: add every in-window voxel in the volume (includes vessels; erase or
-     intersect afterwards).
-4. Undo/redo, eraser and Fill holes work as usual on the result.
+**s/frame** (frame strip, load dialog or View > Geometry) is not stored in `.mat` files;
+without it curves are plotted against frames and everything else still works.
 
-## Threshold maps
+**Temporal binning** (*Average every n frames* + **Apply binning**) averages the magnitudes
+of n consecutive frames, e.g. to compare an 8-spoke reconstruction binned x2/x4 with the
+16-/32-spoke ones. Views, curves, maps and exports then use the binned series; an
+incomplete last bin is dropped unless kept (View > Temporal binning); n = 1 restores the
+original. Exports record the bin size and add `_<N>frames` to file names. It is not a
+reconstruction with more spokes per frame.
 
-1. Signal at current frame
-2. Subtraction: post - pre frame (default last - first)
-3. Current frame - baseline
-4. Current frame relative enhancement (%)
-5. Peak - baseline (maximum after the baseline frames)
-6. Peak relative enhancement (%)
+**Curves:** mean +/- SD, median [IQR] or mean only; signal, relative enhancement, S/S0 or
+S - S0; seconds or frames. File > Save TIC plot as PNG.
 
-Baseline = mean of the chosen pre-contrast frames (default 1-5). Maps 3-6 are computed on
-first use (one pass over the data, a few seconds). Every map works with Preview, Otsu,
-Keep: slice/3D, Grow from crosshair, All -> ROI and "Constrain brush/circle" (painting only
-adds in-window voxels). The line under the buttons shows how many voxels of the active ROI
-the current window keeps.
+## Semi-quantitative parameters
 
-## Temporal resolution ("time unknown")
+![Wash-in slope normalized to the SSS as a colour map](docs/screenshot_params.png)
 
-The temporal resolution is the time per reconstructed frame in seconds (spokes per frame x
-TR). It is not stored in the `.mat` file, so it is unknown until you enter it; the viewer
-then shows "(time unknown)" / "s/frame unknown" and plots curves against frame number.
-Everything else (frames, maps, ROIs, exports) works without it.
+*Wash-in slope / SSS as a colour map with ROI outlines; analysis limited to the first 100 s
+(orange line).*
 
-Enter it in any of: the **s/frame** box in the frame strip (next to the frame number), the
-load dialog, or View > Geometry. It is remembered for the next files. With it set, the
-frame strip shows the time of the current frame, the TIC X axis can show seconds, time to
-peak is exported in seconds and the NIfTI/JSON/spreadsheet exports carry frame times.
-Enter the resolution of the original frames; after binning the viewer multiplies it by n.
-
-## Temporal binning
-
-Binning lowers the temporal resolution by averaging the signal intensity (magnitude) of n
-consecutive reconstructed frames into one frame, e.g. to compare an 8-spoke reconstruction
-binned x2 or x4 with the 16- and 32-spoke reconstructions of the same scan.
-
-How to:
-
-1. Open the reconstruction and (optionally) enter the s/frame of the original frames.
-2. In the DATA section type n in **Average every [n] frames** (e.g. 2).
-3. Press **Apply binning** (or Enter in the box). The status bar reports the result, e.g.
-   `131 raw frames -> 65 frames of 2 averaged, 6.8 s/frame. Raw frame 131 dropped`.
-4. Work as usual: views, slider, curves, enhancement maps and the subtraction map
-   (last and first binned frames) all use the binned series. The current frame and the
-   baseline frames are moved to the same time points.
-5. Export. Image NIfTI: n x dt in pixdim(4), frame times and bin layout in the JSON sidecar.
-   Spreadsheet: the file name gets the frame count, e.g.
-   `case_roi_timeseries_65frames.xlsx` (CSV: `..._65frames_voxels.csv`), and the Info sheet
-   records the bin size and dropped frames.
-6. To return to the original series, set n = 1 and press Apply binning.
-
-Details: frame i of the binned series is the mean of raw frames (i-1)n+1 ... in, and its
-time is the mean of their times (bin centre). If the number of frames is not a multiple
-of n, the incomplete last bin is dropped (reported); View > Temporal binning can keep it as
-a shorter last bin instead. ROIs are not affected (they are spatial). Batch:
-`graspilot_convert_mat2nifti(file, '', 'BinSize', n)`; scripting: `D.setBinning(n)`.
-Binning averages reconstructed magnitude frames; it is not a reconstruction with more
-spokes per frame.
-
-## Time-intensity curves
-
-Mean +/- SD band, median [IQR] band, or mean only; Y as signal, relative enhancement
-(%), S/S0 or S-S0 (S0 = mean of the ROI curve over the baseline frames); X in seconds
-(if temporal resolution is set) or frames. File > Save TIC plot as PNG.
-
-## Semi-quantitative parameters (wash-in, washout, AUC, peak enhancement)
-
-Analysis > Semi-quantitative parameters (or the **Parameters...** button above the curves) opens the
-parameter window. Press **Compute parameters** (one pass over the data, a few seconds); the
-voxel maps, the colour map and the statistics are then available. Voxel values and ROI
-values are computed from the same time-intensity curve S(t) on the current (binned)
-series.
-
-Definitions (S0 = mean of the baseline frames; times are measured from the last baseline
-frame, i.e. the injection; seconds if s/frame is set, otherwise frames):
+Analysis > Semi-quantitative parameters (or **Parameters...** above the curves) >
+**Compute parameters**. S0 = mean of the baseline frames; times from the last baseline
+frame (injection); seconds if s/frame is set, else frames.
 
 | Parameter | Definition | Unit |
 |---|---|---|
-| Peak enhancement (PE) | Smax - S0, Smax = maximum after the baseline | a.u. |
-| Relative peak enhancement | 100 x (Smax - S0) / S0 | % |
-| Wash-in slope (WIS) | PE / (TP - To): line from the onset To to the peak TP (Khalifa 2014). Option: maximum up-slope between consecutive frames before the peak | a.u./s |
-| Washout slope (WOS) | least-squares slope from the peak to the last frame (at least the last 3 frames, so a curve still rising at the end gets a positive slope). Option: 2-point (S_last - Smax)/(t_last - TP). Negative = washout | a.u./s |
-| Area under the curve (AUC) | trapezoidal area of S - S0 from the end of the baseline to the end, or over the first N s (AUC window 60 = IAUC60, 90 = IAUC90) | a.u. x s |
-| Time to peak (TTP) | TP measured from the end of the baseline | s |
-| Onset (bolus arrival) time | To measured from the end of the baseline | s |
-| Time to 90% of peak (T90) | first time the enhancement reaches 0.9 PE (interpolated between frames) | s |
-| Maximum intensity-time ratio (MITR) | PE / TTP | a.u./s |
-| Relative enhancement, early frame | 100 x (S_early - S0) / S0 at the early frame (default 60 s after the baseline) | % |
-| Signal enhancement ratio (SER) | (S_early - S0) / (S_late - S0); late frame = last analysed frame unless set. > 1 = washout | ratio |
-| Washout percentage | 100 x (Smax - S_last) / Smax, S_last = last analysed frame | % |
-| Plateau enhancement | mean S - S0 of the last 3 analysed frames | a.u. |
-| Curve type | 1 persistent, 2 plateau, 3 washout: change from the early to the late frame, 100 x (S_late - S_early)/S_early, above +10%, within +/-10%, below -10% | type |
+| Peak enhancement (PE) | Smax - S0 (maximum after the baseline) | a.u. |
+| Relative peak enhancement | 100 PE / S0 | % |
+| Wash-in slope (WIS) | PE / (TP - To), onset To to peak TP (Khalifa 2014); options: maximum up-slope, or maximum slope in the SSS wash-in period | a.u./s |
+| Washout slope (WOS) | least-squares slope from the peak to the end (at least 3 frames); option: 2 points. Negative = washout | a.u./s |
+| AUC | area of S - S0 after the baseline, whole curve or first N s (IAUC60, IAUC90) | a.u. x s |
+| TTP, onset, T90 | time to peak, to onset (last frame < 10% of PE), to 90% of PE | s |
+| MITR | PE / TTP | a.u./s |
+| Early relative enhancement | 100 (S_early - S0) / S0, early frame 60 s after the baseline | % |
+| SER | (S_early - S0) / (S_late - S0); late = last analysed frame unless set | ratio |
+| Washout percentage | 100 (Smax - S_last) / Smax | % |
+| Plateau | mean S - S0 of the last 3 analysed frames | a.u. |
+| Curve type | 1 persistent, 2 plateau, 3 washout: early -> late change > +10%, within, < -10% | type |
 
-Onset To = last frame before the peak whose enhancement is below 10% of PE. The early and
-late frames are the frames nearest to the entered times after the baseline. For the curve
-type the table also gives the percentage of ROI voxels of each type (the mean of the type
-number is not meaningful) and, under ROI curve, the type of the ROI mean curve.
+- **Analysis endpoint** ("Analyze up to"): only the first N s or frames are used for every
+  parameter; marked by an orange line.
+- **SSS wash-in period** (Lee, Berger et al., Neurosurgery 2023;92:497): the frames around
+  the steepest rise of the SSS curve where its slope stays >= 50% of the steepest
+  (`RefSlopeFrac`); the wash-in slope is the maximum slope in that period. The 50% and
+  maximum-slope rules are this tool's reading of the paper.
+- **/SSS** values divide by the same parameter of the reference ROI mean curve (first ROI
+  named SSS, or chosen), cancelling the arbitrary scaling of the reconstruction (cf. the
+  venous AUC ratio of Heye et al. 2016). A positive WOS/SSS means tumor washout.
 
-**Analysis endpoint.** "Analyze up to" limits every parameter to the first N seconds (from
-the time of frame 1) or the first N frames, e.g. the first 100 s; later frames are ignored
-(peak, slopes, AUC, late frame, plateau). The endpoint is marked by an orange dashed line
-on the curves and recorded in the exports. Images, curves and the time-series export still
-contain all frames.
+![Parameters window: settings, colour scale and tumor ROI statistics](docs/screenshot_param_window.png)
 
-**Wash-in in the SSS wash-in period.** With "Max slope in SSS wash-in period" the wash-in
-period is defined on the SSS reference curve as its period of most rapid signal increase
-(Lee, Berger et al., Neurosurgery 2023;92:497): the consecutive frames around the steepest
-frame-to-frame rise of the SSS mean curve in which the slope stays at least 50% of the
-steepest (`RefSlopeFrac`). The wash-in slope of a voxel or ROI curve is its maximum
-frame-to-frame slope inside that period, so tissue and SSS slopes (and their ratio,
-wash-in / SSS) come from the same time window. The period is shown in the window and in
-the Settings sheet and is updated when the SSS ROI changes (then press Compute again).
-The paper states the definition of the period but not the slope formula, so the 50% rule
-and the maximum-slope rule are this tool's reading of it; set `RefSlopeFrac` to 1 to use
-only the single steepest SSS interval.
+*Parameters window: settings, colour map and statistics per tumor ROI (here including the
+pharmacokinetic parameters).*
 
-**Normalization to the SSS.** "/SSS" parameters are the voxel value divided by the same
-parameter of the reference ROI mean curve, in line with the AUC ratio to a venous/vascular
-reference used for subtle blood-brain barrier leakage (Heye et al. 2016). The reference is
-the first ROI whose name contains "SSS" (Auto SSS creates "SSS (auto)"), or the ROI chosen
-under SSS reference. Normalization cancels the arbitrary scaling of the reconstruction
-(global-maximum normalization, coil and receiver gain) and makes values comparable between
-scans and between the 8/16/32-spoke reconstructions of one scan. The washout ratio is a
-ratio of slopes: the SSS normally washes out (negative slope), so a positive WOS/SSS means
-a tumor washout, a negative one a persistent rise.
+**Colour maps:** parameter, Show on images (M), Jet/Turbo/Hot/Gray, Min/Max (Auto head =
+1st-99.5th percentile in the head, Auto ROIs = 2nd-98th in the tumor ROIs), opacity, Hide
+below min, Inside head only. The status bar shows the value under the cursor.
 
-**Colour maps.** Choose the parameter, Show on images (or key M), colour map (Jet or Turbo
-rainbow, Hot, Gray), Min/Max (type values, Auto head = 1st-99.5th percentile in the head,
-Auto ROIs = 2nd-98th percentile in the tumor ROIs), opacity, Hide below min and Inside head
-only. The colour bar appears in the sagittal panel; the status bar shows the value under
-the cursor. ROIs are drawn as outlines while a map is shown.
+**Statistics** per tumor ROI (all ROIs except the reference SSS and the arterial ROI, unless
+included): N, mean, SD, median, quartiles, 10th/90th percentile, min, max of the voxel
+values, and the value of the ROI mean curve (less noisy). For curve types and RATIO classes
+the share of voxels per class is listed.
 
-**Statistics.** The table lists, for every tumor ROI (all ROIs except the reference; tick
-Include the reference to add it) and every parameter: N voxels, mean, SD, median, Q1, Q3,
-10th and 90th percentile, min, max (voxel values; NaN voxels are ignored) and the
-parameter of the ROI mean curve ("ROI curve"). Voxel-wise statistics describe
-heterogeneity; the ROI-curve value is less noisy.
-
-**Export.** Export statistics + voxel values writes `.xlsx` (sheet Stats, sheet Settings
-with the definitions, options and the reference values, one sheet per ROI with one row
-per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm and one column per parameter) or `.csv`
-(`_param_stats.csv`, `_param_voxels.csv`, `_param_settings.txt`); after binning the file
-name ends in `_<N>frames`. Export parameter maps -> NIfTI (Parameters window, File
-or Analysis menu) lists the maps to choose from and writes one NIfTI per map
-(`<base>_PE.nii.gz`, `<base>_PE_SSS.nii.gz`, ...) in the geometry of the image export; with
-NIfTI or DICOM input that is the scanner geometry of the source images.
-ROI sessions (Save ROIs) keep the parameter options and the reference ROI.
-
-Scripting:
+**Export:** statistics + voxel values to `.xlsx` (sheets Stats, Settings, one per ROI with
+i, j, k, x, y, z and one column per parameter) or `.csv`; parameter maps to one NIfTI per
+map (`<base>_<key>.nii.gz`). ROI sessions keep the options and the reference ROI.
 
 ```matlab
-app.computeParams('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', 60);
-app.computeParams('WashIn', 'sss', 'EndTime', 100);     % SSS wash-in period, first 100 s
-app.computeParams('EndTime', Inf, 'EndFrame', 100);     % or the first 100 frames
-[hdr, rows] = app.paramStatsTable();       % cell table as shown in the window
+app.computeParams('WashIn', 'sss', 'AUCWindow', 60, 'EndTime', 100);
+[hdr, rows] = app.paramStatsTable();
 app.setParamKey('WIS_SSS'); app.setParamDisplay(true); app.setParamCLim([0 2]);
 app.exportParams('tumor_parameters.xlsx');
 P = graspilot_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 ```
 
-The parameter maps take about 50 MB of memory each for a 12-million-voxel volume (13 maps).
+## Pharmacokinetic models
+
+![Pharmacokinetic models window: VCAI input, extended Tofts and RATIO fits of a tumor ROI](docs/screenshot_pk_window.png)
+
+*Pharmacokinetic models window. Top: VCAI arterial input (red) with the SSS phase curve and
+the dispersed VCAI it was calibrated against (blue). Bottom: tumor ROI concentration with
+the extended Tofts fit (green, cannot follow the vascular transit peak) and the RATIO
+two-compartment fit (magenta).*
+
+Analysis > **Pharmacokinetic models** (or the button in the Parameters window). Tick the
+models, check the settings and the curves, press **Fit models**. The maps join the parameter
+list (colour map, statistics with the ROI-curve fit, exports).
+
+| Model | Maps (key) |
+|---|---|
+| Standard Tofts | Ktrans (`KT_TM`, 1/min), ve (`VE_TM`), kep (`KEP_TM`, 1/min), R2 (`R2_TM`) |
+| Extended Tofts | Ktrans, ve, vp, kep, R2 (`KT_ETM`, `VE_ETM`, `VP_ETM`, `KEP_ETM`, `R2_ETM`) |
+| 2CXM | Fp and PS (ml/100 ml/min), vp, ve, Ktrans = E Fp, R2 (`FP_2CXM`, `PS_2CXM`, `VP_2CXM`, `VE_2CXM`, `KT_2CXM`, `R2_2CXM`) |
+| RATIO | kep, kpe, MTT, E, ve/vp, class, leakage call, apparent vp/Ktrans/Fp/ve (below) |
+
+**Signal to concentration (signal ratio, global T10).** No T1 map: S/S0 removes M0, coil
+and reconstruction scaling, and the spoiled gradient echo equation gives R1:
+
+    A = (S/S0)(1 - E10)/(1 - cos(a) E10),  E10 = exp(-TR/T10),  E1 = (1 - A)/(1 - A cos(a))
+    C = (-ln(E1)/TR - 1/T10) / r1
+
+One **tissue T10** for all voxels (default 1400 ms) and a **blood T10** for the AIF
+(1664 ms, 3 T). TR (4 ms), flip angle (12 deg), r1 (4.5 /mM/s) and Hct (0.45) are
+placeholders: **enter your protocol and agent** (r1 in plasma at 3 T: gadobutrol ~5.0,
+gadoterate ~3.5, gadopentetate ~3.7; Rohrer 2005). Ktrans scales with the assumed T10, so
+keep it fixed across scans. Baseline frames must be strictly pre-contrast.
+
+**AIF.** *Reference ROI (SSS)*: large, little partial volume, but venous (late, broadened);
+**AIF shift** moves it in time. *Population* (Parker 2006), injection at the last baseline
+frame. *VCAI*: arterial ROI calibrated to the SSS (below). Plasma = blood / (1 - Hct).
+
+**Fitting.** Frames up to the analysis endpoint; uneven frame times supported; exact
+convolution for an AIF linear between frames. Rate constants on a log grid with the linear
+parameters solved exactly (variable projection), then Levenberg-Marquardt. Voxels inside
+the head (default), ROI voxels only (fast) or all. On an SPGR phantom with 2% noise the
+median maps are within 1% of the true Ktrans, ve, vp, Fp and PS. Octave speed: ~15,000
+voxels/s (Tofts), ~4,000 (2CXM). Changing settings, baseline, endpoint, frame times or the
+vessel ROIs hides the maps until the next fit. A pure Tofts-like curve also fits the 2CXM
+as large vp with low PS: check R2 and the curves.
+
+### RATIO and the VCAI
+
+![RATIO kpe map in the tumor ROIs](docs/screenshot_pk_map.png)
+
+*RATIO kpe = E/MTT (fitted on ROI voxels): kpe varies around the ring-enhancing tumor;
+the second lesion is mostly one-compartment slow (kep only, no kpe).*
+
+**RATIO** (Rate-based, Amplitude-invariant, Transit-resolved kinetics with an Input anchored
+to the venous Outflow; M. Lee, unpublished, 2026) is the two-compartment exchange model
+refitted without a concentration scale. Every curve has a free gain G and delay d:
+
+    2C:  y(t) = G [h(.; kF, E, rho) * u](t - d)      1C:  y(t) = G [k exp(-k .) * u](t - d)
+
+kF = Fp/vp, E = PS/(Fp + PS), rho = kE/kF <= 0.5 (kE = PS/ve). G absorbs vp, T10, B1, r1
+and the input amplitude. AICc picks 2C or 1C per curve:
+
+| Class (`CLASS_RATIO`) | Condition | Reported |
+|---|---|---|
+| 1 two-compartment | AICc prefers 2C | kep = rho kF (1 - E) (`KEP_RATIO`), kpe = kF E = E/MTT (`KPE_RATIO`), MTT = 1/kF (`MTT_RATIO`, s), E (`E_RATIO`), ve/vp (`VEVP_RATIO`); leakage (`LEAK_RATIO`) if E >= 0.03 |
+| 2 one-compartment fast | k >= 4 /min | MTT = 1/k; no leakage |
+| 3 one-compartment slow | k <= 1.5 /min | kep = k |
+| 4 indeterminate | 1.5 < k < 4 /min | k only (`K1_RATIO`); no leakage call |
+
+kep and kpe are primary; MTT and E depend on the assumed transit shape. Apparent values
+(exploratory, scale-dependent): vp = G, Ktrans = G kpe, Fp = G kF, ve = Ktrans/kep
+(`VP_RATIO`, `KT_RATIO`, `FP_RATIO`, `VE_RATIO`); in 1C classes G is vp (fast) or ve (slow).
+Also mapped: delay (`DELAY_RATIO`) and R2 (`R2_RATIO`).
+
+**Temporal basis.** For subspace data RATIO fits, by default, the coefficients of each
+voxel on an orthonormal real basis of its slice's (binned) reconstruction basis; AICc
+counts coefficients as observations, so the 2C model needs >= 7 (rank rule) and curves fall
+back to the 1C classes otherwise. A complex basis can give up to 2K coefficients; the
+window shows the number. Other data are fitted on frames.
+
+**VCAI** (AIF: *VCAI: artery calibrated to SSS*) fits the signal-weighted blood fraction w
+of an arterial ROI, the venous dispersion tau and delay delta so that the dispersed arterial
+curve matches the sinus curve up to a gain:
+
+    A(t)/A0 = w Sb(ca(t))/Sb(0) + (1 - w) N(t)/N0,   phi(t) - phi0 ~ g [exp(-t/tau)/tau * ca](t - delta)
+
+A: arterial ROI (**+ Artery**, or an ROI named artery/AIF/MCA/ICA; a few MCA or distal ICA
+voxels). N: 2-voxel ring of neighbouring tissue (or *None*: static background). Sb: blood
+SPGR signal (blood T10). phi: SSS phase from complex `.mat` data, else the SSS magnitude
+converted with the blood T10 (less accurate). Check w, tau (about 3-8 s), delta and the
+sinus-fit R2 shown in the window. The VCAI can also drive the other models.
+
+On a complex phantom (artery with 30% blood volume, sinus dispersed 5 s and delayed 6 s)
+the VCAI recovered w, tau, delta and the arterial curve exactly with either anchor; RATIO
+classified 2C, slow and fast lesions correctly with kep, kpe, E and MTT within 5% (2 s
+frames). RATIO is slow (~300 curves/s in Octave): fit ROI voxels. Not implemented: input
+amplitude from the sinus phase, bootstrap calibration of the classes, complex-domain fits.
+
+```matlab
+app.autoSSS();
+app.computePK('Models', {'tofts', 'etofts', '2cxm'}, 'T10', 1400, 'TR', 3.9, ...
+    'FlipAngle', 12, 'r1', 5.0, 'AIF', 'ref', 'AIFShift', -2);
+app.computePK('Models', {'ratio'}, 'AIF', 'vcai', 'VCAIAnchor', 'phase', 'Region', 'rois');
+app.setParamKey('KPE_RATIO'); app.setParamDisplay(true);
+app.exportMaps(folder, 'case01', {'KT_ETM', 'VP_ETM', 'KEP_RATIO', 'KPE_RATIO'});
+
+C  = graspilot_signal2conc(S, S0, 1.4, 3.9e-3, 12, 5.0);       % s, s, deg, 1/(mM s)
+R  = graspilot_pk_fit(C, t, Cp, {'tofts', 'etofts', '2cxm'});  % R.tofts.Ktrans, R.cxm.Fp
+[ca, vi] = graspilot_vcai(A, N, sinusPhase, t, 1:5, struct('TR', 3.9e-3));
+R  = graspilot_ratio_fit(C, t, ca / 0.55, struct('Basis', Q)); % R.kep, R.kpe, R.Class
+Cb = graspilot_pop_aif(t - tInjection);                       % population AIF (blood, mM)
+```
 
 ## Motion check and correction
 
-Analysis > **Motion check and correction** opens the Motion window.
+![Motion window: rigid motion per frame and the excess-motion warning](docs/screenshot_motion.png)
 
-**Estimate motion** registers every reconstructed frame (raw frames, before binning) to a
-reference volume with a rigid transform (3 translations, 3 rotations about the head
-centre). The reference is the mean of the baseline frames (or a chosen frame). The cost is
-normalized mutual information (Studholme et al. 1999), which tolerates the signal changes
-from contrast enhancement; the search is a 2-level (3 mm, then 1 mm smoothing) simplex
-optimization on up to 30,000 voxels of the head and its outline, each frame starting from
-the previous estimate. It takes about 1-3 s per frame (Stop keeps the frames done). The
-window plots translations (mm, along L, P, S), rotations (deg) and the mean displacement of
-the head voxels, from the reference and from the previous frame.
+*Phantom whose head moves 1-1.5 mm and 1.5-2 deg from frame 9 on: warning in red, flagged
+frames as red dots.*
 
-**Warning.** Excess motion is reported (status bar, a message box, red text in the window
-and MOTION WARNING in the data panel) when the mean head displacement of any frame exceeds
-the thresholds: by default one voxel (geometric mean of the voxel size, at least 1 mm)
-from the reference, or half a voxel between consecutive frames (sudden motion). The
-flagged frames are listed and marked.
-
-**Apply correction** resamples every frame at its estimated position (trilinear
-interpolation; frames that moved less than 0.05 voxel are copied unchanged). The frames
-then line up with the reference, so the ROIs (drawn on any frame) stay in place, and
-images, curves, maps, parameters and exports all use the corrected frames. The corrected
-series is held in memory as a full 4D array (the size is shown before applying; the
-original data are kept for **Revert to original**). Estimating again on corrected frames
-shows the residual motion. ROI sessions remember the correction and re-apply it when
-loaded with the same data; the NIfTI JSON sidecar, the time-series Info sheet and the
-parameter Settings sheet record whether it was applied. **Export (.csv)** writes the
-parameters and displacements per frame.
-
-Limits: motion during the acquisition also enters the subspace (low-rank) reconstruction
-itself; realigning frames cannot remove the resulting blurring or ghosting, so frames
-flagged as excess motion deserve a look even after correction. Only rigid motion is
-modelled (no brain deformation or through-slab motion outside the imaged slab: frames are
-padded with edge values there).
-
-Scripting:
+Analysis > **Motion check and correction**. **Estimate motion** registers every raw frame
+rigidly to the mean of the baseline frames (or a chosen frame) with normalized mutual
+information (robust to enhancement); ~1-3 s per frame. A warning appears when the mean head
+displacement exceeds one voxel from the reference or half a voxel between frames.
+**Apply correction** resamples the frames (held in memory as a 4D array; **Revert**
+restores them) so ROIs, curves, maps and exports use aligned frames; sessions and exports
+record it. **Export (.csv)** writes the motion per frame. Only rigid motion is corrected;
+motion blurring inside the reconstruction remains.
 
 ```matlab
-M = app.estimateMotion();          % viewer: warns on excess motion
-app.applyMotion();                 % realign; app.revertMotion() to undo
+M = app.estimateMotion(); app.applyMotion();       % app.revertMotion() to undo
 M = graspilot_motion_estimate(D, 'RefFrames', 1:5, 'WarnAbsMM', 1.5);
-D.applyMotionCorrection(M);        % data model only
+D.applyMotionCorrection(M);
 graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true);  % batch, + _motion.csv
 ```
 
 ## Exports
 
-| Button / menu | Output |
+| Export | Output |
 |---|---|
-| Image -> NIfTI | 4D float32 `.nii.gz`/`.nii` (all frames, streamed frame by frame) or the current frame (3D), plus a JSON sidecar (frame times, source, geometry, normalization) |
-| Mask -> NIfTI | uint8 label map (value = ROI number), `<name>_labels.txt` (label, name, RGB, voxels, mL), `<name>_itksnap_labels.txt`; optionally one binary mask per ROI |
-| ROI voxel time series -> spreadsheet | `.xlsx`: sheets Info, Summary (per-ROI mean, SD, median, relative enhancement, n per frame) and one sheet per ROI with one row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm, F001..Fnnn. `.csv`: `_voxels.csv` (all ROIs, ROI_ID/ROI_Name columns), `_summary.csv`, `_info.txt`. After binning the file name ends in `_<N>frames` |
-| File or Analysis > Export parameter maps -> NIfTI (also in the Parameters window) | choose the maps in a list (baseline, maximum and every parameter; PE, WIS, WOS, AUC also /SSS); one float32 `<base>_<key>.nii.gz` per map in the geometry of the image export. Scripting: `app.exportMaps(folder, base, {'PE', 'WIS_SSS'})` |
-| Parameters > Export statistics + voxel values | parameter statistics per tumor ROI and voxel values (see above) |
-| (binning) | binned series everywhere; JSON sidecar and Info sheet record bin size, raw frames per frame and dropped frames |
-| Save / Load ROIs | `.mat` session (ROI names, colors, voxels in native indices, geometry); reloads onto any reconstruction with the same matrix, e.g. the 8-, 16- and 32-spoke versions of one scan |
-| Import mask | label NIfTI from this tool or edited elsewhere; axis permutations/flips are corrected from the header; names/colors are read from `_labels.txt` if present |
+| Image -> NIfTI | 4D float32 (or current frame) + JSON sidecar (frame times, source, geometry, binning, motion) |
+| Mask -> NIfTI | uint8 label map, `_labels.txt`, ITK-SNAP label file; optionally one mask per ROI |
+| ROI voxel time series | `.xlsx` (Info, Summary, one sheet per ROI: i, j, k, x, y, z, F001..) or `.csv` |
+| Parameter maps -> NIfTI | chosen maps, one float32 `<base>_<key>.nii.gz` each |
+| Parameter statistics + voxel values | `.xlsx` or `.csv` (see Semi-quantitative parameters) |
+| Save / Load ROIs | `.mat` session (ROIs, geometry, options); reloads onto any reconstruction with the same matrix, e.g. 8-/16-/32-spoke versions |
+| Import mask | label NIfTI, reoriented from its header; names/colours from `_labels.txt` |
 
-When a new file with the same matrix size is opened, the viewer offers to keep the
-current ROIs, so the same ROIs can be applied across reconstructions.
-
-i, j, k in the spreadsheet are 1-based indices into the exported NIfTI arrays (as returned
-by `niftiread` in MATLAB); x, y, z are RAS mm from the affine. Excel limits (1,048,575
-voxels per ROI, 16,384 columns) apply to `.xlsx`; use `.csv` for very large ROIs.
+When a file with the same matrix is opened, the current ROIs can be kept. i, j, k are
+1-based indices into the exported NIfTI arrays; x, y, z are RAS mm. Use `.csv` for ROIs
+above Excel's limits.
 
 ## Scripting and batch use
 
 ```matlab
-% batch conversion of every reconstruction in a folder to 4D NIfTI
-f = dir('*.mat');
+f = dir('*.mat');                                   % batch .mat -> 4D NIfTI
 for k = 1:numel(f)
-    graspilot_convert_mat2nifti(f(k).name, '', 'Voxel', [1 1 1], 'dt', 3.3);   % AxisCodes 'LPS' by default
+    graspilot_convert_mat2nifti(f(k).name, '', 'Voxel', [1 1 1], 'dt', 3.3);
 end
-graspilot_convert_mat2nifti('recon_8spoke.mat', '', 'dt', 1.6, 'BinSize', 2);   % binned x2
-graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCheck', true);     % warn only
+graspilot_convert_mat2nifti('recon.mat', '', 'dt', 1.6, 'BinSize', 2, 'MotionCheck', true);
 
-% data model only
-D = GRASPilotData.fromFile('recon.mat');
-D.setAxisCodes('LPS'); D.VoxNative = [1 1 1]; D.dt = 3.3;
-D.setBinning(2);                   % optional: average frame pairs
-V  = D.canonVolume(40);            % 3D frame 40 (canonical order)
-S  = D.canonSubtraction(D.NT, 1);  % last - first
-TC = D.timecourses(find(mask));    % voxel x frame matrix for a canonical mask
+D = GRASPilotData.fromFile('recon.mat');            % data model only
+D.setAxisCodes('LPS'); D.VoxNative = [1 1 1]; D.dt = 3.3; D.setBinning(2);
+V  = D.canonVolume(40);  TC = D.timecourses(find(mask));
 graspilot_export_timeseries(D, {mask}, {'Tumor 1'}, 'tumor.csv', 'BaseFrames', 1:5);
-[sss, info] = graspilot_detect_sss(D);  % automatic SSS ROI (canonical indices)
 
-% drive the GUI
-app = GRASPilot(D);
-app.setFrame(45); app.addTumor();
-app.setThrSource('sub'); app.setThreshold(0.2, Inf);
-app.setPos([90 50 24]); app.growFromCrosshair();
-app.autoSSS();
+app = GRASPilot(D);                                 % drive the GUI
+app.addTumor(); app.setThrSource('sub'); app.setThreshold(0.2, Inf);
+app.setPos([90 50 24]); app.growFromCrosshair(); app.autoSSS();
 app.exportMaskNifti('mask.nii.gz');
 ```
 
-Standalone build (MATLAB Compiler): `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a graspilot_*.m`.
+Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a graspilot_*.m`.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `GRASPilot.m` | GUI (classic figure, no toolboxes) |
-| `GRASPilotData.m` | data model: subspace/dense loading, frame synthesis, orientation, maps, affine |
-| `graspilot_load_dialog.m` | variable/format/geometry dialog |
-| `graspilot_dicom_read.m` | DICOM series -> 4D array, affine, frame timing (no toolbox) |
-| `graspilot_nifti_write.m`, `graspilot_nifti_read.m` | NIfTI-1 I/O (.nii/.nii.gz), streaming 4D writes |
-| `graspilot_write_dce_nifti.m` | series -> NIfTI + JSON sidecar |
-| `graspilot_export_timeseries.m` | voxel time series -> .xlsx/.csv |
-| `graspilot_curve_params.m` | semi-quantitative curve parameters (vectorized over curves) |
-| `graspilot_ref_window.m`, `graspilot_end_frame.m` | SSS wash-in period; analysis endpoint |
-| `graspilot_motion_estimate.m` | rigid frame-by-frame motion (normalized mutual information) and excess-motion check |
-| `graspilot_rigid_matrix.m`, `graspilot_motion_summary.m` | rotation matrix; motion summary text |
-| `graspilot_export_params.m` | parameter statistics and voxel values -> .xlsx/.csv |
-| `graspilot_reorient_to_ref.m` | mask import reorientation |
-| `graspilot_detect_sss.m` | automatic superior sagittal sinus ROI |
-| `graspilot_convert_mat2nifti.m` | batch .mat -> NIfTI |
-| `graspilot_app.m` | launcher / compiler entry point |
-| `docs/` | README screenshots |
-| `legacy/` | the original ReadData.m, CropImg.m and @TempPCASub (reference for validation) |
-| `tests/graspilot_selftest.m` | synthetic end-to-end test (`graspilot_selftest(true)` also drives the GUI) |
-| `tests/graspilot_validate_readdata.m` | compares the viewer with ReadData.m on a real file |
-| `tests/graspilot_sss_phantom.m` | venous phantom (SSS, torcula, transverse/straight sinuses, scalp vein, artery) |
-| `tests/graspilot_motion_phantom.m` | the venous phantom with known rigid motion of chosen frames |
+| `GRASPilot.m`, `graspilot_app.m` | GUI; launcher / compiler entry point |
+| `GRASPilotData.m` | data model: loading, frame synthesis, orientation, maps, PK maps, affine |
+| `graspilot_load_dialog.m`, `graspilot_dicom_read.m` | `.mat` dialog; DICOM reader |
+| `graspilot_nifti_read.m`, `graspilot_nifti_write.m`, `graspilot_write_dce_nifti.m` | NIfTI I/O, series + JSON sidecar |
+| `graspilot_export_timeseries.m`, `graspilot_export_params.m` | spreadsheet exports |
+| `graspilot_curve_params.m`, `graspilot_ref_window.m`, `graspilot_end_frame.m` | semi-quantitative parameters, SSS wash-in period, endpoint |
+| `graspilot_signal2conc.m`, `graspilot_pop_aif.m`, `graspilot_pk_defaults.m` | signal -> concentration, population AIF, PK defaults |
+| `graspilot_pk_fit.m`, `graspilot_ratio_fit.m`, `graspilot_vcai.m` | Tofts / extended Tofts / 2CXM; RATIO; VCAI |
+| `graspilot_expconv.m`, `graspilot_varpro_lm.m` | exact exponential convolution; batched Levenberg-Marquardt |
+| `graspilot_motion_estimate.m`, `graspilot_rigid_matrix.m`, `graspilot_motion_summary.m` | motion |
+| `graspilot_detect_sss.m`, `graspilot_reorient_to_ref.m`, `graspilot_convert_mat2nifti.m` | Auto SSS; mask import; batch conversion |
+| `legacy/` | original ReadData.m, CropImg.m, @TempPCASub (validation reference) |
+| `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
+| `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
+| `tests/*_phantom.m` | venous (SSS), motion, PK (SPGR) and RATIO (complex subspace) phantoms |
 
 ## Notes and limitations
 
-- For `.mat` input the geometry comes from the dialog: voxel sizes, orientation (especially
-  left-right) and frame timing should be checked once per protocol. NIfTI and DICOM input
-  take them from the header.
-- The DICOM reader was validated on synthetic series (pixels, geometry and timing against
-  pydicom-written files and dcm2niix), not yet on scanner exports; check orientation and the
-  frame count/order on the first real series. Siemens mosaics and colour images are not
-  supported.
-- Auto SSS was tested on synthetic phantoms; check its ROI on real data, in particular
-  near the torcula and with a hypoplastic or asymmetric confluence.
-- Motion estimation was validated on a phantom with known motion (2-3 mm, 2-3 deg recovered
-  to < 0.1 mm mean error); on real GRASP frames check the plots for implausible jumps
-  (e.g. in noisy early frames) before applying the correction.
-- Signal is the magnitude of the reconstruction (normalized to the global maximum when
-  ReadData.m normalization is on); no T1 mapping or concentration conversion is done.
-  Parameters are therefore semi-quantitative (signal-based): compare absolute values only
-  between scans with the same protocol and scaling, or use the /SSS values.
-- Voxel-wise slopes are noisy at high temporal resolution; binning or the ROI-curve values
-  are more robust.
-- Fill holes is 2D (slice by slice). Grow from crosshair is the connected-component tool
-  (6-connectivity, bounded by the max distance).
-- Binning averages magnitudes of reconstructed frames; it does not re-reconstruct with
-  more spokes per frame.
+- `.mat` geometry comes from the dialog: check voxel size, left-right and timing once per
+  protocol.
+- The DICOM reader, Auto SSS, motion estimation and the PK models were validated on
+  synthetic data only; check them on the first real series.
+- Signal is the reconstruction magnitude. Semi-quantitative values compare only between
+  scans with the same protocol and scaling (or use /SSS). PK values depend on the assumed
+  T10, TR, flip angle, r1 and the AIF; GRASP reconstruction can smooth the AIF first pass.
+  RATIO rates do not depend on the concentration scale, but its thresholds (E >= 0.03,
+  1.5-4 /min) come from simulation and are not calibrated on patient data.
+- Voxel-wise slopes are noisy at high temporal resolution; binning or ROI-curve values are
+  more robust.
