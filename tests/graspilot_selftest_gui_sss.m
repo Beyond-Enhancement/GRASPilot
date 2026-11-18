@@ -114,10 +114,10 @@ tb = get(app.PW.table, 'Data');
 okW = ishghandle(app.PW.Fig) && size(tb, 1) == numel(app.ParamKeys) + 3 && ...
     strcmp(get(app.PW.cmin, 'String'), sprintf('%.4g', c(1)));
 set(app.PW.cmap, 'Value', 2); app.onParamCmap(2);
-set(app.PW.washIn, 'Value', 2); app.onParamOptions(); app.onParamCompute();
-okW = okW && strcmp(app.ParamCmap, 'turbo') && strcmp(D.ParamOpts.WashIn, 'max') && D.hasMaps(bf);
-nfail = nfail + check('parameter window (table, colour map, options)', okW, size(tb, 1));
+okW = okW && get(app.PW.washIn, 'Value') == 2;      % default: maximum up-slope
 set(app.PW.washIn, 'Value', 1); app.onParamOptions(); app.onParamCompute();
+okW = okW && strcmp(app.ParamCmap, 'turbo') && strcmp(D.ParamOpts.WashIn, 'onset') && D.hasMaps(bf);
+nfail = nfail + check('parameter window (table, colour map, options)', okW, size(tb, 1));
 if nargin > 0 && ~isempty(out)
     shot = fullfile(out, 'param_window.png');
     try, print(app.PW.Fig, '-dpng', '-r60', shot); catch, end

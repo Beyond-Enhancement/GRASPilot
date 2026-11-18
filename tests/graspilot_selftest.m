@@ -244,6 +244,11 @@ nfail = nfail + check('analysis endpoint (EndTime, EndFrame)', P4.EndFrame == 21
 Sr = ones(size(tt));
 Sr(tt > 4) = 1 + 0.1 * (tt(tt > 4) - 4); Sr(tt > 6) = 1.2 + 0.5 * (tt(tt > 6) - 6);
 Sr(tt > 10) = 3.2 + 0.3 * (tt(tt > 10) - 10); Sr(tt > 12) = 3.8 + 0.05 * (tt(tt > 12) - 12);
+Do = GRASPilotData.fromDense(zeros(2, 2, 1, 3, 'single'), 'xyzt');
+Pd = graspilot_curve_params(Sr, tt, 1:5);
+Pmx = graspilot_curve_params(Sr, tt, 1:5, struct('WashIn', 'max'));
+nfail = nfail + check('default wash-in slope: maximum up-slope', strcmp(Do.ParamOpts.WashIn, 'max') && ...
+    Pd.WashIn == Pmx.WashIn && abs(Pd.WashIn - 0.5) < 1e-9, Pd.WashIn);
 Sr(tt > 14) = 3.9 - 0.02 * (tt(tt > 14) - 14);
 [wr, ir] = graspilot_ref_window(Sr, tt, 1:5);
 Pw = graspilot_curve_params([Sa; Sr], tt, 1:5, struct('WashIn', 'sss', 'WashInFrames', wr));

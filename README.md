@@ -198,7 +198,7 @@ frame (injection); seconds if s/frame is set, else frames.
 |---|---|---|
 | Peak enhancement (PE) | Smax - S0 (maximum after the baseline) | a.u. |
 | Relative peak enhancement | 100 PE / S0 | % |
-| Wash-in slope (WIS) | PE / (TP - To), onset To to peak TP (Khalifa 2014); options: maximum up-slope, or maximum slope in the SSS wash-in period | a.u./s |
+| Wash-in slope (WIS) | maximum up-slope between consecutive frames before the peak (default; Li 2024); options: PE / (TP - To), onset To to peak TP (Khalifa 2014), or maximum slope in the SSS wash-in period | a.u./s |
 | Washout slope (WOS) | least-squares slope from the peak to the end (at least 3 frames); option: 2 points. Negative = washout | a.u./s |
 | AUC | area of S - S0 after the baseline, whole curve or first N s (IAUC60, IAUC90) | a.u. x s |
 | TTP, onset, T90 | time to peak, to onset (last frame < 10% of PE), to 90% of PE | s |
