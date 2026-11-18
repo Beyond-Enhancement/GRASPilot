@@ -4344,6 +4344,11 @@ classdef GRASPilot < handle
                     k = round(str2double(get(obj.MW.refFrame, 'String')));
                     if isfinite(k) && k >= 1 && k <= D.NTRaw, opts = [opts, {'Reference', k}]; end
                 end
+                rgs = {'head', 'brain', 'outline'};
+                sm = round(str2double(get(obj.MW.smooth, 'String')));
+                if ~isfinite(sm) || sm < 1, sm = 1; end
+                opts = [opts, {'Region', rgs{get(obj.MW.region, 'Value')}, ...
+                    'ExcludeEnhancing', get(obj.MW.exclEnh, 'Value') > 0, 'SmoothFrames', sm}];
             end
             obj.MotionStop = false;
             wb = obj.wbOpen('Estimating head motion...');
@@ -4395,6 +4400,13 @@ classdef GRASPilot < handle
             if D.MotionCorrected
                 obj.inform('The frames are already motion-corrected (Revert first).', 'Motion correction');
                 return
+            end
+            if ~quiet && ~obj.Quiet && ~M.Excess
+                b = obj.ask(sprintf(['The estimated motion is below the warning thresholds (max %.2f mm from ' ...
+                    'the reference, %.2f mm between frames).\n\nCorrecting it resamples every frame and can add ' ...
+                    'interpolation blur and small frame-to-frame jitter of its own. Correct anyway?'], ...
+                    max(M.AbsMean), max([M.RelMean; 0])), 'Motion correction', {'Correct anyway', 'Cancel'}, 'Cancel');
+                if ~strcmp(b, 'Correct anyway'), return; end
             end
             if ~quiet && ~obj.Quiet
                 mb = D.motionCorrectionBytes() / 2^20;
@@ -4494,7 +4506,7 @@ classdef GRASPilot < handle
             end
             obj.Layout = obj.Layout(arrayfun(@(L) ishghandle(L.h), obj.Layout));
             C = obj.Col;
-            W = 980; Hh = 720;
+            W = 980; Hh = 760;
             ss = get(0, 'ScreenSize');
             f = figure('Name', 'Motion check and correction', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                 'ToolBar', 'none', 'Units', 'pixels', 'Color', C.bg, ...
@@ -4515,17 +4527,29 @@ classdef GRASPilot < handle
             obj.MW.warnRel = obj.ctl(P, 730, 34, 46, 22, 'edit', sprintf('%.2g', vmm / 2), ...
                 'TooltipString', 'mm between consecutive frames (default: half a voxel)');
             obj.ctl(P, 780, 36, 160, 18, 'text', 'mm between frames');
-            obj.MW.btnEst = obj.ctl(P, 12, 64, 150, 26, 'pushbutton', 'Estimate motion', 'FontWeight', 'bold', ...
+            obj.ctl(P, 12, 66, 70, 18, 'text', 'Register on');
+            obj.MW.region = obj.ctl(P, 86, 64, 210, 22, 'popupmenu', {'Head (nothing outside)', ...
+                'Brain only (no scalp)', 'Head + outline (former)'}, 'TooltipString', ...
+                ['Voxels used by the registration. Streak artifacts outside the head rotate from frame to frame; ' ...
+                'compare the regions if you suspect they bias the estimate']);
+            obj.MW.exclEnh = obj.ctl(P, 306, 64, 210, 22, 'checkbox', 'Exclude enhancing voxels', 'TooltipString', ...
+                ['Leave out vessels, scalp, dura and enhancing lesions, whose enhancement can be read as motion ' ...
+                '(an estimate that grows with the contrast uptake suggests this)']);
+            obj.ctl(P, 524, 66, 54, 18, 'text', 'Smooth');
+            obj.MW.smooth = obj.ctl(P, 580, 64, 40, 22, 'edit', '5', 'TooltipString', ...
+                'Running median of the estimates over this many frames (1 = none): removes estimation noise, keeps steps');
+            obj.ctl(P, 624, 66, 60, 18, 'text', 'frames');
+            obj.MW.btnEst = obj.ctl(P, 12, 94, 150, 26, 'pushbutton', 'Estimate motion', 'FontWeight', 'bold', ...
                 'Callback', @(s, e) obj.estimateMotion());
-            obj.MW.btnStop = obj.ctl(P, 168, 64, 60, 26, 'pushbutton', 'Stop', 'Enable', 'off', ...
+            obj.MW.btnStop = obj.ctl(P, 168, 94, 60, 26, 'pushbutton', 'Stop', 'Enable', 'off', ...
                 'Callback', @(s, e) obj.stopMotion());
-            obj.MW.btnApply = obj.ctl(P, 236, 64, 150, 26, 'pushbutton', 'Apply correction', ...
+            obj.MW.btnApply = obj.ctl(P, 236, 94, 150, 26, 'pushbutton', 'Apply correction', ...
                 'Callback', @(s, e) obj.applyMotion());
-            obj.MW.btnRevert = obj.ctl(P, 392, 64, 150, 26, 'pushbutton', 'Revert to original', ...
+            obj.MW.btnRevert = obj.ctl(P, 392, 94, 150, 26, 'pushbutton', 'Revert to original', ...
                 'Callback', @(s, e) obj.revertMotion());
-            obj.MW.btnExport = obj.ctl(P, 548, 64, 150, 26, 'pushbutton', 'Export (.csv)...', ...
+            obj.MW.btnExport = obj.ctl(P, 548, 94, 150, 26, 'pushbutton', 'Export (.csv)...', ...
                 'Callback', @(s, e) obj.onExportMotion());
-            obj.MW.info = obj.ctl(P, 12, 98, -12, 66, 'text', '', 'FontSize', 9);
+            obj.MW.info = obj.ctl(P, 12, 128, -12, 72, 'text', '', 'FontSize', 9);
             ttl = {'Translation (mm)', 'Rotation (deg)', 'Mean head displacement (mm)'};
             obj.MW.Ax = GRASPilot.handleArray(3);
             for i = 1:3
@@ -4544,7 +4568,7 @@ classdef GRASPilot < handle
             fp = get(obj.MW.Fig, 'Position');
             set(obj.MW.Panel, 'Position', [1 1 fp(3) fp(4)]);
             obj.layoutRecords(obj.MW.Panel);
-            top = 190; gap = 46; bottom = 40;
+            top = 222; gap = 46; bottom = 40;
             h = max(60, (fp(4) - top - bottom - 2 * gap) / 3);
             for i = 1:3
                 y = fp(4) - top - i * h - (i - 1) * gap;
@@ -4603,7 +4627,11 @@ classdef GRASPilot < handle
                 ax = obj.MW.Ax(i);
                 hl = zeros(1, 3);
                 for j = 1:3
-                    hl(j) = plot(ax, x, M.Params(:, 3 * (i - 1) + j), '-', 'Color', col(j, :), 'LineWidth', 1.2);
+                    if isfield(M, 'ParamsRaw') && M.SmoothFrames > 1     % per-frame estimates, faint
+                        plot(ax, x, M.ParamsRaw(:, 3 * (i - 1) + j), '-', 'Color', 0.45 * col(j, :) + 0.1, ...
+                            'LineWidth', 0.5);
+                    end
+                    hl(j) = plot(ax, x, M.Params(:, 3 * (i - 1) + j), '-', 'Color', col(j, :), 'LineWidth', 1.4);
                 end
                 obj.motionLegend(ax, hl, lbl{i});
             end

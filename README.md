@@ -361,16 +361,31 @@ frames as red dots.*
 
 Analysis > **Motion check and correction**. **Estimate motion** registers every raw frame
 rigidly to the mean of the baseline frames (or a chosen frame) with normalized mutual
-information (robust to enhancement); ~1-3 s per frame. A warning appears when the mean head
-displacement exceeds one voxel from the reference or half a voxel between frames.
-**Apply correction** resamples the frames (held in memory as a 4D array; **Revert**
-restores them) so ROIs, curves, maps and exports use aligned frames; sessions and exports
-record it. **Export (.csv)** writes the motion per frame. Only rigid motion is corrected;
-motion blurring inside the reconstruction remains.
+information (robust to global enhancement); ~1-3 s per frame. A warning appears when the
+mean head displacement exceeds one voxel from the reference or half a voxel between frames.
+
+- **Register on:** *Head* (default) uses head voxels only. The streak artifacts of radial
+  (stack-of-stars) sampling outside the head rotate from frame to frame and could be read
+  as rotation. *Brain only* also leaves out the scalp; *Head + outline* is the former
+  behaviour (head plus a 4 mm band outside it).
+- **Exclude enhancing voxels:** leaves out vessels, scalp, dura and enhancing lesions.
+  Asymmetric enhancement can be read as motion. An estimate that grows with the contrast
+  uptake and then plateaus, with no visible motion, suggests this; re-estimate with the
+  option and compare.
+- **Smooth:** running median of the estimates over 5 frames (1 = none). It removes
+  frame-to-frame estimation noise, which correction would otherwise add as jitter, and
+  keeps sudden (step) motion. The plots show the smoothed estimates over the faint
+  per-frame ones.
+
+**Apply correction** resamples the frames trilinearly (held in memory as a 4D array;
+**Revert** restores them), so ROIs, curves, maps and exports use aligned frames; sessions
+and exports record it. Below the warning thresholds it asks first: sub-voxel corrections
+mostly add interpolation blur. **Export (.csv)** writes the motion per frame. Only rigid
+motion is corrected; motion blurring inside the reconstruction remains.
 
 ```matlab
 M = app.estimateMotion(); app.applyMotion();       % app.revertMotion() to undo
-M = graspilot_motion_estimate(D, 'RefFrames', 1:5, 'WarnAbsMM', 1.5);
+M = graspilot_motion_estimate(D, 'RefFrames', 1:5, 'Region', 'brain', 'ExcludeEnhancing', true);
 D.applyMotionCorrection(M);
 graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true);  % batch, + _motion.csv
 ```
@@ -432,7 +447,7 @@ Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a g
 | `legacy/` | original ReadData.m, CropImg.m, @TempPCASub (validation reference) |
 | `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
 | `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
-| `tests/*_phantom.m` | venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion, PK (SPGR) and RATIO (complex subspace) phantoms |
+| `tests/*_phantom.m` | venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
 
 ## Notes and limitations
 

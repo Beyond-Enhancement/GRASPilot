@@ -337,6 +337,18 @@ nfail = nfail + check('excess motion flagged in the moved frames only', Mm.Exces
 Ms = graspilot_motion_estimate(trm.Still, 'Frames', [1 6 9 12]);
 nfail = nfail + check('no motion: no warning', ~Ms.Excess && max(Ms.AbsMean) < 0.05 && isequal(Ms.Frames, [1 6 9 12]), ...
     max(Ms.AbsMean));
+% radial streaks rotating from frame to frame (stack-of-stars), textured brain, no motion
+[Dk, ~] = graspilot_motion_phantom(zeros(1, 6), [], 0.08);
+Mk = graspilot_motion_estimate(Dk, 'Frames', 1:8);
+rawRot = max(max(abs(Mk.ParamsRaw(1:8, 4:6))));
+nfail = nfail + check('rotating streaks, no motion: small estimate, no warning', ~Mk.Excess && ...
+    max(Mk.AbsMean) < 0.1 && max(max(abs(Mk.Params(1:8, 4:6)))) <= rawRot && strcmp(Mk.Region, 'head'), max(Mk.AbsMean));
+% enhancing voxels left out: motion of the textured phantom with a one-sided lesion still recovered
+[Dl, trl] = graspilot_motion_phantom(Pm, 7:12, 0.03, true);
+Ml = graspilot_motion_estimate(Dl, 'ExcludeEnhancing', true, 'RefFrames', 1:3);
+el = max(max(abs(Ml.Params - trl.Params)));
+nfail = nfail + check('motion with enhancing voxels excluded (lesion, streaks)', Ml.ExcludedEnhancing > 100 && ...
+    el < 0.3 && isequal(Ml.ExcessFrames, 7:12), el);
 Dm.applyMotionCorrection(Mm);
 hm = R0 > 0.2;
 e1 = zeros(1, 2); e0 = e1;

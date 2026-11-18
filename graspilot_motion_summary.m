@@ -14,6 +14,17 @@ ro = max(abs(P(:, 4:6)), [], 1);
 s = sprintf(['Reference: %s. Mean head displacement: max %.2f mm (frame %d) from the reference, ' ...
     'max %.2f mm (frame %d) between consecutive frames. Largest translations L %.2f, P %.2f, S %.2f mm; ' ...
     'rotations %.2f, %.2f, %.2f deg.'], M.Reference, am, fa, rm, fr, tr, ro);
+if isfield(M, 'SmoothFrames') && M.SmoothFrames > 1
+    s = sprintf('%s Estimates smoothed over %d frames (running median).', s, M.SmoothFrames);
+end
+if isfield(M, 'Region')
+    rg = struct('head', 'head voxels', 'brain', 'brain (no scalp)', 'outline', 'head and outline');
+    s = sprintf('%s Registered on %s', s, rg.(M.Region));
+    if isfield(M, 'ExcludedEnhancing') && M.ExcludedEnhancing > 0
+        s = sprintf('%s without %d enhancing voxels', s, M.ExcludedEnhancing);
+    end
+    s = [s '.'];
+end
 if isnan(rm), s = strrep(s, sprintf('max NaN mm (frame %d) between consecutive frames', fr), 'n/a between frames'); end
 if M.Excess
     ex = M.ExcessFrames;
