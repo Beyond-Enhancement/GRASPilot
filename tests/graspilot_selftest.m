@@ -187,6 +187,18 @@ ok = mean(trr.SSS(linC)) > 0.95 && infoC.ThickestSlice == 20 && isempty(linT) &&
     ~isempty(strfind(infoT.Message, 'wash out'));
 nfail = nfail + check('SSS from a crosshair seed; tumour seed rejected', ok, numel(linC));
 
+% ---------------------------------------------------------------- 3e. fast-open copy of a .mat
+fm = fullfile(out, 'fastsrc.mat');
+save(fm, 'vk_all', 'basis_all', '-v7');
+Df1 = GRASPilotData.fromFile(fm);
+fcopy = Df1.saveFastCopy();
+Df2 = GRASPilotData.fromFile(fm);
+Df3 = GRASPilotData.fromFile(fm, 'CropFactor', 1);
+ok = strcmp(fcopy, GRASPilotData.fastCopyName(fm)) && ~isempty(Df2.FastCopyFile) && ...
+    isequal(Df1.canonVolume(7), Df2.canonVolume(7)) && Df2.ScaleFactor == Df1.ScaleFactor && ...
+    isempty(Df3.FastCopyFile) && strcmp(Df2.SourceFile, fm);
+nfail = nfail + check('fast-open copy: used when current, identical frames', ok, 0);
+
 % ---------------------------------------------------------------- 3d. version
 gv = graspilot_version();
 ok = ~isempty(regexp(gv.Version, '^\d+\.\d+\.\d+$', 'once')) && ...
@@ -247,7 +259,7 @@ Sr(tt > 10) = 3.2 + 0.3 * (tt(tt > 10) - 10); Sr(tt > 12) = 3.8 + 0.05 * (tt(tt 
 Do = GRASPilotData.fromDense(zeros(2, 2, 1, 3, 'single'), 'xyzt');
 Pd = graspilot_curve_params(Sr, tt, 1:5);
 Pmx = graspilot_curve_params(Sr, tt, 1:5, struct('WashIn', 'max'));
-nfail = nfail + check('default wash-in slope: maximum up-slope', strcmp(Do.ParamOpts.WashIn, 'max') && ...
+nfail = nfail + check('default wash-in slope: SSS wash-in period (max up-slope without one)', strcmp(Do.ParamOpts.WashIn, 'sss') && ...
     Pd.WashIn == Pmx.WashIn && abs(Pd.WashIn - 0.5) < 1e-9, Pd.WashIn);
 Sr(tt > 14) = 3.9 - 0.02 * (tt(tt > 14) - 14);
 [wr, ir] = graspilot_ref_window(Sr, tt, 1:5);
@@ -413,6 +425,20 @@ okD = numel(sc.Series) == 2 && isequal(Va, single(Vd)) && isequal(Vb, single(Vd)
     max(abs(ia.Affine(:) - Aw(:))) < 1e-4 && abs(ia.dt - 3.25) < 1e-6 && abs(ib.dt - 3.25) < 1e-6 && ...
     sc.Series(1).NSlices == 5 && sc.Series(1).NFrames == 4;
 nfail = nfail + check('DICOM read (explicit + implicit VR): pixels, geometry, timing', okD, max(abs(ia.Affine(:) - Aw(:))));
+% trailing elements after the pixel data (dataset padding, as some scanners write): the
+% fast header path finds the pixel data before them
+dp = fullfile(out, 'dicom_pad');
+graspilot_dicom_write(dp, Vd, gd);
+fp = dir(dp); fp = fp(~[fp.isdir]);
+for i = 1:numel(fp)
+    fid = fopen(fullfile(dp, fp(i).name), 'a');
+    fwrite(fid, [252 255 252 255], 'uint8'); fwrite(fid, 'OB'); fwrite(fid, [0 0], 'uint8');
+    fwrite(fid, 16, 'uint32'); fwrite(fid, zeros(1, 16, 'uint8'));       % (FFFC,FFFC) padding
+    fclose(fid);
+end
+[Vp, ip] = graspilot_dicom_read(dp);
+nfail = nfail + check('DICOM with trailing padding after the pixel data', isequal(Vp, single(Vd)) && ...
+    abs(ip.dt - 3.25) < 1e-6, 0);
 Dd = GRASPilotData.fromDicom(dd, 'Series', 1);
 okG = strcmp(Dd.AxisCodes, 'LPS') && max(abs(Dd.canonVox() - [1.1 0.9 2.5])) < 1e-4 && Dd.dt == ia.dt && ...
     max(max(abs(Dd.affine() - Aw))) < 1e-4 && isequal(Dd.canonVolume(3), single(Vd(:, :, :, 3)));
@@ -578,6 +604,7 @@ for k = 1:size(pairs, 1)
     B = reshape(P.(pairs{k, 2}), n);
     if ~isequal(isnan(A), isnan(B)), e = Inf; return; end
     ok = ~isnan(A);
+    if ~any(ok(:)), continue; end                % all undefined in both (e.g. no SSS wash-in period)
     sc = max(1e-6, max(abs(B(ok))));
     e = max(e, max(abs(A(ok) - B(ok))) / sc);
 end

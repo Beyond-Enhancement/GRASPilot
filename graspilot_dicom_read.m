@@ -497,20 +497,66 @@ end
 
 % =========================================================================
 function h = readHeader(file, D)
+% Header of one file. Fast path for classic single-frame images: parse only
+% up to group 0028 (everything this reader needs) and find the pixel data at
+% the end of the file, checking its tag and length there; anything else
+% (enhanced multi-frame, compressed data, elements after the pixel data)
+% gets the full parse.
 h = [];
-d = dir(file);
-if isempty(d) || d.bytes < 136, return; end
-chunk = 2 ^ 20;
 fid = fopen(file, 'r');
 if fid < 0, return; end
-while true
-    fseek(fid, 0, 'bof');
-    b = fread(fid, min(chunk, d.bytes), '*uint8')';
-    h = parseFile(b, D, numel(b) < d.bytes);
-    if isempty(h) || ~isfield(h, 'Truncated') || numel(b) >= d.bytes, break; end
-    chunk = chunk * 8;
+fseek(fid, 0, 'eof');
+nb = ftell(fid);
+if nb < 136, fclose(fid); return; end
+chunk = 2 ^ 14;                                    % header up to group 0028: grows if needed
+for pass = 1:2
+    if pass == 2, D.EarlyStop = false; chunk = 2 ^ 20; end
+    while true
+        fseek(fid, 0, 'bof');
+        b = fread(fid, min(chunk, nb), '*uint8')';
+        h = parseFile(b, D, numel(b) < nb);
+        if isempty(h) || ~isfield(h, 'Truncated') || numel(b) >= nb, break; end
+        chunk = chunk * 8;
+    end
+    if isempty(h) || ~isfield(h, 'StopEarly'), break; end
+    h = rmfield(h, 'StopEarly');
+    [ok, h] = pixelTail(fid, nb, h);
+    if ok, break; end
 end
 fclose(fid);
+end
+
+function [ok, h] = pixelTail(fid, nb, h)
+% find the pixel data element (7FE0,0010) of the expected length near the end
+% of the file (it may be followed by a few KB of trailing elements, e.g. padding)
+ok = false;
+if ~isfield(h, 'Rows') || ~isfield(h, 'Cols') || ~isfield(h, 'BitsAllocated'), return; end
+spp = 1; if isfield(h, 'SamplesPerPixel'), spp = h.SamplesPerPixel; end
+len = h.Rows * h.Cols * ceil(h.BitsAllocated / 8) * spp;
+len = len + mod(len, 2);
+W = 16384;                                         % trailing bytes allowed after the pixel data
+s0 = max(0, nb - len - 12 - W);
+nw = nb - len - s0;                                % window ends where the pixel value would start
+if nw < 8, return; end
+fseek(fid, s0, 'bof');
+t = fread(fid, nw, '*uint8')';
+if h.BE
+    tg = uint8([127 224 0 16]);
+    L = uint8([floor(len / 16777216), mod(floor(len / 65536), 256), mod(floor(len / 256), 256), mod(len, 256)]);
+else
+    tg = uint8([224 127 16 0]);
+    L = uint8([mod(len, 256), mod(floor(len / 256), 256), mod(floor(len / 65536), 256), floor(len / 16777216)]);
+end
+pats = {[tg uint8('OW') 0 0 L], [tg uint8('OB') 0 0 L], [tg L]};
+best = 0; hl = 0;
+for i = 1:numel(pats)
+    k = strfind(char(t), char(pats{i}));
+    if ~isempty(k) && k(end) > best, best = k(end); hl = numel(pats{i}); end
+end
+if best == 0, return; end
+h.PixelOffset = s0 + best - 1 + hl + 1;            % 1-based byte position of the pixel values
+h.PixelLength = len;
+ok = h.PixelOffset + len - 1 <= nb;
 end
 
 function h = parseFile(b, D, partial)
@@ -549,6 +595,7 @@ else
 end
 h = struct('BE', be);
 [h, ~] = parseElems(b, pos, numel(b), expl, be, h, D, true, true);
+if isfield(h, 'StopEarly'), return; end
 if ~isfield(h, 'PixelOffset') && partial, h.Truncated = true; end
 if ~isfield(h, 'PixelOffset') && ~partial, h = []; end
 end
@@ -556,10 +603,20 @@ end
 function [h, pos] = parseElems(b, pos, endPos, expl, be, h, D, collect, top)
 % data elements from pos; stops at endPos, an item/sequence delimiter or the pixel data
 UNDEF = 4294967295;
+early = top && collect && D.EarlyStop;
 while pos + 7 <= endPos
-    g = u16(b, pos, be); e = u16(b, pos + 2, be);
+    if be                                          % inline u16: called for every element
+        g = 256 * double(b(pos)) + double(b(pos + 1)); e = 256 * double(b(pos + 2)) + double(b(pos + 3));
+    else
+        g = double(b(pos)) + 256 * double(b(pos + 1)); e = double(b(pos + 2)) + 256 * double(b(pos + 3));
+    end
     if g == 65534                                  % FFFE: delimiters
         pos = pos + 8;
+        return
+    end
+    if early && g > 40 && (~isfield(h, 'NumberOfFrames') || h.NumberOfFrames <= 1) && isfield(h, 'Rows')
+        h.StopEarly = true;                        % past group 0028 of a single-frame image
+        pos = endPos + 1;
         return
     end
     sq = false;
@@ -568,8 +625,10 @@ while pos + 7 <= endPos
         if vr(1) == 'O' || vr(1) == 'U' && vr(2) ~= 'I' && vr(2) ~= 'L' && vr(2) ~= 'S' || ...
                 strcmp(vr, 'SQ') || strcmp(vr, 'SV')
             len = u32(b, pos + 8, be); vp = pos + 12;
+        elseif be
+            len = 256 * double(b(pos + 6)) + double(b(pos + 7)); vp = pos + 8;
         else
-            len = u16(b, pos + 6, be); vp = pos + 8;
+            len = double(b(pos + 6)) + 256 * double(b(pos + 7)); vp = pos + 8;
         end
         sq = strcmp(vr, 'SQ');
     else
@@ -581,10 +640,18 @@ while pos + 7 <= endPos
         pos = endPos + 1;
         return
     end
-    isSeqTag = any(tag == D.SeqTags);
+    if len == UNDEF || sq || ~expl
+        isSeqTag = any(tag == D.SeqTags);
+    else
+        isSeqTag = false;                          % explicit VR: a sequence has VR SQ
+    end
     if len == UNDEF || sq || isSeqTag
         % sequence: descend when it is (inside) a functional group, else skip
         want = collect && (isSeqTag || ~top);
+        if ~want && len ~= UNDEF                   % not needed, defined length: jump over it
+            pos = vp + len;
+            continue
+        end
         if len == UNDEF, se = endPos; else, se = min(endPos, vp + len - 1); end
         [items, p2] = parseSeq(b, vp, se, expl, be, D, want, len == UNDEF);
         if len == UNDEF, pos = p2; else, pos = vp + len; end
@@ -691,6 +758,7 @@ end
 D.Names = T(:, 3)';
 D.Types = T(:, 4)';
 D.Groups = unique(floor(D.Tags / 65536));
+D.EarlyStop = true;                 % stop after group 0028 for single-frame images (readHeader)
 % sequences to descend into: shared / per-frame functional groups and their macros
 sq = {'5200', '9229'; '5200', '9230'; '0020', '9113'; '0020', '9116'; '0028', '9110'; '0020', '9111'; ...
     '0028', '9145'};

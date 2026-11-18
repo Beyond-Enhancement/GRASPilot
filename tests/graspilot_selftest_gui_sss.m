@@ -114,7 +114,7 @@ tb = get(app.PW.table, 'Data');
 okW = ishghandle(app.PW.Fig) && size(tb, 1) == numel(app.ParamKeys) + 3 && ...
     strcmp(get(app.PW.cmin, 'String'), sprintf('%.4g', c(1)));
 set(app.PW.cmap, 'Value', 2); app.onParamCmap(2);
-okW = okW && get(app.PW.washIn, 'Value') == 2;      % default: maximum up-slope
+okW = okW && get(app.PW.washIn, 'Value') == 3;      % default: max slope in the SSS wash-in period
 set(app.PW.washIn, 'Value', 1); app.onParamOptions(); app.onParamCompute();
 okW = okW && strcmp(app.ParamCmap, 'turbo') && strcmp(D.ParamOpts.WashIn, 'onset') && D.hasMaps(bf);
 nfail = nfail + check('parameter window (table, colour map, options)', okW, size(tb, 1));

@@ -237,6 +237,46 @@ classdef GRASPilot < handle
             obj.applyLoadGeometry(D, opts);
             obj.LastDir = fileparts(file);
             obj.setData(D);
+            if ~isempty(D.FastCopyFile)
+                obj.setStatus(sprintf('Opened from the fast-open copy %s. %s', D.FastCopyFile, get(obj.H.status, 'String')));
+            elseif strcmp(D.Mode, 'subspace')
+                fi = dir(file);
+                if ~isempty(fi) && fi.bytes > 1e9
+                    obj.setStatus([get(obj.H.status, 'String') ' Tip: File > Save fast-open copy makes ' ...
+                        'reopening this file several times faster.']);
+                end
+            end
+        end
+
+        function file = onSaveFastCopy(obj)
+            % save a fast-open copy of the current .mat reconstruction
+            file = '';
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            if ~strcmp(D.SourceType, 'mat') || exist(D.SourceFile, 'file') ~= 2 || ~isempty(D.FastCopyFile)
+                obj.inform(['A fast-open copy is made from a .mat reconstruction opened from its original ' ...
+                    'file.'], 'Fast-open copy');
+                return
+            end
+            file = GRASPilotData.fastCopyName(D.SourceFile);
+            if ~obj.Quiet
+                b = obj.ask(sprintf(['Save a fast-open copy as\n%s ?\n\nIt holds the cropped, normalized ' ...
+                    'coefficients in single precision (about %.0f MB). Opening the original file then reads ' ...
+                    'it instead, as long as the original is unchanged.'], file, ...
+                    numel(D.C) * 4 * (1 + ~isreal(D.C)) / 2^20), 'Fast-open copy', {'Save', 'Cancel'}, 'Save');
+                if ~strcmp(b, 'Save'), file = ''; return; end
+            end
+            wb = obj.wbOpen('Saving the fast-open copy...');
+            try
+                D.saveFastCopy(file);
+            catch err
+                obj.wbClose(wb);
+                obj.showError(err, 'Could not save the fast-open copy');
+                file = '';
+                return
+            end
+            obj.wbClose(wb);
+            obj.setStatus(['Saved the fast-open copy ' file '.']);
         end
 
         function openFolder(obj, folder, opts)
@@ -1080,9 +1120,15 @@ classdef GRASPilot < handle
             if ~obj.requireData(), return; end
             if ~isempty(varargin), obj.Data.setParamOptions(varargin{:}); end
             if ~obj.syncRefWindow()
-                obj.inform(['Wash-in in the SSS wash-in period needs a reference ROI in the superior ' ...
-                    'sagittal sinus with a rising curve: press Auto SSS (or draw an ROI whose name ' ...
-                    'contains SSS). Wash-in slopes are empty until then.'], 'Parameters');
+                q = ['Wash-in in the SSS wash-in period (the default) needs a reference ROI in the ' ...
+                    'superior sagittal sinus with a rising curve. Wash-in slopes are empty until there is one.'];
+                if obj.Quiet
+                    obj.inform([q ' Press Auto SSS (or draw an ROI whose name contains SSS).'], 'Parameters');
+                elseif strcmp(obj.ask(sprintf('%s\n\nDetect the SSS now (Auto SSS)?', q), 'Parameters', ...
+                        {'Auto SSS', 'Continue without'}, 'Auto SSS'), 'Auto SSS')
+                    obj.autoSSS();
+                    obj.syncRefWindow();
+                end
             end
             ok = obj.ensureMaps(false);
         end
@@ -2071,6 +2117,8 @@ classdef GRASPilot < handle
             m = uimenu(obj.Fig, 'Label', 'File');
             uimenu(m, 'Label', 'Open (.mat, NIfTI, DICOM file)...', 'Callback', @(s, e) obj.onOpen());
             uimenu(m, 'Label', 'Open folder (DICOM, NIfTI, .mat)...', 'Callback', @(s, e) obj.onOpenFolder());
+            uimenu(m, 'Label', 'Save fast-open copy of the .mat...', 'Callback', @(s, e) obj.onSaveFastCopy(), ...
+                'Separator', 'on');
             uimenu(m, 'Label', 'Save ROIs (session)...', 'Separator', 'on', 'Callback', @(s, e) obj.onSaveROIs());
             uimenu(m, 'Label', 'Load ROIs (session)...', 'Callback', @(s, e) obj.onLoadROIs());
             uimenu(m, 'Label', 'Import mask NIfTI...', 'Callback', @(s, e) obj.onImportMask());
@@ -3443,7 +3491,7 @@ classdef GRASPilot < handle
             obj.ctl(P, x3, 124, 420, 112, 'text', { ...
                 'S0 = mean of the baseline frames; times from the end of the baseline', ...
                 'PE = Smax - S0;  relative PE = 100 PE / S0', ...
-                'Wash-in = maximum up-slope, or PE / (TP - To)', ...
+                'Wash-in = max slope in the SSS wash-in period, max up-slope or PE/(TP - To)', ...
                 'Washout = slope from the peak to the end (negative = washout)', ...
                 'AUC = area of S - S0 after the baseline (window)', ...
                 '/SSS = divided by the value of the SSS ROI mean curve', ...

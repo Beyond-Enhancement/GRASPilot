@@ -9,8 +9,9 @@ function P = graspilot_curve_params(S, t, bf, opts)
 %   baseFrames  pre-contrast frames; the last one is taken as the end of the
 %               baseline (contrast injection)
 %   opts        struct, all fields optional:
-%     WashIn     'max' (default): maximum up-slope between consecutive frames
-%                from the end of the baseline to the peak (Li et al. 2024);
+%     WashIn     'sss' (default when WashInFrames is given, else 'max'):
+%                'max': maximum up-slope between consecutive frames from
+%                the end of the baseline to the peak (Li et al. 2024);
 %                'onset': dS / (TP - To), the line from the onset to the
 %                peak (Khalifa et al. 2014); 'sss': maximum
 %                up-slope between consecutive frames inside WashInFrames,
@@ -64,11 +65,13 @@ function P = graspilot_curve_params(S, t, bf, opts)
 %     EndFrame last analysed frame (scalar)
 
 if nargin < 4 || isempty(opts), opts = struct(); end
-if ~isfield(opts, 'WashIn'), opts.WashIn = 'max'; end
 if ~isfield(opts, 'WashOut'), opts.WashOut = 'regression'; end
 if ~isfield(opts, 'AUCWindow') || isempty(opts.AUCWindow), opts.AUCWindow = Inf; end
 if ~isfield(opts, 'OnsetFrac'), opts.OnsetFrac = 0.1; end
 if ~isfield(opts, 'WashInFrames'), opts.WashInFrames = []; end
+if ~isfield(opts, 'WashIn')
+    if numel(opts.WashInFrames) == 2, opts.WashIn = 'sss'; else, opts.WashIn = 'max'; end
+end
 if ~isfield(opts, 'EndFrame') || isempty(opts.EndFrame), opts.EndFrame = Inf; end
 if ~isfield(opts, 'EndTime') || isempty(opts.EndTime), opts.EndTime = Inf; end
 if ~isfield(opts, 'EarlyTime') || isempty(opts.EarlyTime), opts.EarlyTime = 60; end

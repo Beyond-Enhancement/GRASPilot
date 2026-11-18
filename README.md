@@ -51,6 +51,18 @@ there is a choice. DICOM files are recognized by their content, so names without
 extension (e.g. `IM_0001`, `I1234`) and files without the 128-byte preamble work, and
 subfolders (patient/study/series) are searched. Other files in the folder are ignored.
 
+**Opening speed.** Preparing a `.mat` reconstruction (crop, normalization to the global
+maximum) evaluates only voxels whose upper bound can exceed the current maximum; the result
+is identical to ReadData.m. Reading the file itself takes longest for large double-precision,
+compressed files. **File > Save fast-open copy** writes the cropped, normalized coefficients
+in single precision, uncompressed, next to the file (`<name>_graspilot.mat`, about 1/8 of a
+double-precision source). Opening the original `.mat` then reads the copy instead, as long as
+the original is unchanged (same size and date) and the crop and normalization settings
+match; the load dialog says so. In a reconstruction pipeline, saving `vk_all` as single and
+with `save(..., '-v7.3', '-nocompression')` also speeds up reading. DICOM headers are parsed
+only up to group 0028 for single-frame images, with the pixel data located at the end of the
+file (verified), so each file is read once for its header and once for its pixels.
+
 **NIfTI and DICOM** need no dialog:
 
 - Geometry from the header; exports keep the scanner coordinates of the input, so they
@@ -198,7 +210,7 @@ frame (injection); seconds if s/frame is set, else frames.
 |---|---|---|
 | Peak enhancement (PE) | Smax - S0 (maximum after the baseline) | a.u. |
 | Relative peak enhancement | 100 PE / S0 | % |
-| Wash-in slope (WIS) | maximum up-slope between consecutive frames before the peak (default; Li 2024); options: PE / (TP - To), onset To to peak TP (Khalifa 2014), or maximum slope in the SSS wash-in period | a.u./s |
+| Wash-in slope (WIS) | maximum slope in the SSS wash-in period (default, see below; needs an SSS ROI); options: maximum up-slope between consecutive frames before the peak (Li 2024), or PE / (TP - To), onset To to peak TP (Khalifa 2014) | a.u./s |
 | Washout slope (WOS) | least-squares slope from the peak to the end (at least 3 frames); option: 2 points. Negative = washout | a.u./s |
 | AUC | area of S - S0 after the baseline, whole curve or first N s (IAUC60, IAUC90) | a.u. x s |
 | TTP, onset, T90 | time to peak, to onset (last frame < 10% of PE), to 90% of PE | s |
@@ -211,7 +223,7 @@ frame (injection); seconds if s/frame is set, else frames.
 
 - **Analysis endpoint** ("Analyze up to"): only the first N s or frames are used for every
   parameter; marked by an orange line.
-- **SSS wash-in period** (Lee, Berger et al., Neurosurgery 2023;92:497): the frames around
+- **SSS wash-in period** (default wash-in method; Lee, Berger et al., Neurosurgery 2023;92:497): the frames around
   the steepest rise of the SSS curve where its slope stays >= 50% of the steepest
   (`RefSlopeFrac`); the wash-in slope is the maximum slope in that period. The 50% and
   maximum-slope rules are this tool's reading of the paper.
@@ -449,7 +461,7 @@ issues). In code: `graspilot_version()` or `GRASPilot.versionInfo()`. When taggi
 |---|---|
 | `GRASPilot.m`, `graspilot_app.m` | GUI; launcher / compiler entry point |
 | `graspilot_version.m` | version, git revision and repository URL |
-| `GRASPilotData.m` | data model: loading, frame synthesis, orientation, maps, PK maps, affine |
+| `GRASPilotData.m` | data model: loading (incl. fast-open copies), frame synthesis, orientation, maps, PK maps, affine |
 | `graspilot_load_dialog.m`, `graspilot_dicom_read.m` | `.mat` dialog; DICOM reader |
 | `graspilot_folder_contents.m`, `graspilot_is_dicom.m` | what a folder holds; DICOM detection by content |
 | `graspilot_nifti_read.m`, `graspilot_nifti_write.m`, `graspilot_write_dce_nifti.m` | NIfTI I/O, series + JSON sidecar |

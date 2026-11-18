@@ -11,8 +11,26 @@ function out = graspilot_load_dialog(matFile, opts)
 out = [];
 geomOnly = isempty(matFile);
 names = {}; info = [];
+fastNote = '';
 if ~geomOnly
-    info = whos('-file', matFile);
+    % a current fast-open copy (GRASPilotData.saveFastCopy) also holds the
+    % variable listing: no need to scan the large file
+    q = struct('CoefVar', 'vk_all', 'BasisVar', 'basis_all', 'CropFactor', [], 'Normalize', []);
+    fq = fieldnames(q);
+    for i = 1:numel(fq)
+        if isfield(opts, fq{i}) && ~isempty(opts.(fq{i})), q.(fq{i}) = opts.(fq{i}); end
+    end
+    fc = GRASPilotData.fastCopyFor(matFile, q);
+    if ~isempty(fc)
+        try
+            S = load(fc, 'graspilot_fast');
+            info = S.graspilot_fast.SourceWhos;
+            fastNote = 'Fast-open copy found: the prepared data are read from it.';
+        catch
+            info = [];
+        end
+    end
+    if isempty(info), info = whos('-file', matFile); end
     names = {info.name};
 end
 numIdx = [];
@@ -217,6 +235,7 @@ uiwait(d);
         catch
             msg = 'Select the variables to use.';
         end
+        if ~isempty(fastNote), msg = sprintf('%s\n%s', msg, fastNote); end
         set(hInfo, 'String', msg);
     end
 
