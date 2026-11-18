@@ -24,7 +24,8 @@ classdef GRASPilot < handle
 %   Keys:   Left/Right frame -/+1 (Shift: 10), Up/Down slice, Home/End,
 %           Space play, N/C/B/E tools, [ ] brush size, D toggle 3D,
 %           P preview, S subtraction view, G grow from crosshair,
-%           M parameter map overlay, X crosshair on/off,
+%           M parameter map overlay, X crosshair on/off, R go to the
+%           active ROI (or click its row in the ROI list),
 %           Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo.
 %
 %   No toolboxes are required. Nothing is written except files you export.
@@ -1724,9 +1725,8 @@ classdef GRASPilot < handle
             obj.setVoxels(k, find(obj.Masks{k}), false);
             obj.addVoxels(k, lin);
             obj.commitAction('Auto SSS');
-            obj.setPos(round(info.Centroid));
             obj.afterMaskChange();
-            if obj.ShowCursorTIC, obj.updateCursorTC(false); end
+            obj.goToROI(k);
             obj.setStatus([info.Message ' Check it on the three views; edit or undo as needed.']);
             r = k;
         end
@@ -2134,6 +2134,7 @@ classdef GRASPilot < handle
             uimenu(m, 'Label', 'Clear active ROI on slice', 'Separator', 'on', 'Callback', @(s, e) obj.clearROI('slice'));
             uimenu(m, 'Label', 'Clear active ROI (all slices)', 'Callback', @(s, e) obj.clearROI('all'));
             uimenu(m, 'Label', 'Fill holes in active ROI', 'Callback', @(s, e) obj.fillHoles());
+            uimenu(m, 'Label', 'Go to active ROI   (R)', 'Callback', @(s, e) obj.goToROI());
             uimenu(m, 'Label', 'Detect superior sagittal sinus (auto ROI)', 'Separator', 'on', ...
                 'Callback', @(s, e) obj.autoSSS());
             uimenu(m, 'Label', 'SSS ROI from crosshair (crosshair on the sinus)', ...
@@ -2443,7 +2444,8 @@ classdef GRASPilot < handle
                 'ColumnEditable', [false true true false false], 'ColumnWidth', {28, 140, 42, 64, 56}, ...
                 'RowName', [], 'Data', cell(0, 5), 'FontSize', 9, ...
                 'CellEditCallback', @(s, e) obj.onTableEdit(e), ...
-                'CellSelectionCallback', @(s, e) obj.onTableSelect(e));
+                'CellSelectionCallback', @(s, e) obj.onTableSelect(e), ...
+                'TooltipString', 'Click an ROI to go to it (middle axial slice, crosshair on the ROI); R does the same for the active ROI');
             obj.reg(obj.H.roiTable, P, 8, 89, -8, -8);
         end
 
@@ -3376,6 +3378,7 @@ classdef GRASPilot < handle
                 case 'g', if ~ctrl, obj.growFromCrosshair(); end
                 case 'm', if ~ctrl, obj.setParamDisplay(~obj.ParamOn); end
                 case 'x', if ~ctrl, obj.setFlag('ShowCross', ~obj.ShowCross); end
+                case 'r', if ~ctrl, obj.goToROI(); end
                 case 'leftbracket', obj.setBrushR(obj.BrushR / 1.25);
                 case 'rightbracket', obj.setBrushR(obj.BrushR * 1.25);
             end
@@ -3807,9 +3810,9 @@ classdef GRASPilot < handle
             obj.setVoxels(k, find(obj.Masks{k}), false);
             obj.addVoxels(k, lin);
             obj.commitAction('Auto AIF');
-            obj.setPos(round(info.Centroid));
             obj.afterMaskChange();
-            obj.setStatus([info.Message ' Edit or undo as needed.']);
+            loc = obj.goToROI(k);
+            obj.setStatus([info.Message ' ' loc ' Edit or undo as needed.']);
             r = k;
         end
 
@@ -5029,9 +5032,61 @@ classdef GRASPilot < handle
         function onTableSelect(obj, e)
             if isempty(e.Indices), return; end
             r = e.Indices(1, 1);
-            if r >= 1 && r <= numel(obj.ROIs) && r ~= obj.ActiveROI
-                obj.setActiveROI(r);
+            if r < 1 || r > numel(obj.ROIs), return; end
+            if r ~= obj.ActiveROI, obj.setActiveROI(r); end
+            if e.Indices(1, 2) ~= 3                   % not the Show checkbox: go to the ROI
+                obj.goToROI(r);
             end
+        end
+
+        function msg = goToROI(obj, r)
+            % Move the crosshair into ROI r: its middle axial slice (middle of the
+            % slices it occupies, or the nearest occupied one) and, on that slice,
+            % the ROI voxel nearest the ROI's centre, so all three views cut it.
+            % Hidden ROIs are shown; a zoomed view is panned to the voxel. msg:
+            % where the crosshair went (also shown in the status bar).
+            msg = '';
+            if isempty(obj.Data) || isempty(obj.ROIs), return; end
+            if nargin < 2, r = obj.ActiveROI; end
+            if r < 1 || r > numel(obj.ROIs), return; end
+            nm = obj.ROIs(r).Name;
+            n = obj.Data.canonSize(); n(end + 1:3) = 1;
+            [i, j, k] = ind2sub(n, find(obj.Masks{r}));
+            if isempty(i)
+                msg = sprintf('ROI "%s" is empty.', nm);
+                obj.setStatus(msg);
+                return
+            end
+            ks = unique(k);
+            [~, q] = min(abs(ks - (ks(1) + ks(end)) / 2));
+            kk = ks(q);
+            on = k == kk;
+            ii = i(on); jj = j(on);
+            [~, q] = min((ii - mean(ii)) .^ 2 + (jj - mean(jj)) .^ 2);
+            c = [ii(q) jj(q) kk];
+            shown = '';
+            if ~obj.ROIs(r).Visible
+                obj.ROIs(r).Visible = true;
+                obj.refreshROIList();
+                obj.refreshOverlays();
+                obj.refreshTIC();
+                shown = ' It was hidden and is now shown.';
+            end
+            obj.setPos(c);
+            if obj.ShowCursorTIC, obj.updateCursorTC(false); end
+            for v = 1:3                               % pan zoomed views to the voxel
+                p = obj.canon2screen(v, c);
+                ax = obj.V(v).Ax;
+                xl = get(ax, 'XLim'); yl = get(ax, 'YLim');
+                if p(1) < xl(1) || p(1) > xl(2), xl = xl - mean(xl) + p(1); end
+                if p(2) < yl(1) || p(2) > yl(2), yl = yl - mean(yl) + p(2); end
+                set(ax, 'XLim', xl, 'YLim', yl);
+            end
+            a = obj.ViewAxis(1);
+            msg = sprintf(['ROI "%s" (%d voxels) on %s slices %d-%d: showing slice %d, ' ...
+                'crosshair on an ROI voxel [%d %d %d].%s'], nm, numel(i), lower(obj.ViewNames{1}), ...
+                ks(1), ks(end), c(a), c, shown);
+            obj.setStatus(msg);
         end
 
         function onOpen(obj)
@@ -5217,6 +5272,7 @@ classdef GRASPilot < handle
                 '  G                grow from crosshair (threshold window)'
                 '  M                parameter colour map on / off'
                 '  X                crosshair on / off'
+                '  R                go to the active ROI (also: click it in the ROI list)'
                 '  Ctrl+Z / Ctrl+Y  undo / redo (Ctrl+Shift+Z also redoes)'
                 ''
                 'ENHANCING TUMOR FROM THE SUBTRACTION MAP (last - first frame)'

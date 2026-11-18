@@ -114,7 +114,8 @@ Middle: frame slider, s/frame, time, play. Bottom: time-intensity curves and ROI
 Mouse: left = tool, right-drag = window/level, shift/middle-drag = pan, wheel = slice,
 Ctrl+wheel = zoom, click on the curves = jump to that frame. Keys: Left/Right frame
 (Shift: 10), Up/Down slice, Space play, N/C/B/E tools, [ ] brush size, D 3D, P preview,
-S subtraction view, G grow, M parameter map, X crosshair, Ctrl+Z/Y undo/redo (Help lists all).
+S subtraction view, G grow, M parameter map, X crosshair, R go to the active ROI, Ctrl+Z/Y
+undo/redo (Help lists all).
 Progress bars (loading, maps, model fits, motion) show the estimated time remaining once a
 few seconds of progress allow an estimate.
 
@@ -124,7 +125,8 @@ few seconds of progress allow an estimate.
   Brush/Eraser (radius in mm, 2D or 3D). Exclusive ROIs (default) prevent overlap. 100 undo
   steps. Clear slice/ROI, Fill holes (2D).
 - **ROIs:** Auto SSS, + SSS, + Tumor (numbered), + Custom; rename, recolor, hide, delete;
-  voxels and mL listed.
+  voxels and mL listed. Click an ROI in the list (or press R for the active one) to go to it:
+  its middle axial slice, with the crosshair on one of its voxels.
 - **Threshold maps:** signal at the frame, subtraction post - pre (default), frame -
   baseline, relative enhancement, peak - baseline, peak relative enhancement (baseline =
   mean of the baseline frames, detected automatically, see below). Each works with Preview,
@@ -305,7 +307,8 @@ keep it fixed across scans. Baseline frames must be strictly pre-contrast.
 - *Auto AIF*: arterial voxels found automatically (**Auto AIF** button, or chosen in the
   menu): among strongly enhancing, washing-out voxels inside the head (12 mm from its surface,
   so no scalp arteries), those peaking earliest; the 20 most enhancing of them form the
-  editable ROI "AIF (auto)". Scripting: `[lin, info] = graspilot_detect_aif(D)`.
+  editable ROI "AIF (auto)"; the crosshair goes to one of its voxels (click it in the ROI
+  list to come back). Scripting: `[lin, info] = graspilot_detect_aif(D)`.
 
 Small arteries are partial-volumed, so an arterial input is often too low (Ktrans and vp
 too high). Check the curve; the VCAI corrects the amplitude with a neighbour ring. Vessel
