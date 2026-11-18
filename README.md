@@ -100,7 +100,7 @@ Middle: frame slider, s/frame, time, play. Bottom: time-intensity curves and ROI
 Mouse: left = tool, right-drag = window/level, shift/middle-drag = pan, wheel = slice,
 Ctrl+wheel = zoom, click on the curves = jump to that frame. Keys: Left/Right frame
 (Shift: 10), Up/Down slice, Space play, N/C/B/E tools, [ ] brush size, D 3D, P preview,
-S subtraction view, G grow, M parameter map, Ctrl+Z/Y undo/redo (Help lists all).
+S subtraction view, G grow, M parameter map, X crosshair, Ctrl+Z/Y undo/redo (Help lists all).
 
 ## Segmentation
 

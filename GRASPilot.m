@@ -24,7 +24,7 @@ classdef GRASPilot < handle
 %   Keys:   Left/Right frame -/+1 (Shift: 10), Up/Down slice, Home/End,
 %           Space play, N/C/B/E tools, [ ] brush size, D toggle 3D,
 %           P preview, S subtraction view, G grow from crosshair,
-%           M parameter map overlay,
+%           M parameter map overlay, X crosshair on/off,
 %           Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo.
 %
 %   No toolboxes are required. Nothing is written except files you export.
@@ -2254,6 +2254,7 @@ classdef GRASPilot < handle
             obj.H.chkOutline = obj.ctl(P, 10, 600, 80, 20, 'checkbox', 'Outline', 'Value', obj.ShowOutline, ...
                 'Callback', @(s, e) obj.setFlag('ShowOutline', get(s, 'Value')));
             obj.H.chkCross = obj.ctl(P, 95, 600, 90, 20, 'checkbox', 'Crosshair', 'Value', obj.ShowCross, ...
+                'TooltipString', 'Show the crosshair (key X)', ...
                 'Callback', @(s, e) obj.setFlag('ShowCross', get(s, 'Value')));
             obj.H.chkCursor = obj.ctl(P, 190, 600, 100, 20, 'checkbox', 'Cursor TIC', 'Value', obj.ShowCursorTIC, ...
                 'TooltipString', 'Plot the time course of the crosshair voxel', ...
@@ -3293,6 +3294,7 @@ classdef GRASPilot < handle
                 case 's', if ~ctrl, obj.toggleSubView(); end
                 case 'g', if ~ctrl, obj.growFromCrosshair(); end
                 case 'm', if ~ctrl, obj.setParamDisplay(~obj.ParamOn); end
+                case 'x', if ~ctrl, obj.setFlag('ShowCross', ~obj.ShowCross); end
                 case 'leftbracket', obj.setBrushR(obj.BrushR / 1.25);
                 case 'rightbracket', obj.setBrushR(obj.BrushR * 1.25);
             end
@@ -5027,6 +5029,7 @@ classdef GRASPilot < handle
                 '  S                show subtraction map (post - pre frame)'
                 '  G                grow from crosshair (threshold window)'
                 '  M                parameter colour map on / off'
+                '  X                crosshair on / off'
                 '  Ctrl+Z / Ctrl+Y  undo / redo (Ctrl+Shift+Z also redoes)'
                 ''
                 'ENHANCING TUMOR FROM THE SUBTRACTION MAP (last - first frame)'
