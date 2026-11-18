@@ -187,6 +187,14 @@ ok = mean(trr.SSS(linC)) > 0.95 && infoC.ThickestSlice == 20 && isempty(linT) &&
     ~isempty(strfind(infoT.Message, 'wash out'));
 nfail = nfail + check('SSS from a crosshair seed; tumour seed rejected', ok, numel(linC));
 
+% ---------------------------------------------------------------- 3d. version
+gv = graspilot_version();
+ok = ~isempty(regexp(gv.Version, '^\d+\.\d+\.\d+$', 'once')) && ...
+    strcmp(gv.URL, 'https://github.com/Beyond-Enhancement/GRASPilot') && ~isempty(strfind(gv.Text, gv.Version)) && ...
+    (isempty(gv.Revision) || ~isempty(strfind(gv.Details, regexprep(gv.Revision, '-.*$', ''))) || ...
+    ~isempty(strfind(gv.Details, 'Commit')));
+nfail = nfail + check(['version ' gv.Text], ok, 0);
+
 % ---------------------------------------------------------------- 4. enhancement maps
 D.setOrientation('axial', false, [0 0 0]);
 D.computeMaps(1:3);

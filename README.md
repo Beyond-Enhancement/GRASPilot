@@ -428,11 +428,22 @@ app.exportMaskNifti('mask.nii.gz');
 
 Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a graspilot_*.m`.
 
+## Version and updates
+
+Help > About shows the version: the latest GitHub release the code is based on (e.g.
+`0.1.0`) and, when GRASPilot runs from a git checkout, the exact revision from `git describe`
+(e.g. `v0.1.0-12-gab9e173` = 12 commits after release v0.1.0, `-dirty` = local changes).
+Exports (JSON sidecar, spreadsheet Info/Settings sheets) and ROI sessions record the same
+string. Help > GitHub page opens https://github.com/Beyond-Enhancement/GRASPilot (releases,
+issues). In code: `graspilot_version()`. When tagging a release `vX.Y.Z`, set `Version` in
+`graspilot_version.m` to `X.Y.Z`.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `GRASPilot.m`, `graspilot_app.m` | GUI; launcher / compiler entry point |
+| `graspilot_version.m` | version, git revision and repository URL |
 | `GRASPilotData.m` | data model: loading, frame synthesis, orientation, maps, PK maps, affine |
 | `graspilot_load_dialog.m`, `graspilot_dicom_read.m` | `.mat` dialog; DICOM reader |
 | `graspilot_folder_contents.m`, `graspilot_is_dicom.m` | what a folder holds; DICOM detection by content |

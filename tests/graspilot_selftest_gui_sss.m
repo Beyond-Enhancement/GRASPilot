@@ -95,6 +95,10 @@ nfail = nfail + check('auto colour range from tumor ROIs (2-98%)', abs(c(1) - vv
     && abs(c(2) - vv(round(0.98 * numel(vv)))) < 1e-5, c(2));
 app.onKey(struct('Key', 'm', 'Modifier', {{}}, 'Character', 'm'));
 nfail = nfail + check('key M toggles the map', ~app.ParamOn && isempty(app.ParamA{1}), 0);
+ab = app.showAbout();
+gv = graspilot_version();
+nfail = nfail + check('Help > About: version and GitHub URL', ~isempty(strfind(ab, gv.Text)) && ...
+    ~isempty(strfind(ab, gv.URL)), 0);
 app.onKey(struct('Key', 'x', 'Modifier', {{}}, 'Character', 'x'));
 okX = ~app.ShowCross && get(app.H.chkCross, 'Value') == 0;
 app.onKey(struct('Key', 'x', 'Modifier', {{}}, 'Character', 'x'));

@@ -109,7 +109,6 @@ classdef GRASPilot < handle
     end
 
     properties (Constant)
-        Version = '1.0';
         ViewAxis = [3 2 1];
         ViewNames = {'Axial', 'Coronal', 'Sagittal'};
         ViewLabels = {{'R', 'L', 'A', 'P'}, {'R', 'L', 'S', 'I'}, {'A', 'P', 'S', 'I'}};
@@ -1778,7 +1777,8 @@ classdef GRASPilot < handle
             D = obj.Data;
             S = struct();
             S.Format = 'GRASPilot ROI session';
-            S.Version = obj.Version;
+            vv = graspilot_version();
+            S.Version = vv.Text;
             S.Saved = datestr(now, 'yyyy-mm-dd HH:MM:SS');
             S.SourceFile = D.SourceFile;
             S.NativeSize = D.NativeSize;
@@ -2100,10 +2100,33 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.openMotionWindow());
             m = uimenu(obj.Fig, 'Label', 'Help');
             uimenu(m, 'Label', 'Mouse and keyboard...', 'Callback', @(s, e) obj.showHelp());
-            uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.inform(sprintf(['GRASPilot %s\n' ...
-                'Frames are synthesized from the subspace coefficients exactly as in ReadData.m ' ...
-                '(TempPCASub adjoint, CropImg, global-max normalization).\nNo toolboxes required; ' ...
-                'runs offline.'], obj.Version), 'About'));
+            uimenu(m, 'Label', 'GitHub page (updates, issues)...', 'Callback', @(s, e) obj.openRepoPage());
+            uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.showAbout());
+        end
+
+        function s = showAbout(obj)
+            % version (release and git revision) and the GitHub repository
+            v = graspilot_version();
+            s = sprintf(['GRASPilot %s\n%s.\n\n%s\n\nFrames are synthesized from the subspace coefficients ' ...
+                'exactly as in ReadData.m (TempPCASub adjoint, CropImg, global-max normalization). No toolboxes ' ...
+                'required; runs offline.'], v.Text, v.Details, v.URL);
+            if obj.Quiet
+                fprintf('[About] %s\n', s);
+                return
+            end
+            b = obj.ask(s, 'About GRASPilot', {'Open GitHub page', 'Close'}, 'Close');
+            if strcmp(b, 'Open GitHub page'), obj.openRepoPage(); end
+        end
+
+        function openRepoPage(obj)
+            url = graspilot_version().URL;
+            ok = false;
+            try
+                st = web(url, '-browser');
+                ok = isempty(st) || st == 0;
+            catch
+            end
+            if ~ok, obj.inform(sprintf('GitHub repository:\n%s', url), 'GRASPilot'); end
         end
 
         function h = ctl(obj, parent, x, top, w, ht, style, str, varargin)
