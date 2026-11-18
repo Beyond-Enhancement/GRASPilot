@@ -1113,7 +1113,7 @@ classdef GRASPilotData < handle
             M.TimeUnit = 's';
             if ~obj.hasTiming(), M.TimeUnit = 'frame'; end
             names = {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC', 'T90', 'REearly', ...
-                'SER', 'WashoutPct', 'Plateau', 'CurveType'};
+                'SER', 'WashoutPct', 'Plateau', 'CurveType', 'WashInSSS', 'WashInMax', 'WashInOnset'};
             src = names; src{1} = 'S0'; src{2} = 'Smax';
             for i = 1:numel(names)
                 M.(names{i}) = zeros(nx, ny, nz, 'single');
@@ -1610,6 +1610,7 @@ classdef GRASPilotData < handle
 
         function A = canonMap(obj, name)
             % name: Baseline | Max | PeakEnh | RelEnh | TTP | Onset | WashIn | WashOut | AUC
+            % | WashInSSS | WashInMax | WashInOnset (each wash-in method) | ...
             if isempty(obj.Maps)
                 error('GRASPilotData:maps', 'Enhancement maps have not been computed.');
             end
@@ -1620,7 +1621,7 @@ classdef GRASPilotData < handle
             M = obj.Maps;
             switch name
                 case {'Baseline', 'Max', 'TTP', 'Onset', 'WashIn', 'WashOut', 'AUC', 'T90', 'REearly', ...
-                        'SER', 'WashoutPct', 'Plateau', 'CurveType'}
+                        'SER', 'WashoutPct', 'Plateau', 'CurveType', 'WashInSSS', 'WashInMax', 'WashInOnset'}
                     A = M.(name);
                 case 'MITR'
                     A = (M.Max - M.Baseline) ./ M.TTP;

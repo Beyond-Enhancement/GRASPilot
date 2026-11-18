@@ -59,6 +59,7 @@ classdef GRASPilot < handle
         ParamHeadOnly = true;
         RefROIName = '';        % reference ROI for /SSS normalization ('' = first ROI named SSS*)
         IncludeRefStats = false;
+        CompareWashIn = false;      % list the wash-in slope of every method (maps, statistics, exports)
         PW = struct();          % parameter window handles
         KW = struct();          % pharmacokinetic model window handles
         KWRoi = '';             % ROI whose curve is shown in the PK window
@@ -129,6 +130,10 @@ classdef GRASPilot < handle
             'Onset (bolus arrival) time', 'Time to 90% of peak', 'Max intensity-time ratio', ...
             'Rel. enhancement, early frame', 'Signal enhancement ratio', 'Washout percentage', ...
             'Plateau enhancement', 'Curve type (1 pers, 2 plat, 3 wash)'};
+        WashInKeys = {'WIS_PERIOD', 'WIS_PERIOD_SSS', 'WIS_MAXUP', 'WIS_MAXUP_SSS', 'WIS_ONSET', 'WIS_ONSET_SSS'};
+        WashInLabels = {'Wash-in: SSS period max slope', 'Wash-in: SSS period / SSS', ...
+            'Wash-in: max up-slope', 'Wash-in: max up-slope / SSS', ...
+            'Wash-in: PE / (TP - To)', 'Wash-in: PE / (TP - To) / SSS'};
         CurveTypeNames = {'Curve type I (persistent) fraction', 'Curve type II (plateau) fraction', ...
             'Curve type III (washout) fraction'};
         RatioClassNames = {'RATIO class: two-compartment fraction', 'RATIO class: one-compartment fast fraction', ...
@@ -1073,11 +1078,13 @@ classdef GRASPilot < handle
         end
 
         function ok = syncRefWindow(obj)
-            % WashIn = 'sss': the wash-in period is that of the steepest rise
-            % of the reference (SSS) ROI mean curve; keep it up to date
+            % The SSS wash-in period (frames of the steepest rise of the
+            % reference ROI mean curve; used by WashIn = 'sss' and by the
+            % wash-in comparison) is kept up to date. ok: false if WashIn =
+            % 'sss' and there is no reference curve.
             ok = true;
             D = obj.Data;
-            if isempty(D) || ~strcmpi(D.ParamOpts.WashIn, 'sss'), return; end
+            if isempty(D), return; end
             w = [];
             r = obj.refIndex();
             if r > 0 && any(obj.Masks{r}(:))
@@ -1085,7 +1092,7 @@ classdef GRASPilot < handle
                 w = graspilot_ref_window(obj.ROIs(r).Stats.mean, D.paramTimes(), ...
                     obj.BaseFrames(1):obj.BaseFrames(2), D.ParamOpts);
             end
-            ok = ~isempty(w);
+            ok = ~isempty(w) || ~strcmpi(D.ParamOpts.WashIn, 'sss');
             if ~isequal(w, D.ParamOpts.WashInFrames), D.setParamOptions('WashInFrames', w); end
         end
 
@@ -1207,7 +1214,7 @@ classdef GRASPilot < handle
             switch key
                 case {'PE', 'PLAT'}, u = 'a.u.';
                 case {'RE', 'REE', 'WOP'}, u = '%';
-                case {'WIS', 'WOS', 'MITR'}, u = ['a.u./' ts];
+                case {'WIS', 'WOS', 'MITR', 'WIS_PERIOD', 'WIS_MAXUP', 'WIS_ONSET'}, u = ['a.u./' ts];
                 case 'AUC', u = ['a.u.*' ts];
                 case {'TTP', 'BAT', 'T90'}, u = ts;
                 case 'SER', u = 'ratio';
@@ -1353,8 +1360,11 @@ classdef GRASPilot < handle
             obj.syncParamWindow();
         end
 
-        function [hdr, rows] = paramStatsTable(obj)
-            % descriptive statistics of every parameter in each (tumor) ROI
+        function [hdr, rows] = paramStatsTable(obj, which)
+            % descriptive statistics of every parameter in each (tumor) ROI;
+            % which = 'pk': the pharmacokinetic parameters only
+            if nargin < 2, which = 'all'; end
+            pkOnly = strcmp(which, 'pk');
             hdr = {'ROI', 'Parameter', 'Unit', 'N', 'Mean', 'SD', 'Median', 'Q1', 'Q3', 'P10', 'P90', ...
                 'Min', 'Max', 'ROI mean curve'};
             rows = cell(0, numel(hdr));
@@ -1363,6 +1373,10 @@ classdef GRASPilot < handle
             ra = [obj.arteryIndex() obj.autoAIFIndex()];   % vessel ROIs are not tumor ROIs
             pkOn = obj.pkReady();
             keys = obj.paramKeyList(pkOn);
+            if pkOnly
+                if ~pkOn, return; end
+                keys = obj.Data.PKMaps.Keys;
+            end
             for r = 1:numel(obj.ROIs)
                 if any(r == [rr ra]) && ~obj.IncludeRefStats, continue; end
                 lin = find(obj.Masks{r});
@@ -1381,7 +1395,7 @@ classdef GRASPilot < handle
                 end
                 ct = obj.paramValues('CT', lin);
                 nct = nnz(isfinite(ct));
-                for c = 1:3                      % voxel fractions of the curve types
+                for c = 1:3 * ~pkOnly            % voxel fractions of the curve types (not in the PK table)
                     rows(end + 1, :) = {obj.ROIs(r).Name, obj.CurveTypeNames{c}, '%', nct, ...
                         100 * nnz(ct == c) / max(1, nct), NaN, NaN, NaN, NaN, NaN, NaN, NaN, NaN, ...
                         100 * double(cp.CurveType == c)}; %#ok<AGROW>
@@ -1454,6 +1468,9 @@ classdef GRASPilot < handle
                 'Other definitions', ['T90 = time to 90% of PE; MITR = PE/TTP; SER = (S_early - S0)/(S_late - S0); ' ...
                 'washout % = 100 (Smax - S_last)/Smax; plateau = mean S - S0 of the last 3 analysed frames'];
                 'Wash-in slope', wis;
+                'Wash-in comparison (rows "Wash-in: ...")', GRASPilot.ternaryStr(obj.CompareWashIn, ...
+                ['all three methods: max slope between consecutive frames in the SSS wash-in period; maximum ' ...
+                'up-slope between consecutive frames from the end of the baseline to the peak; PE / (TP - To)'], 'off');
                 'Washout slope', GRASPilot.ternaryStr(strcmpi(o.WashOut, 'endpoints'), '(S_last - S_peak)/(t_last - t_peak)', ...
                 'least-squares slope from the peak (at least the last 3 frames) to the end; negative = washout');
                 'AUC window (s after end of baseline)', num2str(o.AUCWindow);
@@ -2127,6 +2144,8 @@ classdef GRASPilot < handle
             uimenu(m, 'Label', 'Export ROI voxel time series -> spreadsheet...', 'Callback', @(s, e) obj.onExportTS());
             uimenu(m, 'Label', 'Export parameter maps -> NIfTI...', 'Callback', @(s, e) obj.onExportMaps());
             uimenu(m, 'Label', 'Save TIC plot as PNG...', 'Callback', @(s, e) obj.onSavePNG());
+            uimenu(m, 'Label', 'Export case (everything) -> folder...', 'Separator', 'on', ...
+                'Callback', @(s, e) obj.onExportCase());
             uimenu(m, 'Label', 'Close', 'Separator', 'on', 'Callback', @(s, e) obj.close());
             m = uimenu(obj.Fig, 'Label', 'Edit');
             uimenu(m, 'Label', 'Undo   (Ctrl+Z)', 'Callback', @(s, e) obj.undo());
@@ -2154,6 +2173,7 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.openPKWindow());
             uimenu(m, 'Label', 'Show / hide parameter map   (M)', 'Callback', @(s, e) obj.setParamDisplay(~obj.ParamOn));
             uimenu(m, 'Label', 'Export parameter statistics and voxel values...', 'Callback', @(s, e) obj.onExportParams());
+            uimenu(m, 'Label', 'Export pharmacokinetic parameters -> spreadsheet...', 'Callback', @(s, e) obj.onExportPK());
             uimenu(m, 'Label', 'Export parameter maps -> NIfTI...', 'Callback', @(s, e) obj.onExportMaps());
             uimenu(m, 'Label', 'Motion check and correction...', 'Separator', 'on', ...
                 'Callback', @(s, e) obj.openMotionWindow());
@@ -2350,6 +2370,10 @@ classdef GRASPilot < handle
             obj.ctl(P, 10, 704, 90, 24, 'pushbutton', 'Save ROIs', 'Callback', @(s, e) obj.onSaveROIs());
             obj.ctl(P, 104, 704, 90, 24, 'pushbutton', 'Load ROIs', 'Callback', @(s, e) obj.onLoadROIs());
             obj.ctl(P, 198, 704, 92, 24, 'pushbutton', 'Import mask', 'Callback', @(s, e) obj.onImportMask());
+            obj.ctl(P, 10, 736, -10, 26, 'pushbutton', 'Export case (everything)...', 'FontWeight', 'bold', ...
+                'TooltipString', ['One folder with the image and ROI NIfTI files, the ROI session, voxel time ' ...
+                'series, parameter and PK spreadsheets, parameter maps, motion estimate, curve plot and a ' ...
+                'list of the files'], 'Callback', @(s, e) obj.onExportCase());
         end
 
         function buildTime(obj)
@@ -3420,6 +3444,7 @@ classdef GRASPilot < handle
                 'TooltipString', ['SSS wash-in period: frames around the steepest rise of the SSS reference curve ' ...
                 '(Lee, Berger et al. 2023); the tumor slope is its maximum slope in that period'], ...
                 'Callback', @(s, e) obj.onParamOptions());
+
             obj.ctl(P, x1, 92, 96, 18, 'text', 'Washout slope');
             obj.PW.washOut = obj.ctl(P, x1 + 100, 90, 240, 22, 'popupmenu', ...
                 {'Regression, peak to end', 'Peak to last frame (2 points)'}, 'Callback', @(s, e) obj.onParamOptions());
@@ -3491,7 +3516,12 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.onExportParams());
             obj.ctl(P, x3, 92, 420, 24, 'pushbutton', 'Export parameter maps (NIfTI)...', ...
                 'Callback', @(s, e) obj.onExportMaps());
-            obj.ctl(P, x3, 124, 420, 112, 'text', { ...
+            obj.PW.cmpWI = obj.ctl(P, x3, 122, 420, 20, 'checkbox', ...
+                'Compare wash-in methods (all three, and / SSS, side by side)', 'Value', obj.CompareWashIn, ...
+                'TooltipString', ['Add rows "Wash-in: ..." for the max slope in the SSS wash-in period, the maximum ' ...
+                'up-slope and PE/(TP - To): statistics table, parameter maps and exports'], ...
+                'Callback', @(s, e) obj.setCompareWashIn(get(s, 'Value')));
+            obj.ctl(P, x3, 148, 420, 112, 'text', { ...
                 'S0 = mean of the baseline frames; times from the end of the baseline', ...
                 'PE = Smax - S0;  relative PE = 100 PE / S0', ...
                 'Wash-in = max slope in the SSS wash-in period, max up-slope or PE/(TP - To)', ...
@@ -3502,7 +3532,7 @@ classdef GRASPilot < handle
             obj.PW.table = uitable('Parent', P, 'Units', 'pixels', 'Position', [12 12 W - 24 400], ...
                 'ColumnName', {'ROI', 'Parameter', 'Unit', 'N', 'Mean', 'SD', 'Median', 'Q1', 'Q3', 'P10', ...
                 'P90', 'Min', 'Max', 'ROI curve'}, 'RowName', [], 'Data', cell(0, 14), 'FontSize', 9, ...
-                'ColumnWidth', {110, 195, 55, 50, 78, 78, 78, 78, 78, 78, 78, 78, 78, 78});
+                'ColumnWidth', {110, 225, 45, 45, 76, 76, 76, 76, 76, 76, 76, 76, 76, 76});
             obj.reg(obj.PW.table, P, 12, 328, -12, -12);
             set(f, 'SizeChangedFcn', @(s, e) obj.layoutParamWindow());
             obj.layoutParamWindow();
@@ -3581,7 +3611,7 @@ classdef GRASPilot < handle
                 msgI{end + 1} = sprintf('Analysis limited to frames 1-%d of %d (last at %.4g %s).', ke, D.NT, ...
                     tp(ke), GRASPilot.ternaryStr(D.hasTiming(), 's', 'frames'));
             end
-            if strcmpi(o.WashIn, 'sss') && numel(o.WashInFrames) == 2
+            if (strcmpi(o.WashIn, 'sss') || obj.CompareWashIn) && numel(o.WashInFrames) == 2
                 msgI{end + 1} = sprintf('SSS wash-in period: frames %d-%d (%.4g-%.4g).', o.WashInFrames, ...
                     tp(o.WashInFrames));
             end
@@ -3674,6 +3704,18 @@ classdef GRASPilot < handle
             if all(isfinite(c)), obj.setParamCLim(c); else, obj.syncParamWindow(); end
         end
 
+        function setCompareWashIn(obj, on)
+            % list the wash-in slope of every method (maps, statistics, exports)
+            obj.CompareWashIn = logical(on);
+            if ~obj.CompareWashIn && any(strcmp(obj.WashInKeys, obj.ParamKey))
+                obj.setParamKey('WIS');
+            end
+            if isfield(obj.PW, 'Fig') && ishghandle(obj.PW.Fig)
+                set(obj.PW.cmpWI, 'Value', double(obj.CompareWashIn));
+                obj.refreshParamWindow();
+            end
+        end
+
         function onParamFlag(obj, name, val)
             switch name
                 case 'ParamAlpha', obj.ParamAlpha = val;
@@ -3703,6 +3745,84 @@ classdef GRASPilot < handle
             if ~isempty(files)
                 obj.inform(sprintf('Wrote:\n%s', strjoin(files, char(10))), 'Parameter export');
             end
+        end
+
+        function onExportPK(obj)
+            if ~obj.requireData(), return; end
+            if ~obj.pkReady()
+                obj.inform(['The pharmacokinetic maps are not computed for the current settings: press ' ...
+                    'Fit models first.'], 'PK export');
+                return
+            end
+            file = obj.putFile({'*.xlsx', 'Excel workbook (*.xlsx)'; '*.csv', 'CSV files (*.csv)'}, ...
+                'Export pharmacokinetic parameters', '_pk_parameters.xlsx');
+            if isempty(file), return; end
+            [~, ~, ext] = fileparts(file);
+            if isempty(ext), file = [file '.xlsx']; end
+            try
+                files = obj.exportPK(file);
+            catch err
+                obj.showError(err, 'PK export failed');
+                return
+            end
+            if ~isempty(files)
+                obj.inform(sprintf('Wrote:\n%s', strjoin(files, char(10))), 'PK export');
+            end
+        end
+
+        function files = exportPK(obj, file)
+            % Pharmacokinetic parameters -> .xlsx (sheets Stats, Settings,
+            % Curves, one per ROI) or .csv (<base>_pk_stats/voxels/curves.csv,
+            % <base>_pk_settings.txt): statistics of every PK map per ROI with
+            % the fit of the ROI mean curve, voxel values, the AIF and each
+            % ROI's mean concentration with the model fits. Same ROIs as the
+            % parameter statistics (vessel ROIs only if included).
+            files = {};
+            if isempty(obj.Data) || ~obj.pkReady()
+                error('GRASPilot:pk', 'Fit the pharmacokinetic models first (Fit models).');
+            end
+            [hdr, rows] = obj.paramStatsTable('pk');
+            keys = obj.Data.PKMaps.Keys;
+            rr = obj.refIndex();
+            ra = [obj.arteryIndex() obj.autoAIFIndex()];
+            blocks = struct('id', {}, 'name', {}, 'lin', {}, 'values', {});
+            chdr = {}; cdat = [];
+            for r = 1:numel(obj.ROIs)
+                if any(r == [rr ra]) && ~obj.IncludeRefStats, continue; end
+                lin = find(obj.Masks{r});
+                if isempty(lin), continue; end
+                X = zeros(numel(lin), numel(keys));
+                for k = 1:numel(keys)
+                    X(:, k) = obj.paramValues(keys{k}, lin);
+                end
+                blocks(end + 1) = struct('id', r, 'name', obj.ROIs(r).Name, 'lin', lin, 'values', X); %#ok<AGROW>
+                [~, Fit, Cr, Cp, t] = obj.roiPK(r);
+                if isempty(chdr)
+                    chdr = {'Time (s)', 'AIF plasma Cp (mM)'};
+                    cdat = [t(:) Cp(:)];
+                end
+                chdr{end + 1} = sprintf('%s: concentration (mM)', obj.ROIs(r).Name); %#ok<AGROW>
+                cdat(:, end + 1) = Cr(:); %#ok<AGROW>
+                fn = fieldnames(Fit);
+                for i = 1:numel(fn)
+                    chdr{end + 1} = sprintf('%s: %s fit (mM)', obj.ROIs(r).Name, GRASPilot.pkModelName(fn{i})); %#ok<AGROW>
+                    cdat(:, end + 1) = Fit.(fn{i})(:); %#ok<AGROW>
+                end
+            end
+            if isempty(blocks)
+                obj.inform('There are no tumor ROI voxels to export.', 'PK export');
+                return
+            end
+            units = cellfun(@(k) obj.paramUnit(k), keys, 'UniformOutput', false);
+            ke = obj.Data.analysisEnd(); tt = obj.Data.paramTimes();
+            S = [{'Baseline frames', sprintf('%d-%d', obj.BaseFrames);
+                'Motion correction', obj.Data.motionDescription();
+                'Analysis endpoint', sprintf('frames 1-%d of %d (last frame at %.4g s); later frames ignored', ...
+                ke, obj.Data.NT, tt(ke))}; obj.pkSettings();
+                {'ROI mean curve column', 'parameter of the model fit of the ROI mean concentration curve'}];
+            files = graspilot_export_params(file, obj.Data, hdr, rows, blocks, keys, units, S, ...
+                'Tag', 'pk', 'Curves', {chdr, cdat});
+            obj.setStatus(['Wrote ' strjoin(files, ', ')]);
         end
 
         % ------------------------------------------------------------ pharmacokinetic models
@@ -3882,8 +4002,13 @@ classdef GRASPilot < handle
         end
 
         function keys = paramKeyList(obj, pkOn)
-            % semi-quantitative keys, then the PK keys of the fitted models
+            % semi-quantitative keys (with the wash-in slope of every method
+            % after WIS_SSS when CompareWashIn), then the PK keys of the fitted models
             keys = obj.ParamKeys;
+            if obj.CompareWashIn
+                k = find(strcmp(keys, 'WIS_SSS'));
+                keys = [keys(1:k), obj.WashInKeys, keys(k + 1:end)];
+            end
             if isempty(obj.Data), return; end
             if nargin < 2, pkOn = obj.pkReady(); end
             if pkOn, keys = [keys, obj.Data.PKMaps.Keys]; end
@@ -3892,6 +4017,8 @@ classdef GRASPilot < handle
         function L = paramLabel(obj, key)
             k = find(strcmp(obj.ParamKeys, key), 1);
             if ~isempty(k), L = obj.ParamLabels{k}; return; end
+            k = find(strcmp(obj.WashInKeys, key), 1);
+            if ~isempty(k), L = obj.WashInLabels{k}; return; end
             k = find(strcmp(GRASPilotData.PKTable(:, 1), key), 1);
             if isempty(k), L = key; else, L = GRASPilotData.PKTable{k, 4}; end
         end
@@ -4173,12 +4300,15 @@ classdef GRASPilot < handle
             obj.ctl(P, x1 + 262, 532, 108, 28, 'pushbutton', 'Parameters...', ...
                 'TooltipString', 'Parameter window: colour map, statistics and exports', ...
                 'Callback', @(s, e) obj.openParamWindow());
-            obj.KW.info = obj.ctl(P, x1, 566, 370, 100, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
-            hdr(672, 'MAP');
-            obj.KW.key = obj.ctl(P, x1, 694, 232, 22, 'popupmenu', {'(fit the models first)'}, ...
+            obj.KW.info = obj.ctl(P, x1, 566, 370, 76, 'text', '', 'FontSize', 8, 'ForegroundColor', C.dim);
+            hdr(646, 'MAP AND EXPORT');
+            obj.KW.key = obj.ctl(P, x1, 668, 232, 22, 'popupmenu', {'(fit the models first)'}, ...
                 'Callback', @(s, e) obj.onPKKey());
-            obj.KW.show = obj.ctl(P, x1 + 238, 693, 132, 24, 'togglebutton', 'Show on images', ...
+            obj.KW.show = obj.ctl(P, x1 + 238, 667, 132, 24, 'togglebutton', 'Show on images', ...
                 'Callback', @(s, e) obj.onPKShow(get(s, 'Value')));
+            obj.ctl(P, x1, 698, 370, 24, 'pushbutton', 'Export PK parameters -> spreadsheet...', ...
+                'TooltipString', ['Statistics per ROI, voxel values, the AIF and the ROI concentration curves with ' ...
+                'the model fits, and the settings (.xlsx or .csv)'], 'Callback', @(s, e) obj.onExportPK());
             % curves
             obj.ctl(P, 420, 10, 300, 18, 'text', 'CONCENTRATION CURVES', 'FontWeight', 'bold', ...
                 'ForegroundColor', C.accent);
@@ -5199,20 +5329,199 @@ classdef GRASPilot < handle
             file = obj.putFile({'*.png', 'PNG image (*.png)'}, 'Save TIC plot', '_tic.png');
             if isempty(file), return; end
             try
-                if exist('exportgraphics', 'file') == 2
-                    exportgraphics(obj.Tic.Ax, file, 'Resolution', 200, 'BackgroundColor', 'current');
-                else
-                    f2 = figure('Visible', 'off', 'Color', [0.07 0.07 0.08], 'Position', [100 100 900 450]);
-                    lg = findobj(obj.Fig, 'Type', 'legend');
-                    copyobj([lg(:); obj.Tic.Ax], f2);
-                    set(findobj(f2, 'Type', 'axes'), 'Units', 'normalized', 'Position', [0.08 0.12 0.88 0.8]);
-                    set(f2, 'InvertHardcopy', 'off');
-                    print(f2, file, '-dpng', '-r200');
-                    delete(f2);
-                end
+                obj.saveTicPNG(file);
                 obj.setStatus(['Saved ' file]);
             catch err
                 obj.showError(err, 'Could not save the plot');
+            end
+        end
+
+        function saveTicPNG(obj, file)
+            % the time-intensity curve plot (with its legend) as PNG
+            if exist('exportgraphics', 'file') == 2
+                exportgraphics(obj.Tic.Ax, file, 'Resolution', 200, 'BackgroundColor', 'current');
+            else
+                f2 = figure('Visible', 'off', 'Color', [0.07 0.07 0.08], 'Position', [100 100 900 450]);
+                c = onCleanup(@() delete(f2));
+                lg = findobj(obj.Fig, 'Type', 'legend');
+                copyobj([lg(:); obj.Tic.Ax], f2);
+                set(findobj(f2, 'Type', 'axes'), 'Units', 'normalized', 'Position', [0.08 0.12 0.88 0.8]);
+                set(f2, 'InvertHardcopy', 'off');
+                print(f2, file, '-dpng', '-r200');
+            end
+        end
+
+        function onExportCase(obj)
+            if ~obj.requireData(), return; end
+            parent = uigetdir(obj.startDir(), 'Folder in which to create the case folder');
+            if isequal(parent, 0), return; end
+            obj.LastDir = parent;
+            obj.savePrefs();
+            folder = fullfile(parent, [obj.caseBase() '_graspilot']);
+            if exist(folder, 'dir') == 7
+                folder = sprintf('%s_%s', folder, datestr(now, 'yyyymmdd_HHMMSS'));
+            end
+            [files, problems] = obj.exportCase(folder);
+            msg = sprintf('Wrote %d files to\n%s\n\n(list: %s)', numel(files), folder, 'export_contents.txt');
+            if ~isempty(problems)
+                msg = sprintf('%s\n\nNot exported:\n%s', msg, strjoin(problems, char(10)));
+            end
+            obj.inform(msg, 'Export case');
+        end
+
+        function b = caseBase(obj)
+            % base name of exported files: the source file name
+            [~, b] = fileparts(obj.Data.SourceFile);
+            b = regexprep(b, '\.nii$', '', 'ignorecase');
+            b = regexprep(b, '[^A-Za-z0-9_\-\.]+', '_');
+            if isempty(b) || strcmp(b, '_workspace_'), b = 'grasp'; end
+        end
+
+        function [files, problems] = exportCase(obj, folder, varargin)
+            % Everything about the case in one folder (created if needed):
+            %   <base>_dce.nii.gz            image, all frames (as shown: binning,
+            %                                motion correction), 4D float NIfTI
+            %   <base>_mask.nii.gz (+ label tables, one binary mask per ROI)
+            %   <base>_rois.mat              ROI session (Load ROIs)
+            %   <base>_roi_timeseries.*      ROI voxel time series
+            %   <base>_dce_parameters.*      semi-quantitative statistics + voxel values
+            %   <base>_pk_parameters.*       PK statistics, voxel values, curves (if fitted)
+            %   maps/<base>_<key>.nii.gz     every parameter map (and PK maps if fitted)
+            %   <base>_motion.csv            motion estimate (if estimated)
+            %   <base>_tic.png               time-intensity curve plot
+            %   export_contents.txt          what was written, settings, what was skipped
+            % Spreadsheets are .xlsx when writecell exists (MATLAB R2019a+), else .csv.
+            % Options: 'Image' (true), 'Maps' (true), 'Format' ('xlsx' | 'csv').
+            % problems: items not exported and why (the rest is still written).
+            p = struct('Image', true, 'Maps', true, 'Format', '');
+            for i = 1:2:numel(varargin)
+                fn = fieldnames(p);
+                m = find(strcmpi(fn, varargin{i}), 1);
+                if isempty(m), error('GRASPilot:export', 'Unknown option %s.', varargin{i}); end
+                p.(fn{m}) = varargin{i + 1};
+            end
+            files = {}; problems = {};
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            if isempty(p.Format)
+                p.Format = GRASPilot.ternaryStr(exist('writecell', 'file') == 2, 'xlsx', 'csv');
+            end
+            ext = ['.' p.Format];
+            if exist(folder, 'dir') ~= 7
+                [ok, msg] = mkdir(folder);
+                if ~ok, error('GRASPilot:export', 'Cannot create %s: %s', folder, msg); end
+            end
+            b = fullfile(folder, obj.caseBase());
+            hasROI = ~isempty(obj.ROIs) && any(cellfun(@(m) any(m(:)), obj.Masks));
+            wb = obj.wbOpen('Exporting the case...');
+            cw = onCleanup(@() obj.wbClose(wb));
+            quiet = obj.Quiet;
+            obj.Quiet = true;                                % no dialogs (or nested progress bars) from the exporters
+            cq = onCleanup(@() obj.restoreQuiet(quiet));
+            steps = {'image', 'mask', 'rois', 'timeseries', 'params', 'maps', 'pk', 'motion', 'plot'};
+            for k = 1:numel(steps)
+                obj.wbUpdate(wb, (k - 1) / numel(steps), sprintf('Exporting the case: %s', steps{k}));
+                try
+                    switch steps{k}
+                        case 'image'
+                            if ~p.Image, continue; end
+                            f = [b '_dce.nii.gz'];
+                            graspilot_write_dce_nifti(D, f, 1:D.NT);
+                            files = [files, {f, [b '_dce.json']}]; %#ok<AGROW>   (JSON sidecar, if written)
+                        case 'mask'
+                            if ~hasROI, problems{end + 1} = 'ROI masks: no ROIs'; continue; end %#ok<AGROW>
+                            f = [b '_mask.nii.gz'];
+                            obj.exportMaskNifti(f, true);
+                            d = dir([b '_mask*']);
+                            files = [files, cellfun(@(x) fullfile(folder, x), {d.name}, 'UniformOutput', false)]; %#ok<AGROW>
+                        case 'rois'
+                            if ~hasROI, continue; end
+                            f = [b '_rois.mat'];
+                            obj.saveROIs(f);
+                            files{end + 1} = f; %#ok<AGROW>
+                        case 'timeseries'
+                            if ~hasROI, problems{end + 1} = 'ROI time series: no ROIs'; continue; end %#ok<AGROW>
+                            files = [files, graspilot_export_timeseries(D, obj.Masks, {obj.ROIs.Name}, ...
+                                [b '_roi_timeseries' ext], 'BaseFrames', obj.BaseFrames(1):obj.BaseFrames(2))]; %#ok<AGROW>
+                        case 'params'
+                            if ~obj.ensureMaps(false), error('GRASPilot:export', 'maps could not be computed'); end
+                            if ~hasROI, problems{end + 1} = 'Parameter statistics: no ROIs'; continue; end %#ok<AGROW>
+                            f = obj.exportParams([b '_dce_parameters' ext]);
+                            if isempty(f), problems{end + 1} = 'Parameter statistics: no tumor ROI voxels'; end %#ok<AGROW>
+                            files = [files, f]; %#ok<AGROW>
+                        case 'maps'
+                            if ~p.Maps, continue; end
+                            md = fullfile(folder, 'maps');
+                            if exist(md, 'dir') ~= 7, mkdir(md); end
+                            [~, bb] = fileparts(b);
+                            files = [files, obj.exportMaps(md, bb)]; %#ok<AGROW>
+                            if isempty(obj.refParams())
+                                problems{end + 1} = 'Normalized (/SSS) maps: no SSS reference ROI'; %#ok<AGROW>
+                            end
+                        case 'pk'
+                            if ~obj.pkReady()
+                                problems{end + 1} = 'PK parameters: models not fitted for the current settings'; %#ok<AGROW>
+                                continue
+                            end
+                            if ~hasROI, problems{end + 1} = 'PK statistics: no ROIs'; continue; end %#ok<AGROW>
+                            files = [files, obj.exportPK([b '_pk_parameters' ext])]; %#ok<AGROW>
+                        case 'motion'
+                            if isempty(D.Motion) && isempty(D.MotionApplied), continue; end
+                            files = [files, obj.exportMotion([b '_motion.csv'])]; %#ok<AGROW>
+                        case 'plot'
+                            f = [b '_tic.png'];
+                            obj.saveTicPNG(f);
+                            files{end + 1} = f; %#ok<AGROW>
+                    end
+                catch err
+                    problems{end + 1} = sprintf('%s: %s', steps{k}, err.message); %#ok<AGROW>
+                end
+            end
+            files = unique(files, 'stable');
+            files = files(cellfun(@(f) exist(f, 'file') == 2, files));
+            fi = fullfile(folder, 'export_contents.txt');
+            obj.writeCaseContents(fi, folder, files, problems);
+            files{end + 1} = fi;
+            obj.setStatus(sprintf('Exported the case: %d files in %s.', numel(files), folder));
+        end
+
+        function restoreQuiet(obj, q)
+            obj.Quiet = q;
+        end
+
+        function writeCaseContents(obj, fi, folder, files, problems)
+            D = obj.Data;
+            gv = GRASPilot.versionInfo();
+            fid = fopen(fi, 'w');
+            if fid < 0, error('GRASPilot:export', 'Cannot write %s.', fi); end
+            c = onCleanup(@() fclose(fid));
+            fprintf(fid, 'GRASPilot case export\n');
+            fprintf(fid, 'Created by: GRASPilot %s, %s\n', gv.Text, gv.URL);
+            fprintf(fid, 'Date: %s\n', datestr(now, 'yyyy-mm-dd HH:MM:SS'));
+            fprintf(fid, 'Source: %s\n', D.SourceFile);
+            fprintf(fid, 'Matrix: %s, voxel %s mm (canonical LPS order), %d frames (binning %d), %s\n', ...
+                num2str(D.canonSize()), num2str(D.canonVox()), D.NT, D.BinSize, ...
+                GRASPilot.ternaryStr(D.hasTiming(), sprintf('%.4g s/frame', D.effectiveDt()), 'temporal resolution not set'));
+            fprintf(fid, '\nROIs:\n');
+            for r = 1:numel(obj.ROIs)
+                fprintf(fid, '  %d  %s: %d voxels\n', r, obj.ROIs(r).Name, nnz(obj.Masks{r}));
+            end
+            fprintf(fid, '\nFiles (relative to %s):\n', folder);
+            for k = 1:numel(files)
+                fprintf(fid, '  %s\n', strrep(files{k}, [folder filesep], ''));
+            end
+            if ~isempty(problems)
+                fprintf(fid, '\nNot exported:\n');
+                fprintf(fid, '  %s\n', problems{:});
+            end
+            if ~isempty(D.Maps)
+                fprintf(fid, '\nSettings:\n');
+                S = obj.paramSettings();
+                for k = 1:size(S, 1)
+                    v = S{k, 2};
+                    if isnumeric(v) || islogical(v), v = num2str(v); end
+                    fprintf(fid, '  %s: %s\n', S{k, 1}, v);
+                end
             end
         end
 
@@ -5302,7 +5611,8 @@ classdef GRASPilot < handle
                 '  (orange dashed line on the curves)'
                 '  Peak enhancement, wash-in and washout slopes, AUC, TTP, absolute and'
                 '  normalized to the SSS ROI mean curve; colour maps (M), ROI statistics,'
-                '  export of statistics and voxel values'
+                '  export of statistics and voxel values. Compare wash-in methods'
+                '  lists the wash-in slope of all three methods side by side'
                 ''
                 'PHARMACOKINETIC MODELS (Analysis menu)'
                 '  Tofts, extended Tofts, 2CXM: Ktrans, ve, vp, kep, Fp, PS maps'
@@ -5310,7 +5620,13 @@ classdef GRASPilot < handle
                 '  (arterial ROI calibrated to the SSS phase or magnitude)'
                 '  Signal -> concentration by the signal ratio with a global T10'
                 '  (tissue and blood), TR, flip angle, r1; AIF from the SSS ROI,'
-                '  the population AIF or the VCAI; maps join the parameter list'
+                '  the population AIF, an arterial ROI, Auto AIF or the VCAI; maps join'
+                '  the parameter list; Export PK parameters -> spreadsheet'
+                ''
+                'EXPORT CASE (Export panel or File menu)'
+                '  One folder with the image and ROI NIfTI files, ROI session, time'
+                '  series, parameter and PK spreadsheets, all maps, motion, curve plot'
+                '  and export_contents.txt (what was written and skipped)'
                 ''
                 'TEMPORAL BINNING'
                 '  Average every n frames + Apply binning: each frame becomes the mean'
@@ -5837,6 +6153,16 @@ classdef GRASPilot < handle
             end
         end
 
+        function s = pkModelName(m)
+            switch m
+                case 'tofts', s = 'Tofts';
+                case 'etofts', s = 'extended Tofts';
+                case {'cxm', '2cxm'}, s = '2CXM';
+                case 'ratio', s = 'RATIO';
+                otherwise, s = m;
+            end
+        end
+
         function tf = isPKKey(key)
             tf = any(strcmp(GRASPilotData.PKTable(:, 1), key));
         end
@@ -5849,6 +6175,9 @@ classdef GRASPilot < handle
                 case 'PE',  name = 'PeakEnh'; fld = 'PE';
                 case 'RE',  name = 'RelEnh';  fld = 'RE';
                 case 'WIS', name = 'WashIn';  fld = 'WashIn';
+                case 'WIS_PERIOD', name = 'WashInSSS'; fld = 'WashInSSS';
+                case 'WIS_MAXUP', name = 'WashInMax'; fld = 'WashInMax';
+                case 'WIS_ONSET', name = 'WashInOnset'; fld = 'WashInOnset';
                 case 'WOS', name = 'WashOut'; fld = 'WashOut';
                 case 'AUC', name = 'AUC';     fld = 'AUC';
                 case 'TTP', name = 'TTP';     fld = 'TTP';

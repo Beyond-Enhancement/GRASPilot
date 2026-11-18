@@ -215,6 +215,50 @@ txt = fileread(files{3});
 nfail = nfail + check('parameter export: PK columns and settings', ~isempty(strfind(hl, 'KT_TM [1/min]')) && ...
     ~isempty(strfind(hl, 'FP_2CXM [ml/100ml/min]')) && ~isempty(strfind(txt, 'signal-ratio conversion')) && ...
     ~isempty(strfind(txt, 'PK tissue T10')), 0);
+files = app.exportPK(fullfile(out, 'pkx.csv'));
+[~, rows] = app.paramStatsTable('pk');
+fid = fopen(files{2}); hv = fgetl(fid); fclose(fid);
+C = csvread_(files{4});
+[~, Fit, Cr, Cp] = app.roiPK(rt);
+fid = fopen(files{4}); hc = fgetl(fid); fclose(fid);
+okP = numel(files) == 4 && ~isempty(strfind(files{1}, 'pkx_pk_stats.csv')) && ...
+    all(cellfun(@(f) exist(f, 'file') == 2, files)) && ~any(strcmp(rows(:, 2), 'Peak enhancement')) && ...
+    abs(statVal(rows, 'Tofts box', 'Tofts Ktrans', 7) - v1) < 1e-12 && ~isempty(strfind(hv, 'KT_TM [1/min]')) && ...
+    isempty(strfind(hv, 'PE [')) && ~isempty(strfind(hc, 'Tofts box: Tofts fit (mM)')) && ...
+    max(abs(C(:, 2) - Cp(:))) < 1e-5 * max(Cp) && size(C, 2) == 2 + 2 * 3 && ...
+    max(abs(C(:, 3) - Cr(:))) < 1e-5 * max(abs(Cr)) && max(abs(C(:, 4) - Fit.tofts(:))) < 1e-5 * max(Cr) && ...
+    ~isempty(strfind(fileread(files{3}), 'PK AIF'));
+nfail = nfail + check('PK export: stats, voxel values, AIF + curves + fits, settings', okP, numel(files));
+if exist('writecell', 'file') == 2
+    fx = app.exportPK(fullfile(out, 'pkx.xlsx'));
+    nfail = nfail + check('PK export (xlsx)', exist(fx{1}, 'file') == 2, 0);
+end
+% ---- export the whole case
+cf = fullfile(out, 'case');
+app.Quiet = false;
+[cfiles, prob] = app.exportCase(cf, 'Format', 'csv');
+quietBack = ~app.Quiet; app.Quiet = true;
+rel = cellfun(@(f) strrep(f, [cf filesep], ''), cfiles, 'UniformOutput', false);
+[~, bb] = fileparts(D.SourceFile); bb = app.caseBase();
+has = @(x) any(strcmp(rel, x));
+hasM = @(x) any(strcmp(rel, fullfile('maps', x)));
+img = graspilot_nifti_read(fullfile(cf, [bb '_dce.nii.gz']));
+lab = graspilot_nifti_read(fullfile(cf, [bb '_mask.nii.gz']));
+L = zeros(D.canonSize()); for r = 1:numel(app.ROIs), L(app.Masks{r}) = r; end
+txt = fileread(fullfile(cf, 'export_contents.txt'));
+okX = quietBack && has([bb '_dce.nii.gz']) && has([bb '_mask.nii.gz']) && has([bb '_rois.mat']) && ...
+    has([bb '_roi_timeseries_voxels.csv']) && has([bb '_dce_parameters_param_stats.csv']) && ...
+    has([bb '_pk_parameters_pk_stats.csv']) && has([bb '_pk_parameters_pk_curves.csv']) && ...
+    hasM([bb '_KT_TM.nii.gz']) && hasM([bb '_PE_SSS.nii.gz']) && has('export_contents.txt') && ...
+    isequal(size(img), [D.canonSize() D.NT]) && isequal(double(lab), L) && ...
+    ~isempty(strfind(txt, [bb '_pk_parameters_pk_stats.csv'])) && ~isempty(strfind(txt, 'PK AIF')) && ...
+    all(cellfun(@isempty, regexp(prob, '^(image|mask|rois|timeseries|params|maps|pk):', 'once')));
+nfail = nfail + check('export case: image, masks, ROIs, time series, parameters, PK, maps, list', okX, numel(cfiles));
+if ~okX
+    disp(prob(:)');
+    disp([quietBack, has([bb '_dce.nii.gz']), isequal(size(img), [D.canonSize() D.NT]), isequal(double(lab), L), ...
+        ~isempty(strfind(txt, 'PK AIF')), hasM([bb '_KT_TM.nii.gz'])]);
+end
 fs = fullfile(out, 'pk_session.mat');
 D.setPKOptions('T10', 1300);
 nfail = nfail + check('settings change -> maps stale, map hidden', ~app.pkReady() && ...
@@ -313,5 +357,18 @@ if cond
 else
     fprintf('  FAIL  %-48s (%.3g)\n', name, val);
     f = 1;
+end
+end
+
+function M = csvread_(f)
+% numeric CSV with a quoted header line; empty cells -> NaN
+txt = fileread(f);
+L = regexp(txt, '\r?\n', 'split');
+L = L(2:end); L = L(~cellfun(@isempty, L));
+M = [];
+for i = 1:numel(L)
+    c = regexp(L{i}, ',', 'split');
+    v = str2double(c);
+    M(i, 1:numel(v)) = v; %#ok<AGROW>
 end
 end

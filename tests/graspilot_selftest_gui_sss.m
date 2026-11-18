@@ -142,6 +142,28 @@ okW = okW && get(app.PW.washIn, 'Value') == 3;      % default: max slope in the 
 set(app.PW.washIn, 'Value', 1); app.onParamOptions(); app.onParamCompute();
 okW = okW && strcmp(app.ParamCmap, 'turbo') && strcmp(D.ParamOpts.WashIn, 'onset') && D.hasMaps(bf);
 nfail = nfail + check('parameter window (table, colour map, options)', okW, size(tb, 1));
+% ---- compare the wash-in methods (Compare checkbox)
+set(app.PW.cmpWI, 'Value', 1); app.setCompareWashIn(true);
+tb = get(app.PW.table, 'Data');
+[~, rows] = app.paramStatsTable();
+lab = rows(:, 2);
+val = @(L, c) rows{find(strcmp(lab, L), 1), c};
+app.computeStats(t);
+o = D.ParamOpts;
+cmx = graspilot_curve_params(app.ROIs(t).Stats.mean, D.paramTimes(), bf, setfield(o, 'WashIn', 'max')); %#ok<SFLD>
+css = graspilot_curve_params(app.ROIs(t).Stats.mean, D.paramTimes(), bf, setfield(o, 'WashIn', 'sss')); %#ok<SFLD>
+keys = app.paramKeyList();
+iw = find(strcmp(keys, 'WIS_SSS'));
+okC = size(tb, 1) == numel(app.ParamKeys) + 9 && isequal(keys(iw + 1:iw + 6), app.WashInKeys) && ...
+    abs(val('Wash-in: max up-slope', 14) - cmx.WashIn) < 1e-9 * max(1, abs(cmx.WashIn)) && ...
+    abs(val('Wash-in: SSS period max slope', 14) - css.WashIn) < 1e-9 * max(1, abs(css.WashIn)) && ...
+    abs(val('Wash-in: PE / (TP - To)', 5) - val('Wash-in slope', 5)) < 1e-9 && ...
+    abs(val('Wash-in: max up-slope / SSS', 14) - cmx.WashIn / R.WashInMax) < 1e-6 * abs(cmx.WashIn / R.WashInMax) && ...
+    numel(o.WashInFrames) == 2 && ~isempty(app.paramVolume('WIS_MAXUP_SSS'));
+app.setParamKey('WIS_MAXUP');
+app.setCompareWashIn(false);
+nfail = nfail + check('compare wash-in methods: all three (+ /SSS) side by side', okC && ...
+    strcmp(app.ParamKey, 'WIS') && size(get(app.PW.table, 'Data'), 1) == numel(app.ParamKeys) + 3, size(tb, 1));
 if nargin > 0 && ~isempty(out)
     shot = fullfile(out, 'param_window.png');
     try, print(app.PW.Fig, '-dpng', '-r60', shot); catch, end
