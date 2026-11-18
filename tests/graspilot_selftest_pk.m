@@ -259,6 +259,33 @@ nfail = nfail + check('settings: RATIO model, VCAI fit', any(strcmp(S(:, 1), 'RA
 app.setVoxels(ra, find(tr.Artery, 2), false); app.afterMaskChange();
 nfail = nfail + check('editing the arterial ROI invalidates the maps', ~app.pkReady(), 0);
 app.refreshPKWindow();
+clear cleanup
+
+% ---- viewer: Auto AIF and the arterial ROI as AIF (head phantom)
+[Dh, th] = graspilot_head_phantom();
+[linA, infoA] = graspilot_detect_aif(Dh);
+nfail = nfail + check('Auto AIF finds the artery (not the sinus or tumour)', numel(linA) >= 10 && ...
+    mean(th.Art(linA)) > 0.9 && ~any(th.SSS(linA)) && ~any(th.Ring(linA)), mean(th.Art(linA)));
+app = GRASPilot(Dh);
+app.Quiet = true;
+cleanup = onCleanup(@() app.close(true));
+rt = app.addROI('Tumor 1', [1 1 0]); app.setVoxels(rt, find(th.Ring), true);
+app.afterMaskChange();
+app.openPKWindow();
+ok = app.computePK('Models', {'etofts'}, 'AIF', 'auto', 'Region', 'rois');
+ka = app.autoAIFIndex();
+[~, rows] = app.paramStatsTable();
+okA = ok && ka > 0 && mean(th.Art(app.Masks{ka})) > 0.9 && app.pkReady() && ...
+    ~any(strcmp(rows(:, 1), 'AIF (auto)')) && any(strcmp(rows(:, 1), 'Tumor 1'));
+nfail = nfail + check('AIF = Auto AIF: ROI "AIF (auto)" made and used, not in tumor stats', okA, ka);
+ra = app.addROI('Artery', [1 0.5 0]); app.setVoxels(ra, find(th.Art), true); app.afterMaskChange();
+ok = app.computePK('AIF', 'artery');
+a = app.aifInput();
+nfail = nfail + check('AIF = Arterial ROI: its mean signal is the input', ok && app.pkReady() && ...
+    max(abs(a.Art - app.ROIs(app.arteryIndex()).Stats.mean)) < 1e-9, 0);
+app.KWRoi = 'Tumor 1'; app.refreshPKWindow();
+tt = get(get(app.KW.Ax(2), 'Title'), 'String');
+nfail = nfail + check('concentration plot titled with the ROI shown', ~isempty(strfind(tt, 'Tumor 1')), 0);
 end
 
 function e = pkErr(D, tr, truth)

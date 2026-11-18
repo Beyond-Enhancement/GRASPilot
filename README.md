@@ -127,14 +127,14 @@ few seconds of progress allow an estimate.
   voxels and mL listed.
 - **Threshold maps:** signal at the frame, subtraction post - pre (default), frame -
   baseline, relative enhancement, peak - baseline, peak relative enhancement (baseline =
-  mean of the baseline frames, detected automatically, see below). Each works with Preview, Otsu, Keep:
-  slice/3D, Grow, All -> ROI and Constrain brush/circle.
+  mean of the baseline frames, detected automatically, see below). Each works with Preview,
+  Otsu, Keep: slice/3D, Grow, All -> ROI and Constrain brush/circle.
 
 ### Enhancing tumor from the subtraction map
 
 ![Subtraction map with the enhancing rim grown from the crosshair](docs/screenshot_subtraction.png)
 
-*Subtraction map (frame 60 - frame 1), threshold preview in green and the enhancing rim
+*Subtraction map (frame 100 - frame 1), threshold preview in green and the enhancing rim
 grown from the crosshair, necrotic core excluded.*
 
 1. + Tumor, Map = *Subtraction: post - pre frame* (default last - first), **Show** (key S).
@@ -148,8 +148,9 @@ grown from the crosshair, necrotic core excluded.*
 
 ![Auto SSS ROI along the posterior superior sagittal sinus](docs/screenshot_sss.png)
 
-*Auto SSS on a venous phantom: the ROI (red) follows the posterior SSS from above the
-torcula toward the vertex; straight and transverse sinuses and a scalp vein are excluded.*
+*Auto SSS on a venous phantom with cortical veins, enhancing dura, persistently enhancing
+scalp and a tumor: the ROI (red) follows the posterior SSS from above the torcula toward the
+vertex; the other vessels and enhancing tissue are left out.*
 
 **Auto SSS** places `SSS (auto)` in the posterior SSS. It works in a 25 mm band along the
 head surface, where the sinuses lie (the straight sinus, deep vessels and most tumors do
@@ -202,12 +203,13 @@ S - S0; seconds or frames. File > Save TIC plot as PNG.
 
 ![Wash-in slope normalized to the SSS as a colour map](docs/screenshot_params.png)
 
-*Wash-in slope / SSS as a colour map with ROI outlines; analysis limited to the first 100 s
-(orange line).*
+*Wash-in slope / SSS (maximum slope in the SSS wash-in period) as a colour map with ROI
+outlines; analysis limited to the first 100 s.*
 
 Analysis > Semi-quantitative parameters (or **Parameters...** above the curves) >
-**Compute parameters**. S0 = mean of the baseline frames; times from the last baseline
-frame (injection); seconds if s/frame is set, else frames.
+**Compute parameters** (offers Auto SSS if there is no SSS ROI). S0 = mean of the baseline
+frames; times from the last baseline frame (injection); seconds if s/frame is set, else
+frames.
 
 | Parameter | Definition | Unit |
 |---|---|---|
@@ -243,8 +245,8 @@ pharmacokinetic parameters).*
 1st-99.5th percentile in the head, Auto ROIs = 2nd-98th in the tumor ROIs), opacity, Hide
 below min, Inside head only. The status bar shows the value under the cursor.
 
-**Statistics** per tumor ROI (all ROIs except the reference SSS and the arterial ROI, unless
-included): N, mean, SD, median, quartiles, 10th/90th percentile, min, max of the voxel
+**Statistics** per tumor ROI (all ROIs except the reference SSS and the arterial ROIs,
+"AIF (auto)" included, unless ticked): N, mean, SD, median, quartiles, 10th/90th percentile, min, max of the voxel
 values, and the value of the ROI mean curve (less noisy). For curve types and RATIO classes
 the share of voxels per class is listed.
 
@@ -264,8 +266,8 @@ P = graspilot_curve_params(TC, D.paramTimes(), 1:5);   % any curves [N x T]
 
 ![Pharmacokinetic models window: VCAI input, extended Tofts and RATIO fits of a tumor ROI](docs/screenshot_pk_window.png)
 
-*Pharmacokinetic models window. Top: VCAI arterial input (red) with the SSS phase curve and
-the dispersed VCAI it was calibrated against (blue). Bottom: tumor ROI concentration with
+*Pharmacokinetic models window. Top: VCAI arterial input (red; arterial voxels from Auto
+AIF) with the SSS phase curve and the dispersed VCAI it was calibrated against (blue). Bottom: tumor ROI concentration with
 the extended Tofts fit (green, cannot follow the vascular transit peak) and the RATIO
 two-compartment fit (magenta).*
 
@@ -292,9 +294,27 @@ placeholders: **enter your protocol and agent** (r1 in plasma at 3 T: gadobutrol
 gadoterate ~3.5, gadopentetate ~3.7; Rohrer 2005). Ktrans scales with the assumed T10, so
 keep it fixed across scans. Baseline frames must be strictly pre-contrast.
 
-**AIF.** *Reference ROI (SSS)*: large, little partial volume, but venous (late, broadened);
-**AIF shift** moves it in time. *Population* (Parker 2006), injection at the last baseline
-frame. *VCAI*: arterial ROI calibrated to the SSS (below). Plasma = blood / (1 - Hct).
+**AIF.** Plasma = blood / (1 - Hct) for every option.
+
+- *Reference ROI (SSS)*: large, little partial volume, but venous (late, broadened); **AIF
+  shift** moves it in time.
+- *Population* (Parker 2006): no ROI needed; injection at the last baseline frame.
+- *VCAI*: the arterial ROI calibrated to the SSS (below).
+- *Arterial ROI*: the mean signal of the arterial ROI (**Arterial ROI**: chosen, or the first
+  ROI named artery/AIF/MCA/ICA; **+ Artery** to draw one) converted with the blood T10.
+- *Auto AIF*: arterial voxels found automatically (**Auto AIF** button, or chosen in the
+  menu): among strongly enhancing, washing-out voxels inside the head (12 mm from its surface,
+  so no scalp arteries), those peaking earliest; the 20 most enhancing of them form the
+  editable ROI "AIF (auto)". Scripting: `[lin, info] = graspilot_detect_aif(D)`.
+
+Small arteries are partial-volumed, so an arterial input is often too low (Ktrans and vp
+too high). Check the curve; the VCAI corrects the amplitude with a neighbour ring. Vessel
+ROIs (SSS, arterial ROI, "AIF (auto)") are left out of the tumor statistics.
+
+The upper graph shows the AIF. The lower graph shows the mean concentration curve of one ROI
+with the fit of each model and its parameters in the legend. **Fits shown for** chooses that
+ROI; it only changes the display, not the AIF, the settings or the maps. Both graphs follow
+the settings at once, before the (slower) voxel fit.
 
 **Fitting.** Frames up to the analysis endpoint; uneven frame times supported; exact
 convolution for an AIF linear between frames. Rate constants on a log grid with the linear
@@ -345,8 +365,8 @@ curve matches the sinus curve up to a gain:
 
     A(t)/A0 = w Sb(ca(t))/Sb(0) + (1 - w) N(t)/N0,   phi(t) - phi0 ~ g [exp(-t/tau)/tau * ca](t - delta)
 
-A: arterial ROI (**+ Artery**, or an ROI named artery/AIF/MCA/ICA; a few MCA or distal ICA
-voxels). N: 2-voxel ring of neighbouring tissue (or *None*: static background). Sb: blood
+A: arterial ROI (**+ Artery**, **Auto AIF**, or an ROI named artery/AIF/MCA/ICA; a few MCA
+or distal ICA voxels). N: 2-voxel ring of neighbouring tissue (or *None*: static background). Sb: blood
 SPGR signal (blood T10). phi: SSS phase from complex `.mat` data, else the SSS magnitude
 converted with the blood T10 (less accurate). Check w, tau (about 3-8 s), delta and the
 sinus-fit R2 shown in the window. The VCAI can also drive the other models.
@@ -474,11 +494,12 @@ issues). In code: `graspilot_version()` or `GRASPilot.versionInfo()`. When taggi
 | `graspilot_pk_fit.m`, `graspilot_ratio_fit.m`, `graspilot_vcai.m` | Tofts / extended Tofts / 2CXM; RATIO; VCAI |
 | `graspilot_expconv.m`, `graspilot_varpro_lm.m` | exact exponential convolution; batched Levenberg-Marquardt |
 | `graspilot_motion_estimate.m`, `graspilot_rigid_matrix.m`, `graspilot_motion_summary.m` | motion |
-| `graspilot_detect_sss.m`, `graspilot_reorient_to_ref.m`, `graspilot_convert_mat2nifti.m` | Auto SSS; mask import; batch conversion |
+| `graspilot_detect_sss.m`, `graspilot_detect_aif.m` | Auto SSS; Auto AIF (arterial voxels) |
+| `graspilot_reorient_to_ref.m`, `graspilot_convert_mat2nifti.m` | mask import; batch conversion |
 | `legacy/` | original ReadData.m, CropImg.m, @TempPCASub (validation reference) |
 | `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
 | `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
-| `tests/*_phantom.m` | venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
+| `tests/*_phantom.m` | head-shaped complex phantom (screenshots, Auto AIF), venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
 
 ## Notes and limitations
 
