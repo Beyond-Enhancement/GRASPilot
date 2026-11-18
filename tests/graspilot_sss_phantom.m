@@ -14,7 +14,8 @@ function [D, truth] = graspilot_sss_phantom(zmin, mode)
 %   [D, truth] = graspilot_sss_phantom(zmin, 'realistic') adds what real
 %   post-contrast data have around the sinus: bridging cortical veins
 %   draining into the SSS (one low posterior), an enhancing falx, tentorium
-%   and dural shell, and a ring-enhancing tumor beside the posterior
+%   and dural shell, a strongly and persistently enhancing scalp (no
+%   washout; at the end brighter than the sinus), and a ring-enhancing tumor beside the posterior
 %   midline; 2 mm slices; stored rotated in-plane and flipped S-I (native
 %   axis codes 'PLI', already set). truth is in canonical (LPS) order.
 
@@ -53,6 +54,7 @@ AR = tube(n, PA, 1.2 * ones(size(s2)));
 
 ven = [0 0 0 0.3 0.8 1.0 0.85 0.7 0.6 0.55 0.5 0.5];
 dur = 0.45 * [0 0 0 0.2 0.5 0.7 0.8 0.85 0.9 0.92 0.94 0.95];     % dura, falx, tentorium, tumor (slow)
+sca = 1.1 * [0 0 0 0.1 0.25 0.4 0.55 0.65 0.75 0.85 0.95 1];      % scalp (realistic): persistent
 CV = false(n); DU = false(n); TU = false(n);
 if real
     % bridging cortical veins on the brain surface, from the SSS laterally
@@ -90,6 +92,7 @@ randn('state', 11); %#ok<RAND>
 for t = 1:T
     f = base + tis(t) * (inner | scalp) + ven(t) * veins + art(t) * AR + dur(t) * (DU & ~veins) + ...
         1.4 * dur(t) * TU;
+    if real, f = f + sca(t) * (scalp & ~SV); end
     I(:, :, :, t) = single(f + 0.005 * randn(n));
 end
 k = zmin:n(3);

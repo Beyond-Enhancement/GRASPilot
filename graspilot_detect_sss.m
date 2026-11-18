@@ -51,6 +51,13 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %      least 1.5 frames) before the ROI's median time to peak (arteries
 %      touching the sinus) are dropped
 %
+%   Venous blood washes out after the first pass; enhancing scalp, dura,
+%   falx and tumour keep rising or plateau. Only voxels whose late
+%   enhancement (mean of the last 3 analysed frames) is below
+%   1 - MinWashout of their peak enhancement count as vessels. If nothing is
+%   found that way (e.g. an acquisition that ends before the sinus washes
+%   out), the search is repeated without this test and the message says so.
+%
 %   'Seed' [i j k] (canonical voxel on the sinus, e.g. the crosshair) skips
 %   the search: the region is grown from the most enhancing voxel within
 %   3 voxels of it, the reference is its enhancement and the ROI starts at
@@ -62,7 +69,8 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   'LateralMM' (50), 'BandMM' (25), 'RelThr' (0.5), 'PosteriorMM' (15),
 %   'TorculaWidthMM' (30), 'MaxWidthMM' (20), 'GapMM' (5), 'SearchMM' (35),
 %   'InferiorMM' (2), 'SuperiorMM' (50), 'MaxSlope' (1.5), 'Core' (0.5),
-%   'Seeds' (6), 'Seed' ([]), 'Progress' ([]). 'SlabMM' (empty) gives the
+%   'Seeds' (6), 'Seed' ([]), 'MinWashout' (0.15), 'UseWashout' (true),
+%   'Progress' ([]). 'SlabMM' (empty) gives the
 %   former ROI: SlabMM of slices centred on the thickest slice (sets
 %   InferiorMM and SuperiorMM to SlabMM/2).
 %
@@ -70,10 +78,23 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   ExtentMM, StopReason, NVoxels, VolumeML, Centroid [i j k], MeanPeakEnh,
 %   Width (posterior structure) and Area (cross-section) per slice, Message.
 
+[lin, info] = detectCore(D, varargin{:});
+given = any(strcmpi(varargin(1:2:end), 'UseWashout'));
+if isempty(lin) && ~given
+    [lin2, info2] = detectCore(D, varargin{:}, 'UseWashout', false);
+    if ~isempty(lin2)
+        lin = lin2; info = info2;
+        info.Message = [info.Message ' No washing-out venous structure was found, so the washout test was ' ...
+            'not applied: check that the ROI is not in the scalp.'];
+    end
+end
+end
+
+function [lin, info] = detectCore(D, varargin)
 p = struct('BaseFrames', [], 'MidlineMM', 10, 'LateralMM', 50, 'BandMM', 25, 'RelThr', 0.5, ...
     'PosteriorMM', 15, 'TorculaWidthMM', 30, 'MaxWidthMM', 20, 'GapMM', 5, 'SearchMM', 35, ...
     'InferiorMM', 2, 'SuperiorMM', 50, 'MaxSlope', 1.5, 'SlabMM', [], 'Core', 0.5, 'Seeds', 6, ...
-    'Seed', [], 'MinWashout', 0.15, 'Progress', []);
+    'Seed', [], 'MinWashout', 0.15, 'UseWashout', true, 'Progress', []);
 for i = 1:2:numel(varargin)
     fn = fieldnames(p);
     m = find(strcmpi(fn, varargin{i}), 1);
@@ -100,6 +121,12 @@ if ~D.hasMaps(bf), D.computeMaps(bf, p.Progress); end
 E = double(D.canonMap('PeakEnh'));
 B = double(D.canonMap('Baseline'));
 E(~isfinite(E)) = 0;
+if p.UseWashout                                  % washing-out (venous) voxels only
+    Pl = double(D.canonMap('Plateau'));
+    Wm = Pl < (1 - p.MinWashout) * E;
+else
+    Wm = true(n);
+end
 
 % 1. head mask, centre and the band along the head surface
 step = max(1, floor(numel(B) / 300000));
@@ -145,18 +172,18 @@ if seedGiven
         return
     end
     inBand = band(sd(1), sd(2), sd(3));
-    vessel = (E >= p.RelThr * emax1) & region;
+    vessel = (E >= p.RelThr * emax1) & region & Wm;
     if inBand, vessel = vessel & band; end
     best = GRASPilot.floodFill3D(vessel, sd);
     bestSeed = sd;
 else
     search = false(n);
     search(xr, yc:n(2), :) = true;
-    search = search & head & band;
+    search = search & head & band & Wm;
     Es = E;
     Es(~search) = -Inf;
     emax1 = max(Es(:));
-    vessel = (E >= p.RelThr * emax1) & region & band;
+    vessel = (E >= p.RelThr * emax1) & region & band & Wm;
     best = []; bestN = 0; bestSeed = [];
     for s = 1:p.Seeds
         Es = E;

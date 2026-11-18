@@ -154,7 +154,10 @@ torcula toward the vertex; straight and transverse sinuses and a scalp vein are 
 **Auto SSS** places `SSS (auto)` in the posterior SSS. It works in a 25 mm band along the
 head surface, where the sinuses lie (the straight sinus, deep vessels and most tumors do
 not), on voxels enhancing >= 50% of the brightest posterior-midline voxel there (the
-moderately enhancing dura and falx drop out). The torcula is the top of the lowest run of
+moderately enhancing dura and falx drop out) whose signal washes out after the peak as
+venous blood does (late signal < 85% of the peak enhancement): persistently enhancing scalp,
+dura and tumor are left out. If nothing washes out (acquisition too short), it searches
+without that test and says so. The torcula is the top of the lowest run of
 slices where the posterior structure is wider than 30 mm (transverse sinuses), so cortical
 veins joining the SSS higher up do not move it. Above it, the ROI takes the most posterior
 midline cross-section against the inner table, from 2 mm below the thickest one up to
