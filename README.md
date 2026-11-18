@@ -18,14 +18,15 @@ show synthetic phantoms rendered with GNU Octave; controls look slightly differe
 
 ```matlab
 addpath('/path/to/GRASPilot')
-GRASPilot                              % then File > Open
+GRASPilot                              % then Open... or Open folder...
 GRASPilot('recon.mat')                 % load dialog for this file
 GRASPilot(vk_all, basis_all)           % variables in the workspace
 GRASPilot(data1)                       % output of ReadData.m ([nx ny t nz])
 GRASPilot('recon.mat', 'Voxel', [1 1 1], 'dt', 3.3, 'NoDialog', true)
 GRASPilot('recon.mat', 'BinSize', 2)   % average every 2 frames on load
 GRASPilot('dce_4d.nii.gz')             % 4D NIfTI
-GRASPilot('/path/to/dicom_folder')     % DICOM series (or one of its files)
+GRASPilot('/path/to/folder')           % DICOM series (also extensionless files), NIfTI or .mat
+GRASPilot('/path/to/dicom/IM_0001')    % one image of a DICOM series
 ```
 
 For `.mat` files the load dialog detects `vk_all`/`basis_all`, shows matrix, K, T and a
@@ -44,7 +45,25 @@ the cropped coefficients are kept; frames, time courses and maps are computed on
 the original ReadData.m on a real file (expected difference ~1e-7). Bases stored as
 `[slices K T]` or one shared `[T K]` are accepted.
 
-**NIfTI and DICOM** (File > Open, File > Open DICOM folder) need no dialog:
+**Open folder...** (button or File menu) opens what a folder holds: a DICOM series, NIfTI
+files (one 4D file, or 3D files = frames in name order) or a `.mat` file; a list asks when
+there is a choice. DICOM files are recognized by their content, so names without an
+extension (e.g. `IM_0001`, `I1234`) and files without the 128-byte preamble work, and
+subfolders (patient/study/series) are searched. Other files in the folder are ignored.
+
+**Opening speed.** Preparing a `.mat` reconstruction (crop, normalization to the global
+maximum) evaluates only voxels whose upper bound can exceed the current maximum; the result
+is identical to ReadData.m. Reading the file itself takes longest for large double-precision,
+compressed files. **File > Save fast-open copy** writes the cropped, normalized coefficients
+in single precision, uncompressed, next to the file (`<name>_graspilot.mat`, about 1/8 of a
+double-precision source). Opening the original `.mat` then reads the copy instead, as long as
+the original is unchanged (same size and date) and the crop and normalization settings
+match; the load dialog says so. In a reconstruction pipeline, saving `vk_all` as single and
+with `save(..., '-v7.3', '-nocompression')` also speeds up reading. DICOM headers are parsed
+only up to group 0028 for single-frame images, with the pixel data located at the end of the
+file (verified), so each file is read once for its header and once for its pixels.
+
+**NIfTI and DICOM** need no dialog:
 
 - Geometry from the header; exports keep the scanner coordinates of the input, so they
   overlay on the original series. Oblique slices are shown on their own grid.
@@ -79,7 +98,9 @@ Three **axis codes** give the direction in which row, column and slice index inc
 **Left-right cannot be judged from symmetric anatomy**: confirm it once per reconstruction
 pipeline with a lateralized finding, and press Flip L-R if mirrored. View > Geometry has
 the codes, presets, Rotate axial 90 CW and Flip L-R/A-P/S-I; ROIs follow. A check after
-loading warns if the head looks wider than long (view probably rotated).
+loading warns if the head looks wider than long (view probably rotated), or implausibly long
+or short for the voxel size (outside 100-240 mm front to back): check the pixel and slice
+spacing then, since Auto SSS, brush/circle radii and volumes are in mm.
 
 Exports use one voxel order (i = R->L, j = A->P, k = I->S) with an affine to RAS mm, so
 image, mask and map NIfTIs overlay in ITK-SNAP, 3D Slicer, FSLeyes and nibabel. For `.mat`
@@ -93,7 +114,9 @@ Middle: frame slider, s/frame, time, play. Bottom: time-intensity curves and ROI
 Mouse: left = tool, right-drag = window/level, shift/middle-drag = pan, wheel = slice,
 Ctrl+wheel = zoom, click on the curves = jump to that frame. Keys: Left/Right frame
 (Shift: 10), Up/Down slice, Space play, N/C/B/E tools, [ ] brush size, D 3D, P preview,
-S subtraction view, G grow, M parameter map, Ctrl+Z/Y undo/redo (Help lists all).
+S subtraction view, G grow, M parameter map, X crosshair, Ctrl+Z/Y undo/redo (Help lists all).
+Progress bars (loading, maps, model fits, motion) show the estimated time remaining once a
+few seconds of progress allow an estimate.
 
 ## Segmentation
 
@@ -104,7 +127,7 @@ S subtraction view, G grow, M parameter map, Ctrl+Z/Y undo/redo (Help lists all)
   voxels and mL listed.
 - **Threshold maps:** signal at the frame, subtraction post - pre (default), frame -
   baseline, relative enhancement, peak - baseline, peak relative enhancement (baseline =
-  mean of the pre-contrast frames, default 1-5). Each works with Preview, Otsu, Keep:
+  mean of the baseline frames, detected automatically, see below). Each works with Preview, Otsu, Keep:
   slice/3D, Grow, All -> ROI and Constrain brush/circle.
 
 ### Enhancing tumor from the subtraction map
@@ -128,14 +151,27 @@ grown from the crosshair, necrotic core excluded.*
 *Auto SSS on a venous phantom: the ROI (red) follows the posterior SSS from above the
 torcula toward the vertex; straight and transverse sinuses and a scalp vein are excluded.*
 
-**Auto SSS** places `SSS (auto)` in the posterior SSS. It finds the venous complex (largest
-connected region enhancing >= 35% of the brightest posterior-midline voxel), the torcula
-level (structure wider than 30 mm), then the most posterior midline cross-section against
-the inner table on the slices above, from 2 mm below the thickest cross-section up to
-50 mm. It stops where the sinus is lost, widens, jumps or turns forward over the vertex.
-Partial-volume edges (< 50% of the maximum) are excluded. The status bar explains the
-result; always check the ROI. Needs correct orientation. Scripting:
-`[lin, info] = graspilot_detect_sss(D)` (thresholds in `help graspilot_detect_sss`).
+**Auto SSS** places `SSS (auto)` in the posterior SSS. It works in a 25 mm band along the
+head surface, where the sinuses lie (the straight sinus, deep vessels and most tumors do
+not), on voxels enhancing >= 50% of the brightest posterior-midline voxel there (the
+moderately enhancing dura and falx drop out) whose signal washes out after the peak as
+venous blood does (late signal < 85% of the peak enhancement): persistently enhancing scalp,
+dura and tumor are left out. If nothing washes out (acquisition too short), it searches
+without that test and says so. The torcula is the top of the lowest run of
+slices where the posterior structure is wider than 30 mm (transverse sinuses), so cortical
+veins joining the SSS higher up do not move it. Above it, the ROI takes the most posterior
+midline cross-section against the inner table, from 2 mm below the thickest one up to
+50 mm. It stops where the sinus is lost, jumps or turns forward over the vertex. Veins
+joining the sinus and partial-volume edges (< 50% of the maximum) are trimmed. The status
+bar explains the result; always check the ROI. It needs the correct orientation and voxel
+size: its limits are in mm, so pixels or slices declared larger or smaller than they are
+shorten or clip the ROI.
+
+If detection fails, put the crosshair on the sinus above the torcula and accept *Use
+crosshair*, or use Edit > **SSS ROI from crosshair** at any time. The crosshair voxel must
+wash out after the first pass like venous blood, so a crosshair on tumor or dura is
+rejected. Scripting: `[lin, info] = graspilot_detect_sss(D)` or `app.autoSSS('Seed',
+[i j k])` (thresholds in `help graspilot_detect_sss`).
 
 ## Time, binning and curves
 
@@ -148,6 +184,16 @@ of n consecutive frames, e.g. to compare an 8-spoke reconstruction binned x2/x4 
 incomplete last bin is dropped unless kept (View > Temporal binning); n = 1 restores the
 original. Exports record the bin size and add `_<N>frames` to file names. It is not a
 reconstruction with more spokes per frame.
+
+**Baseline frames** (S0 for every map, parameter, curve and PK model) are detected
+automatically by default (**Auto** next to the baseline fields, also in the Parameters
+window). The bolus arrival is found on the mean curve of the earliest-arriving tenth of the
+strongly enhancing voxels (arteries enhance before veins and tissue), by fitting a
+constant-then-linear-rise model up to the peak. The baseline is frame 1 up to the arrival,
+minus trailing frames already 3% of the rise above baseline (temporal smoothing of the
+reconstruction). It is re-detected after binning or motion correction. Without a clear bolus,
+frames 1-5 are used. Typing frames switches Auto off; ROI sessions keep the choice.
+Scripting: `[bf, info] = D.detectBaseline()`, `app.setAutoBaseline(true)`.
 
 **Curves:** mean +/- SD, median [IQR] or mean only; signal, relative enhancement, S/S0 or
 S - S0; seconds or frames. File > Save TIC plot as PNG.
@@ -167,7 +213,7 @@ frame (injection); seconds if s/frame is set, else frames.
 |---|---|---|
 | Peak enhancement (PE) | Smax - S0 (maximum after the baseline) | a.u. |
 | Relative peak enhancement | 100 PE / S0 | % |
-| Wash-in slope (WIS) | PE / (TP - To), onset To to peak TP (Khalifa 2014); options: maximum up-slope, or maximum slope in the SSS wash-in period | a.u./s |
+| Wash-in slope (WIS) | maximum slope in the SSS wash-in period (default, see below; needs an SSS ROI); options: maximum up-slope between consecutive frames before the peak (Li 2024), or PE / (TP - To), onset To to peak TP (Khalifa 2014) | a.u./s |
 | Washout slope (WOS) | least-squares slope from the peak to the end (at least 3 frames); option: 2 points. Negative = washout | a.u./s |
 | AUC | area of S - S0 after the baseline, whole curve or first N s (IAUC60, IAUC90) | a.u. x s |
 | TTP, onset, T90 | time to peak, to onset (last frame < 10% of PE), to 90% of PE | s |
@@ -180,7 +226,7 @@ frame (injection); seconds if s/frame is set, else frames.
 
 - **Analysis endpoint** ("Analyze up to"): only the first N s or frames are used for every
   parameter; marked by an orange line.
-- **SSS wash-in period** (Lee, Berger et al., Neurosurgery 2023;92:497): the frames around
+- **SSS wash-in period** (default wash-in method; Lee, Berger et al., Neurosurgery 2023;92:497): the frames around
   the steepest rise of the SSS curve where its slope stays >= 50% of the steepest
   (`RefSlopeFrac`); the wash-in slope is the maximum slope in that period. The 50% and
   maximum-slope rules are this tool's reading of the paper.
@@ -335,16 +381,31 @@ frames as red dots.*
 
 Analysis > **Motion check and correction**. **Estimate motion** registers every raw frame
 rigidly to the mean of the baseline frames (or a chosen frame) with normalized mutual
-information (robust to enhancement); ~1-3 s per frame. A warning appears when the mean head
-displacement exceeds one voxel from the reference or half a voxel between frames.
-**Apply correction** resamples the frames (held in memory as a 4D array; **Revert**
-restores them) so ROIs, curves, maps and exports use aligned frames; sessions and exports
-record it. **Export (.csv)** writes the motion per frame. Only rigid motion is corrected;
-motion blurring inside the reconstruction remains.
+information (robust to global enhancement); ~1-3 s per frame. A warning appears when the
+mean head displacement exceeds one voxel from the reference or half a voxel between frames.
+
+- **Register on:** *Head* (default) uses head voxels only. The streak artifacts of radial
+  (stack-of-stars) sampling outside the head rotate from frame to frame and could be read
+  as rotation. *Brain only* also leaves out the scalp; *Head + outline* is the former
+  behaviour (head plus a 4 mm band outside it).
+- **Exclude enhancing voxels:** leaves out vessels, scalp, dura and enhancing lesions.
+  Asymmetric enhancement can be read as motion. An estimate that grows with the contrast
+  uptake and then plateaus, with no visible motion, suggests this; re-estimate with the
+  option and compare.
+- **Smooth:** running median of the estimates over 5 frames (1 = none). It removes
+  frame-to-frame estimation noise, which correction would otherwise add as jitter, and
+  keeps sudden (step) motion. The plots show the smoothed estimates over the faint
+  per-frame ones.
+
+**Apply correction** resamples the frames trilinearly (held in memory as a 4D array;
+**Revert** restores them), so ROIs, curves, maps and exports use aligned frames; sessions
+and exports record it. Below the warning thresholds it asks first: sub-voxel corrections
+mostly add interpolation blur. **Export (.csv)** writes the motion per frame. Only rigid
+motion is corrected; motion blurring inside the reconstruction remains.
 
 ```matlab
 M = app.estimateMotion(); app.applyMotion();       % app.revertMotion() to undo
-M = graspilot_motion_estimate(D, 'RefFrames', 1:5, 'WarnAbsMM', 1.5);
+M = graspilot_motion_estimate(D, 'RefFrames', 1:5, 'Region', 'brain', 'ExcludeEnhancing', true);
 D.applyMotionCorrection(M);
 graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true);  % batch, + _motion.csv
 ```
@@ -387,13 +448,25 @@ app.exportMaskNifti('mask.nii.gz');
 
 Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a graspilot_*.m`.
 
+## Version and updates
+
+Help > About shows the version: the latest GitHub release the code is based on (e.g.
+`0.1.0`) and, when GRASPilot runs from a git checkout, the exact revision from `git describe`
+(e.g. `v0.1.0-12-gab9e173` = 12 commits after release v0.1.0, `-dirty` = local changes).
+Exports (JSON sidecar, spreadsheet Info/Settings sheets) and ROI sessions record the same
+string. Help > GitHub page opens https://github.com/Beyond-Enhancement/GRASPilot (releases,
+issues). In code: `graspilot_version()` or `GRASPilot.versionInfo()`. When tagging a release
+`vX.Y.Z`, set `Version` in `GRASPilot.versionInfo` (GRASPilot.m) to `X.Y.Z`.
+
 ## Files
 
 | File | Purpose |
 |---|---|
 | `GRASPilot.m`, `graspilot_app.m` | GUI; launcher / compiler entry point |
-| `GRASPilotData.m` | data model: loading, frame synthesis, orientation, maps, PK maps, affine |
+| `graspilot_version.m` | version, git revision and repository URL |
+| `GRASPilotData.m` | data model: loading (incl. fast-open copies), frame synthesis, orientation, maps, PK maps, affine |
 | `graspilot_load_dialog.m`, `graspilot_dicom_read.m` | `.mat` dialog; DICOM reader |
+| `graspilot_folder_contents.m`, `graspilot_is_dicom.m` | what a folder holds; DICOM detection by content |
 | `graspilot_nifti_read.m`, `graspilot_nifti_write.m`, `graspilot_write_dce_nifti.m` | NIfTI I/O, series + JSON sidecar |
 | `graspilot_export_timeseries.m`, `graspilot_export_params.m` | spreadsheet exports |
 | `graspilot_curve_params.m`, `graspilot_ref_window.m`, `graspilot_end_frame.m` | semi-quantitative parameters, SSS wash-in period, endpoint |
@@ -405,13 +478,14 @@ Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a g
 | `legacy/` | original ReadData.m, CropImg.m, @TempPCASub (validation reference) |
 | `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
 | `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
-| `tests/*_phantom.m` | venous (SSS), motion, PK (SPGR) and RATIO (complex subspace) phantoms |
+| `tests/*_phantom.m` | venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
 
 ## Notes and limitations
 
 - `.mat` geometry comes from the dialog: check voxel size, left-right and timing once per
   protocol.
-- The DICOM reader, Auto SSS, motion estimation and the PK models were validated on
+- The DICOM reader, Auto SSS (incl. a phantom with cortical veins, enhancing dura and a
+  tumor beside the sinus), motion estimation and the PK models were validated on
   synthetic data only; check them on the first real series.
 - Signal is the reconstruction magnitude. Semi-quantitative values compare only between
   scans with the same protocol and scaling (or use /SSS). PK values depend on the assumed

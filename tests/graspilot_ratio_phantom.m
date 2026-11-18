@@ -57,7 +57,7 @@ fb = 0.3;
 Sart = fb * Sb + (1 - fb) * St;
 tr.WSignal = fb * Sb(1) / Sart(1);
 types = [St; Sart; spgr(1.3, 1 / T10b + r1 * cv) .* exp(1i * 0.5 * cv); spgr(1, 1 / T10 + r1 * C2); ...
-    spgr(1, 1 / T10 + r1 * Cslow); spgr(1, 1 / T10 + r1 * Cfast); 0.02 * ones(1, T)];
+    spgr(1, 1 / T10 + r1 * Cslow); spgr(1, 1 / T10 + r1 * Cfast); 0.002 * ones(1, T)];
 [U, S] = svd(types.', 'econ');
 K = nnz(diag(S) > 1e-9 * S(1));
 U = U(:, 1:K);

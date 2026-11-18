@@ -46,6 +46,21 @@ nfail = nfail + check('extended Tofts on a Tofts curve: vp = 0', R.etofts.vp(1) 
 nfail = nfail + check('NaN curve -> NaN parameters; fitted curves returned', isnan(R.tofts.Ktrans(3)) && ...
     max(abs(Fit.tofts(1, :) - Ct(1, :))) < 1e-3 * max(Ct(1, :)), 0);
 
+% ---- automatic baseline: bolus arrival of the earliest strongly enhancing voxels
+bfs = {};
+[D1, t1] = graspilot_pk_phantom(0.02); bfs{1} = D1.detectBaseline();
+[D2, t2] = graspilot_sss_phantom(); bfs{2} = D2.detectBaseline();
+[D3, t3] = graspilot_sss_phantom([], 'realistic'); bfs{3} = D3.detectBaseline();
+[D4, t4] = graspilot_ratio_phantom(0.005); bfs{4} = D4.detectBaseline();
+D4.setBinning(2); bfs{5} = D4.detectBaseline();
+ok = isequal(bfs{1}, 1:5) && isequal(bfs{2}, 1:3) && isequal(bfs{3}, 1:3) && isequal(bfs{4}, 1:5) && ...
+    isequal(bfs{5}, 1:2);
+nfail = nfail + check('automatic baseline (4 phantoms; binned x2)', ok, numel(bfs{4}));
+Dn = GRASPilotData.fromDense(rand(8, 8, 2, 12, 'single'), 'xyzt');
+[bfn, in] = Dn.detectBaseline();
+nfail = nfail + check('no bolus: baseline falls back to frames 1-5', numel(bfn) <= 5 && bfn(1) == 1 && ...
+    ~isempty(in.Message), numel(bfn));
+
 % ---- data model: maps of the phantom with the SSS as AIF
 [D, tr] = graspilot_pk_phantom();
 aif = mean(double(D.timecourses(find(tr.SSS))), 1);
@@ -163,7 +178,13 @@ if ~doGUI, return; end
 app = GRASPilot(D);
 app.Quiet = true;
 cleanup = onCleanup(@() app.close(true));
-app.BaseFrames = [1 5];
+nfail = nfail + check('viewer: baseline detected on load (Auto on)', app.AutoBaseline && ...
+    isequal(app.BaseFrames, [1 5]) && strcmp(get(app.H.base2, 'String'), '5'), app.BaseFrames(2));
+set(app.H.base2, 'String', '3'); app.onBaseline();
+ok = ~app.AutoBaseline && isequal(app.BaseFrames, [1 3]) && get(app.H.baseAuto, 'Value') == 0;
+app.setAutoBaseline(true);
+nfail = nfail + check('typed baseline turns Auto off; Auto re-detects', ok && isequal(app.BaseFrames, [1 5]) && ...
+    get(app.H.baseAuto, 'Value') == 1, app.BaseFrames(2));
 rs = app.addROI('SSS', [1 0 0]); app.setVoxels(rs, find(tr.SSS), true);
 rt = app.addROI('Tofts box', [1 1 0]); app.setVoxels(rt, find(tr.Tofts), true);
 rc = app.addROI('2CXM box', [0 1 1]); app.setVoxels(rc, find(tr.CXM), true);

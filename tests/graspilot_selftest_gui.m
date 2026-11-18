@@ -71,7 +71,7 @@ app.undo();
 % ---- map-based threshold (peak relative enhancement) + preview + Otsu
 app.setThrSource('peakRE');
 app.setPreview(true);
-nfail = nfail + check('enhancement maps computed on demand', D.hasMaps(1:5), 0);
+nfail = nfail + check('enhancement maps computed on demand', D.hasMaps(app.BaseFrames(1):app.BaseFrames(2)), 0);
 th = app.suggestThreshold();
 nfail = nfail + check('Otsu suggestion finite', isfinite(th), th);
 al = app.PrevA{1};
@@ -211,6 +211,7 @@ app.setThreshold(-Inf, Inf);
 
 % ---- temporal binning in the viewer
 app.setFrame(10);
+app.AutoBaseline = false;                             % manual baseline: remapped to the same time points
 app.BaseFrames = [1 4];
 app.applyBinning(2);
 nfail = nfail + check('binning x2: frames, current frame and baseline remapped', D.NT == 11 && ...

@@ -1,4 +1,4 @@
-function [D, truth] = graspilot_sss_phantom(zmin)
+function [D, truth] = graspilot_sss_phantom(zmin, mode)
 %GRASPILOT_SSS_PHANTOM Synthetic DCE head with dural sinuses for testing graspilot_detect_sss.
 %
 %   [D, truth] = graspilot_sss_phantom          full coverage
@@ -10,8 +10,17 @@ function [D, truth] = graspilot_sss_phantom(zmin)
 %   anterior-superior, ~2 mm from the SSS just above the torcula), a scalp
 %   vein as bright as the sinuses and a brighter posterior artery near the
 %   midline. truth holds the masks and the torcula slice.
+%
+%   [D, truth] = graspilot_sss_phantom(zmin, 'realistic') adds what real
+%   post-contrast data have around the sinus: bridging cortical veins
+%   draining into the SSS (one low posterior), an enhancing falx, tentorium
+%   and dural shell, a strongly and persistently enhancing scalp (no
+%   washout; at the end brighter than the sinus), and a ring-enhancing tumor beside the posterior
+%   midline; 2 mm slices; stored rotated in-plane and flipped S-I (native
+%   axis codes 'PLI', already set). truth is in canonical (LPS) order.
 
-if nargin < 1, zmin = 1; end
+if nargin < 1 || isempty(zmin), zmin = 1; end
+real = nargin > 1 && strcmpi(mode, 'realistic');
 n = [100 120 90];
 [X, Y, Z] = ndgrid(1:n(1), 1:n(2), 1:n(3));
 c = [50 58 40];
@@ -44,26 +53,65 @@ PA = repmat([44 72 28], numel(s2), 1) + s2 * ([47 96 46] - [44 72 28]);
 AR = tube(n, PA, 1.2 * ones(size(s2)));
 
 ven = [0 0 0 0.3 0.8 1.0 0.85 0.7 0.6 0.55 0.5 0.5];
+dur = 0.45 * [0 0 0 0.2 0.5 0.7 0.8 0.85 0.9 0.92 0.94 0.95];     % dura, falx, tentorium, tumor (slow)
+sca = 1.1 * [0 0 0 0.1 0.25 0.4 0.55 0.65 0.75 0.85 0.95 1];      % scalp (realistic): persistent
+CV = false(n); DU = false(n); TU = false(n);
+if real
+    % bridging cortical veins on the brain surface, from the SSS laterally
+    ai = [38 48 44] * 0.93;
+    for tj = [20 45 65 85 105 125]
+        P0 = [50, 58 + 43 * cosd(tj), 40 + 39 * sind(tj)];
+        for sd = [-1 1]
+            if tj == 20 && sd > 0, continue; end            % one low posterior vein
+            u0 = (P0 - c) ./ ai; u0 = u0 / norm(u0);
+            u1 = [sd * 0.9, 0.3 * cosd(tj), 0.3 * sind(tj)]; u1 = u1 / norm(u1);
+            sv = (0:0.01:1)';
+            U = (1 - sv) * u0 + sv * u1;
+            U = U ./ repmat(sqrt(sum(U .^ 2, 2)), 1, 3);
+            CV = CV | tube(n, repmat(c, numel(sv), 1) + U .* repmat(ai, numel(sv), 1), 1.4 * ones(size(sv)));
+        end
+    end
+    CV = CV & inner;
+    % falx (midline sheet below the SSS), tentorium (sloping sheet from the torcula), dural shell
+    falx = abs(X - 50) <= 0.8 & inner & Z > c(3) - 5 & ~(q([24 32 26]) <= 1);
+    tent = abs(Z - (tor(3) + 0.45 * (tor(2) - Y))) <= 0.8 & inner & Y > 55 & abs(X - 50) <= 34;
+    shell = inner & ~(q([37 47 43]) <= 1);
+    DU = falx | tent | shell;
+    % ring-enhancing tumor 14 mm left of the midline, ~22 mm from the posterior inner table
+    rt = sqrt((X - 64) .^ 2 + (Y - 84) .^ 2 + (Z - 36) .^ 2);
+    TU = rt <= 9 & rt > 5;
+end
 art = [0 0 0 1.3 0.9 0.5 0.35 0.3 0.28 0.27 0.26 0.25];
 tis = 0.04 * [0 0 0 0.2 0.5 0.7 0.8 0.85 0.9 0.92 0.94 0.95];
 base = 0.35 * inner + 0.03 * skull + 0.5 * scalp;
-veins = SSS | TS | SS | SV;
+veins = SSS | TS | SS | SV | CV;
 base(veins | AR) = 0.3;
 T = numel(ven);
 I = zeros([n T], 'single');
 randn('state', 11); %#ok<RAND>
 for t = 1:T
-    f = base + tis(t) * (inner | scalp) + ven(t) * veins + art(t) * AR;
+    f = base + tis(t) * (inner | scalp) + ven(t) * veins + art(t) * AR + dur(t) * (DU & ~veins) + ...
+        1.4 * dur(t) * TU;
+    if real, f = f + sca(t) * (scalp & ~SV); end
     I(:, :, :, t) = single(f + 0.005 * randn(n));
 end
-I = I(:, :, zmin:end, :);
-D = GRASPilotData.fromDense(I, 'xyzt');
-D.setAxisCodes('LPS');
-D.VoxNative = [1 1 1];
-D.dt = 4;
 k = zmin:n(3);
+if real, k = k(1:2:end); end                          % 2 mm slices
+I = I(:, :, k, :);
+if real
+    D = GRASPilotData.fromDense(flip(permute(I, [2 1 3 4]), 3), 'xyzt');   % rows A->P, cols R->L, slices S->I
+    D.setAxisCodes('PLI');
+    D.VoxNative = [1 1 2];
+else
+    D = GRASPilotData.fromDense(I, 'xyzt');
+    D.setAxisCodes('LPS');
+    D.VoxNative = [1 1 1];
+end
+D.dt = 4;
 truth = struct('SSS', SSS(:, :, k), 'TS', TS(:, :, k) & ~SSS(:, :, k), 'SS', SS(:, :, k) & ~SSS(:, :, k), ...
-    'SV', SV(:, :, k), 'AR', AR(:, :, k), 'TorculaZ', tor(3) - zmin + 1);
+    'SV', SV(:, :, k), 'AR', AR(:, :, k), 'TorculaZ', tor(3) - zmin + 1, 'CV', CV(:, :, k) & ~SSS(:, :, k), ...
+    'Tumor', TU(:, :, k));
+if real, truth.TorculaZ = find(k <= tor(3), 1, 'last'); end
 end
 
 function M = tube(n, P, r)

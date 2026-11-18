@@ -24,7 +24,7 @@ classdef GRASPilot < handle
 %   Keys:   Left/Right frame -/+1 (Shift: 10), Up/Down slice, Home/End,
 %           Space play, N/C/B/E tools, [ ] brush size, D toggle 3D,
 %           P preview, S subtraction view, G grow from crosshair,
-%           M parameter map overlay,
+%           M parameter map overlay, X crosshair on/off,
 %           Ctrl+Z undo, Ctrl+Y or Ctrl+Shift+Z redo.
 %
 %   No toolboxes are required. Nothing is written except files you export.
@@ -73,6 +73,8 @@ classdef GRASPilot < handle
         ThrLo = -Inf;
         ThrHi = Inf;
         BaseFrames = [1 5];
+        AutoBaseline = true;    % baseline frames detected from the bolus arrival (GRASPilotData.detectBaseline)
+        BaselineMsg = '';
         Alpha = 0.35;
         ShowOutline = true;
         ShowCross = true;
@@ -103,11 +105,11 @@ classdef GRASPilot < handle
         ParamA = cell(1, 3);
         LoadOpts = struct();
         Busy = false;
+        Eta = struct('tic', [], 'f0', 0, 'e0', 0, 'last', 0);   % progress timing (estimated time remaining)
         Quiet = false;          % true: dialogs auto-answer with defaults (scripting/tests)
     end
 
     properties (Constant)
-        Version = '1.0';
         ViewAxis = [3 2 1];
         ViewNames = {'Axial', 'Coronal', 'Sagittal'};
         ViewLabels = {{'R', 'L', 'A', 'P'}, {'R', 'L', 'S', 'I'}, {'A', 'P', 'S', 'I'}};
@@ -207,6 +209,10 @@ classdef GRASPilot < handle
 
         function openFile(obj, file, opts)
             if nargin < 3, opts = obj.LoadOpts; end
+            if exist(file, 'dir') == 7
+                obj.openFolder(file, opts);
+                return
+            end
             kind = GRASPilot.inputKind(file);
             if ~strcmp(kind, 'mat')
                 obj.openImages(file, kind, opts);
@@ -231,6 +237,103 @@ classdef GRASPilot < handle
             obj.applyLoadGeometry(D, opts);
             obj.LastDir = fileparts(file);
             obj.setData(D);
+            if ~isempty(D.FastCopyFile)
+                obj.setStatus(sprintf('Opened from the fast-open copy %s. %s', D.FastCopyFile, get(obj.H.status, 'String')));
+            elseif strcmp(D.Mode, 'subspace')
+                fi = dir(file);
+                if ~isempty(fi) && fi.bytes > 1e9
+                    obj.setStatus([get(obj.H.status, 'String') ' Tip: File > Save fast-open copy makes ' ...
+                        'reopening this file several times faster.']);
+                end
+            end
+        end
+
+        function file = onSaveFastCopy(obj)
+            % save a fast-open copy of the current .mat reconstruction
+            file = '';
+            if ~obj.requireData(), return; end
+            D = obj.Data;
+            if ~strcmp(D.SourceType, 'mat') || exist(D.SourceFile, 'file') ~= 2 || ~isempty(D.FastCopyFile)
+                obj.inform(['A fast-open copy is made from a .mat reconstruction opened from its original ' ...
+                    'file.'], 'Fast-open copy');
+                return
+            end
+            file = GRASPilotData.fastCopyName(D.SourceFile);
+            if ~obj.Quiet
+                b = obj.ask(sprintf(['Save a fast-open copy as\n%s ?\n\nIt holds the cropped, normalized ' ...
+                    'coefficients in single precision (about %.0f MB). Opening the original file then reads ' ...
+                    'it instead, as long as the original is unchanged.'], file, ...
+                    numel(D.C) * 4 * (1 + ~isreal(D.C)) / 2^20), 'Fast-open copy', {'Save', 'Cancel'}, 'Save');
+                if ~strcmp(b, 'Save'), file = ''; return; end
+            end
+            wb = obj.wbOpen('Saving the fast-open copy...');
+            try
+                D.saveFastCopy(file);
+            catch err
+                obj.wbClose(wb);
+                obj.showError(err, 'Could not save the fast-open copy');
+                file = '';
+                return
+            end
+            obj.wbClose(wb);
+            obj.setStatus(['Saved the fast-open copy ' file '.']);
+        end
+
+        function openFolder(obj, folder, opts)
+            % Open what a folder holds: a DICOM series (files with any name or
+            % no extension; subfolders are searched), NIfTI files (one 4D file,
+            % or several 3D files = frames) or a .mat reconstruction. When the
+            % folder holds several kinds or several files, a list asks which.
+            if nargin < 3, opts = obj.LoadOpts; end
+            c = graspilot_folder_contents(folder);
+            kinds = {};
+            lbl = {};
+            if c.Dicom
+                kinds{end + 1} = 'dicom'; lbl{end + 1} = 'DICOM series (this folder and its subfolders)';
+            end
+            if ~isempty(c.Nifti)
+                kinds{end + 1} = 'nifti'; lbl{end + 1} = sprintf('NIfTI (%d file(s))', numel(c.Nifti));
+            end
+            if ~isempty(c.Mat)
+                kinds{end + 1} = 'mat'; lbl{end + 1} = sprintf('MATLAB .mat reconstruction (%d file(s))', numel(c.Mat));
+            end
+            if isempty(kinds)
+                error('GRASPilot:input', ['No DICOM, NIfTI or .mat files found in %s (DICOM files are ' ...
+                    'recognized by their content, also without extension; subfolders are searched).'], folder);
+            end
+            k = 1;
+            if numel(kinds) > 1 && ~obj.Quiet
+                [k, okd] = listdlg('ListString', lbl, 'SelectionMode', 'single', 'InitialValue', 1, ...
+                    'Name', 'Open folder', 'ListSize', [420 120], 'PromptString', 'The folder holds:');
+                if ~okd || isempty(k), return; end
+            end
+            obj.LastDir = folder;
+            switch kinds{k}
+                case 'dicom'
+                    obj.openImages(folder, 'dicom', opts);
+                case 'nifti'
+                    files = c.Nifti;
+                    if numel(files) > 1 && ~obj.Quiet
+                        [~, nm, ex] = cellfun(@fileparts, files, 'UniformOutput', false);
+                        [sel, okd] = listdlg('ListString', strcat(nm, ex), 'InitialValue', 1:numel(files), ...
+                            'Name', 'NIfTI files', 'ListSize', [420 300], 'PromptString', ...
+                            {'One 4D file, or several 3D files (one per frame,', 'in name order):'});
+                        if ~okd || isempty(sel), return; end
+                        files = files(sel);
+                    end
+                    if numel(files) == 1, files = files{1}; end
+                    obj.openImages(files, 'nifti', opts);
+                case 'mat'
+                    f = c.Mat{1};
+                    if numel(c.Mat) > 1 && ~obj.Quiet
+                        [~, nm, ex] = cellfun(@fileparts, c.Mat, 'UniformOutput', false);
+                        [sel, okd] = listdlg('ListString', strcat(nm, ex), 'SelectionMode', 'single', ...
+                            'Name', '.mat files', 'ListSize', [420 300], 'PromptString', 'Reconstruction to open:');
+                        if ~okd || isempty(sel), return; end
+                        f = c.Mat{sel};
+                    end
+                    obj.openFile(f, opts);
+            end
         end
 
         function openImages(obj, src, kind, opts)
@@ -336,8 +439,11 @@ classdef GRASPilot < handle
             obj.Pos = max(1, round((n + 1) / 2));
             obj.Frame = max(1, min(D.NT, round(0.75 * D.NT)));
             obj.BaseFrames = [1 max(1, min(5, D.NT))];
+            obj.BaselineMsg = '';
+            if obj.AutoBaseline, obj.detectBaselineFrames(); end
             set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
             set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+            set(obj.H.baseAuto, 'Value', double(obj.AutoBaseline));
             obj.setSubFrames(D.NT, 1, false);
             set(obj.H.binEdit, 'String', num2str(D.BinSize));
             obj.ViewMode = 'frame';
@@ -367,7 +473,7 @@ classdef GRASPilot < handle
             obj.Modified = keep;
             [~, nm] = fileparts(D.SourceFile);
             set(obj.Fig, 'Name', ['GRASPilot - ' nm]);
-            obj.setStatus(sprintf('Loaded %s. %s', nm, D.describe()));
+            obj.setStatus(strtrim(sprintf('Loaded %s. %s %s', nm, D.describe(), obj.BaselineMsg)));
             obj.checkOrientation();
         end
 
@@ -392,6 +498,13 @@ classdef GRASPilot < handle
                 obj.setStatus(sprintf(['Orientation check: the head is wider left-right (%.0f mm) than ' ...
                     'front-back (%.0f mm), so the views are probably rotated 90 degrees. ' ...
                     'Use View > Geometry (axis codes, Rotate 90).'], ext(1), ext(2)));
+            elseif max(ext) > 240 || max(ext) < 100
+                % heads are ~120-220 mm front to back (infant to adult, with nose and scalp)
+                ok = false;
+                obj.setStatus(sprintf(['Voxel size check: with %.3g x %.3g mm pixels the head measures %.0f mm ' ...
+                    'front to back and %.0f mm left to right, which is implausible: check the pixel and slice ' ...
+                    'spacing (View > Geometry). Auto SSS, brush and circle radii, ROI volumes and mm-based ' ...
+                    'settings depend on it.'], vox(1), vox(2), ext(2), ext(1)));
             end
         end
 
@@ -896,8 +1009,9 @@ classdef GRASPilot < handle
             a = min(T, floor((rawBase(1) - 1) / n) + 1);
             b = max(a, min(T, floor(rawBase(2) / n)));
             obj.BaseFrames = [a b];
-            set(obj.H.base1, 'String', num2str(a));
-            set(obj.H.base2, 'String', num2str(b));
+            if obj.AutoBaseline, obj.detectBaselineFrames(); end
+            set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
+            set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
             obj.setSubFrames(T, 1, false);
             obj.CLimStore.sub = [];
             set(obj.H.binEdit, 'String', num2str(n));
@@ -1006,9 +1120,15 @@ classdef GRASPilot < handle
             if ~obj.requireData(), return; end
             if ~isempty(varargin), obj.Data.setParamOptions(varargin{:}); end
             if ~obj.syncRefWindow()
-                obj.inform(['Wash-in in the SSS wash-in period needs a reference ROI in the superior ' ...
-                    'sagittal sinus with a rising curve: press Auto SSS (or draw an ROI whose name ' ...
-                    'contains SSS). Wash-in slopes are empty until then.'], 'Parameters');
+                q = ['Wash-in in the SSS wash-in period (the default) needs a reference ROI in the ' ...
+                    'superior sagittal sinus with a rising curve. Wash-in slopes are empty until there is one.'];
+                if obj.Quiet
+                    obj.inform([q ' Press Auto SSS (or draw an ROI whose name contains SSS).'], 'Parameters');
+                elseif strcmp(obj.ask(sprintf('%s\n\nDetect the SSS now (Auto SSS)?', q), 'Parameters', ...
+                        {'Auto SSS', 'Continue without'}, 'Auto SSS'), 'Auto SSS')
+                    obj.autoSSS();
+                    obj.syncRefWindow();
+                end
             end
             ok = obj.ensureMaps(false);
         end
@@ -1402,14 +1522,14 @@ classdef GRASPilot < handle
             D = obj.Data;
             W = 560; Hh = 420;
             ss = get(0, 'ScreenSize');
-            bg = [0.94 0.94 0.94];
+            bg = obj.Col.panel; fg = obj.Col.fg;          % dark theme, explicit colours
             d = figure('Name', 'Geometry and orientation', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                 'ToolBar', 'none', 'Resize', 'off', 'Units', 'pixels', 'Color', bg, ...
                 'Position', [(ss(3) - W) / 2, (ss(4) - Hh) / 2, W, Hh], 'WindowStyle', 'modal');
             t = @(x, y, w, s) uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [x y w 18], ...
-                'String', s, 'HorizontalAlignment', 'left', 'BackgroundColor', bg);
+                'String', s, 'HorizontalAlignment', 'left', 'BackgroundColor', bg, 'ForegroundColor', fg);
             e = @(x, y, w, s) uicontrol(d, 'Style', 'edit', 'Units', 'pixels', 'Position', [x y w 22], ...
-                'String', s, 'BackgroundColor', 'w');
+                'String', s, 'BackgroundColor', [1 1 1], 'ForegroundColor', [0 0 0]);
             b = @(x, y, w, s, cb) uicontrol(d, 'Style', 'pushbutton', 'Units', 'pixels', ...
                 'Position', [x y w 26], 'String', s, 'Callback', cb);
             letters = 'LRPASI';
@@ -1421,8 +1541,9 @@ classdef GRASPilot < handle
             hC = GRASPilot.handleArray(3);
             for k = 1:3
                 t(12 + (k - 1) * 180, y, 56, lab{k});
-                hC(k) = uicontrol(d, 'Style', 'popupmenu', 'Units', 'pixels', 'Position', [68 + (k - 1) * 180, y + 2, 110, 22], ...
-                    'String', opts, 'Value', find(letters == D.AxisCodes(k)), 'BackgroundColor', 'w');
+                hC(k) = uicontrol(d, 'Style', 'popupmenu', 'Units', 'pixels', 'Position', [74 + (k - 1) * 180, y + 2, 104, 22], ...
+                    'String', opts, 'Value', find(letters == D.AxisCodes(k)), 'BackgroundColor', [1 1 1], ...
+                    'ForegroundColor', [0 0 0]);
             end
             y = y - 36;
             t(12, y + 4, 60, 'Presets');
@@ -1449,7 +1570,8 @@ classdef GRASPilot < handle
             t(255, y, 110, 'Frame 1 at (s)');
             hT0 = e(365, y + 2, 60, num2str(D.t0));
             uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [12 56 W - 24 84], ...
-                'HorizontalAlignment', 'left', 'BackgroundColor', [1 1 0.92], 'String', { ...
+                'HorizontalAlignment', 'left', 'BackgroundColor', [0.21 0.21 0.24], ...
+                'ForegroundColor', obj.Col.dim, 'String', { ...
                 'Target: axial view anterior up, patient right on the left (radiological);', ...
                 'coronal and sagittal views superior up. Presets and Adjust apply at once.', ...
                 'Left-right cannot be judged from symmetric anatomy: confirm it once with a', ...
@@ -1563,15 +1685,16 @@ classdef GRASPilot < handle
             obj.refreshPKWindow();
         end
 
-        function r = autoSSS(obj)
+        function r = autoSSS(obj, varargin)
             % detect the posterior superior sagittal sinus from above the torcula
-            % toward the vertex and put it in the ROI "SSS (auto)" (replaced on each run)
+            % toward the vertex and put it in the ROI "SSS (auto)" (replaced on each
+            % run). Options as in graspilot_detect_sss, e.g. 'Seed', obj.Pos.
             r = 0;
             if ~obj.requireData(), return; end
             wb = obj.wbOpen('Detecting the superior sagittal sinus...');
             try
                 [lin, info] = graspilot_detect_sss(obj.Data, 'BaseFrames', obj.BaseFrames(1):obj.BaseFrames(2), ...
-                    'Progress', @(f, m) obj.wbUpdate(wb, f, m));
+                    'Progress', @(f, m) obj.wbUpdate(wb, f, m), varargin{:});
             catch err
                 obj.wbClose(wb);
                 obj.showError(err, 'SSS detection failed');
@@ -1579,7 +1702,15 @@ classdef GRASPilot < handle
             end
             obj.wbClose(wb);
             if isempty(lin)
-                obj.inform(info.Message, 'Auto SSS');
+                seeded = any(strcmpi(varargin(1:2:end), 'Seed'));
+                if seeded || obj.Quiet
+                    obj.inform(info.Message, 'Auto SSS');
+                else
+                    b = obj.ask(sprintf(['%s\n\nStart from the crosshair instead? Put it on the sinus above ' ...
+                        'the torcula first (posterior midline, against the inner table).'], info.Message), ...
+                        'Auto SSS', {'Use crosshair', 'Cancel'}, 'Use crosshair');
+                    if strcmp(b, 'Use crosshair'), r = obj.autoSSS('Seed', obj.Pos); end
+                end
                 return
             end
             k = find(strcmp({obj.ROIs.Name}, 'SSS (auto)'), 1);
@@ -1702,7 +1833,8 @@ classdef GRASPilot < handle
             D = obj.Data;
             S = struct();
             S.Format = 'GRASPilot ROI session';
-            S.Version = obj.Version;
+            vv = GRASPilot.versionInfo();
+            S.Version = vv.Text;
             S.Saved = datestr(now, 'yyyy-mm-dd HH:MM:SS');
             S.SourceFile = D.SourceFile;
             S.NativeSize = D.NativeSize;
@@ -1715,6 +1847,7 @@ classdef GRASPilot < handle
             S.t0 = D.t0;
             S.RawTimes = D.RawTimes;
             S.BaseFrames = obj.BaseFrames;
+            S.AutoBaseline = obj.AutoBaseline;
             S.BinSize = D.BinSize;
             S.BinKeepPartial = D.BinKeepPartial;
             S.SubFrames = obj.SubFrames;
@@ -1811,11 +1944,15 @@ classdef GRASPilot < handle
                 obj.Masks{k} = D.native2canon(Mn);
                 obj.ROIs(k).Visible = logical(S.ROIVisible(r));
             end
-            if isfield(S, 'BaseFrames') && (applied || ~binDiff)
+            if isfield(S, 'AutoBaseline') && S.AutoBaseline
+                obj.setAutoBaseline(true);
+            elseif isfield(S, 'BaseFrames') && (applied || ~binDiff)
                 bfr = max(1, min(D.NT, S.BaseFrames));
+                obj.AutoBaseline = false;
                 obj.BaseFrames = [bfr(1) max(bfr)];
                 set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
                 set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+                set(obj.H.baseAuto, 'Value', 0);
             end
             if isfield(S, 'SubFrames') && (applied || ~binDiff)
                 obj.setSubFrames(S.SubFrames(1), S.SubFrames(2), false);
@@ -1979,7 +2116,9 @@ classdef GRASPilot < handle
         function buildMenus(obj)
             m = uimenu(obj.Fig, 'Label', 'File');
             uimenu(m, 'Label', 'Open (.mat, NIfTI, DICOM file)...', 'Callback', @(s, e) obj.onOpen());
-            uimenu(m, 'Label', 'Open DICOM folder...', 'Callback', @(s, e) obj.onOpenDicomFolder());
+            uimenu(m, 'Label', 'Open folder (DICOM, NIfTI, .mat)...', 'Callback', @(s, e) obj.onOpenFolder());
+            uimenu(m, 'Label', 'Save fast-open copy of the .mat...', 'Callback', @(s, e) obj.onSaveFastCopy(), ...
+                'Separator', 'on');
             uimenu(m, 'Label', 'Save ROIs (session)...', 'Separator', 'on', 'Callback', @(s, e) obj.onSaveROIs());
             uimenu(m, 'Label', 'Load ROIs (session)...', 'Callback', @(s, e) obj.onLoadROIs());
             uimenu(m, 'Label', 'Import mask NIfTI...', 'Callback', @(s, e) obj.onImportMask());
@@ -1997,6 +2136,8 @@ classdef GRASPilot < handle
             uimenu(m, 'Label', 'Fill holes in active ROI', 'Callback', @(s, e) obj.fillHoles());
             uimenu(m, 'Label', 'Detect superior sagittal sinus (auto ROI)', 'Separator', 'on', ...
                 'Callback', @(s, e) obj.autoSSS());
+            uimenu(m, 'Label', 'SSS ROI from crosshair (crosshair on the sinus)', ...
+                'Callback', @(s, e) obj.autoSSS('Seed', obj.Pos));
             uimenu(m, 'Label', 'Grow from crosshair   (G)', 'Callback', @(s, e) obj.growFromCrosshair());
             uimenu(m, 'Label', 'All voxels in threshold window -> active ROI', 'Callback', @(s, e) obj.windowToROI());
             m = uimenu(obj.Fig, 'Label', 'View');
@@ -2017,10 +2158,33 @@ classdef GRASPilot < handle
                 'Callback', @(s, e) obj.openMotionWindow());
             m = uimenu(obj.Fig, 'Label', 'Help');
             uimenu(m, 'Label', 'Mouse and keyboard...', 'Callback', @(s, e) obj.showHelp());
-            uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.inform(sprintf(['GRASPilot %s\n' ...
-                'Frames are synthesized from the subspace coefficients exactly as in ReadData.m ' ...
-                '(TempPCASub adjoint, CropImg, global-max normalization).\nNo toolboxes required; ' ...
-                'runs offline.'], obj.Version), 'About'));
+            uimenu(m, 'Label', 'GitHub page (updates, issues)...', 'Callback', @(s, e) obj.openRepoPage());
+            uimenu(m, 'Label', 'About', 'Callback', @(s, e) obj.showAbout());
+        end
+
+        function s = showAbout(obj)
+            % version (release and git revision) and the GitHub repository
+            v = GRASPilot.versionInfo();
+            s = sprintf(['GRASPilot %s\n%s.\n\n%s\n\nFrames are synthesized from the subspace coefficients ' ...
+                'exactly as in ReadData.m (TempPCASub adjoint, CropImg, global-max normalization). No toolboxes ' ...
+                'required; runs offline.'], v.Text, v.Details, v.URL);
+            if obj.Quiet
+                fprintf('[About] %s\n', s);
+                return
+            end
+            b = obj.ask(s, 'About GRASPilot', {'Open GitHub page', 'Close'}, 'Close');
+            if strcmp(b, 'Open GitHub page'), obj.openRepoPage(); end
+        end
+
+        function openRepoPage(obj)
+            url = GRASPilot.versionInfo().URL;
+            ok = false;
+            try
+                st = web(url, '-browser');
+                ok = isempty(st) || st == 0;
+            catch
+            end
+            if ~ok, obj.inform(sprintf('GitHub repository:\n%s', url), 'GRASPilot'); end
         end
 
         function h = ctl(obj, parent, x, top, w, ht, style, str, varargin)
@@ -2052,8 +2216,12 @@ classdef GRASPilot < handle
             P = obj.H.left; C = obj.Col;
             hdr = @(top, s) obj.ctl(P, 10, top, -10, 18, 'text', s, 'FontWeight', 'bold', 'ForegroundColor', C.accent);
             hdr(8, 'DATA');
-            obj.ctl(P, 10, 28, 135, 26, 'pushbutton', 'Open...', 'TooltipString', '.mat reconstruction, 4D NIfTI or a DICOM image (File menu: Open DICOM folder)', 'Callback', @(s, e) obj.onOpen());
-            obj.ctl(P, 150, 28, 140, 26, 'pushbutton', 'Geometry...', 'Callback', @(s, e) obj.geometryDialog());
+            obj.ctl(P, 10, 28, 84, 26, 'pushbutton', 'Open...', 'TooltipString', ...
+                '.mat reconstruction, NIfTI, or one image of a DICOM series', 'Callback', @(s, e) obj.onOpen());
+            obj.ctl(P, 98, 28, 104, 26, 'pushbutton', 'Open folder...', 'TooltipString', ...
+                ['Folder with a DICOM series (files with or without extension, subfolders searched), ' ...
+                'NIfTI files or a .mat file'], 'Callback', @(s, e) obj.onOpenFolder());
+            obj.ctl(P, 206, 28, 84, 26, 'pushbutton', 'Geometry...', 'Callback', @(s, e) obj.geometryDialog());
             obj.H.info = obj.ctl(P, 10, 58, -10, 44, 'text', 'No data loaded.', 'FontSize', 8, 'ForegroundColor', C.dim);
             obj.ctl(P, 10, 108, 86, 18, 'text', 'Average every');
             obj.H.binEdit = obj.ctl(P, 98, 106, 36, 22, 'edit', '1', ...
@@ -2106,10 +2274,13 @@ classdef GRASPilot < handle
             obj.H.btnSub = obj.ctl(P, 226, 319, 64, 22, 'togglebutton', 'Show', ...
                 'TooltipString', 'Display the subtraction map instead of the current frame (key S)', ...
                 'Callback', @(s, e) obj.toggleSubView());
-            obj.ctl(P, 10, 349, 100, 18, 'text', 'Baseline frames');
-            obj.H.base1 = obj.ctl(P, 112, 347, 40, 22, 'edit', '1', 'Callback', @(s, e) obj.onBaseline());
-            obj.ctl(P, 155, 349, 20, 18, 'text', 'to');
-            obj.H.base2 = obj.ctl(P, 176, 347, 40, 22, 'edit', '5', 'Callback', @(s, e) obj.onBaseline());
+            obj.ctl(P, 10, 349, 60, 18, 'text', 'Baseline', 'TooltipString', 'Pre-contrast frames (S0)');
+            obj.H.base1 = obj.ctl(P, 70, 347, 36, 22, 'edit', '1', 'Callback', @(s, e) obj.onBaseline());
+            obj.ctl(P, 109, 349, 16, 18, 'text', 'to');
+            obj.H.base2 = obj.ctl(P, 126, 347, 36, 22, 'edit', '5', 'Callback', @(s, e) obj.onBaseline());
+            obj.H.baseAuto = obj.ctl(P, 166, 347, 52, 22, 'togglebutton', 'Auto', 'Value', 1, ...
+                'TooltipString', ['Detect the baseline frames from the bolus arrival (default); typing frames ' ...
+                'switches it off'], 'Callback', @(s, e) obj.setAutoBaseline(get(s, 'Value')));
             obj.ctl(P, 222, 347, 68, 22, 'pushbutton', 'Maps', ...
                 'TooltipString', 'Recompute baseline / peak enhancement maps', 'Callback', @(s, e) obj.ensureMaps(true));
             obj.ctl(P, 10, 377, 32, 18, 'text', 'Low');
@@ -2164,6 +2335,7 @@ classdef GRASPilot < handle
             obj.H.chkOutline = obj.ctl(P, 10, 600, 80, 20, 'checkbox', 'Outline', 'Value', obj.ShowOutline, ...
                 'Callback', @(s, e) obj.setFlag('ShowOutline', get(s, 'Value')));
             obj.H.chkCross = obj.ctl(P, 95, 600, 90, 20, 'checkbox', 'Crosshair', 'Value', obj.ShowCross, ...
+                'TooltipString', 'Show the crosshair (key X)', ...
                 'Callback', @(s, e) obj.setFlag('ShowCross', get(s, 'Value')));
             obj.H.chkCursor = obj.ctl(P, 190, 600, 100, 20, 'checkbox', 'Cursor TIC', 'Value', obj.ShowCursorTIC, ...
                 'TooltipString', 'Plot the time course of the crosshair voxel', ...
@@ -3203,6 +3375,7 @@ classdef GRASPilot < handle
                 case 's', if ~ctrl, obj.toggleSubView(); end
                 case 'g', if ~ctrl, obj.growFromCrosshair(); end
                 case 'm', if ~ctrl, obj.setParamDisplay(~obj.ParamOn); end
+                case 'x', if ~ctrl, obj.setFlag('ShowCross', ~obj.ShowCross); end
                 case 'leftbracket', obj.setBrushR(obj.BrushR / 1.25);
                 case 'rightbracket', obj.setBrushR(obj.BrushR * 1.25);
             end
@@ -3235,6 +3408,9 @@ classdef GRASPilot < handle
             obj.PW.base1 = obj.ctl(P, x1 + 108, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
             obj.ctl(P, x1 + 152, 36, 20, 18, 'text', 'to');
             obj.PW.base2 = obj.ctl(P, x1 + 174, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
+            obj.PW.baseAuto = obj.ctl(P, x1 + 220, 34, 56, 22, 'togglebutton', 'Auto', ...
+                'TooltipString', 'Detect the baseline frames from the bolus arrival', ...
+                'Callback', @(s, e) obj.setAutoBaseline(get(s, 'Value')));
             obj.ctl(P, x1, 64, 96, 18, 'text', 'Wash-in slope');
             obj.PW.washIn = obj.ctl(P, x1 + 100, 62, 240, 22, 'popupmenu', ...
                 {'dS / (TP - To), onset to peak', 'Maximum up-slope', 'Max slope in SSS wash-in period'}, ...
@@ -3315,7 +3491,7 @@ classdef GRASPilot < handle
             obj.ctl(P, x3, 124, 420, 112, 'text', { ...
                 'S0 = mean of the baseline frames; times from the end of the baseline', ...
                 'PE = Smax - S0;  relative PE = 100 PE / S0', ...
-                'Wash-in = PE / (TP - To), or the maximum up-slope', ...
+                'Wash-in = max slope in the SSS wash-in period, max up-slope or PE/(TP - To)', ...
                 'Washout = slope from the peak to the end (negative = washout)', ...
                 'AUC = area of S - S0 after the baseline (window)', ...
                 '/SSS = divided by the value of the SSS ROI mean curve', ...
@@ -3358,6 +3534,7 @@ classdef GRASPilot < handle
             if ~isfield(obj.PW, 'Fig') || ~ishghandle(obj.PW.Fig) || isempty(obj.Data), return; end
             D = obj.Data;
             set(obj.PW.base1, 'String', num2str(obj.BaseFrames(1)));
+            set(obj.PW.baseAuto, 'Value', double(obj.AutoBaseline));
             set(obj.PW.base2, 'String', num2str(obj.BaseFrames(2)));
             o = D.ParamOpts;
             set(obj.PW.washIn, 'Value', max(1, find(strcmpi({'onset', 'max', 'sss'}, o.WashIn))));
@@ -4250,6 +4427,11 @@ classdef GRASPilot < handle
                     k = round(str2double(get(obj.MW.refFrame, 'String')));
                     if isfinite(k) && k >= 1 && k <= D.NTRaw, opts = [opts, {'Reference', k}]; end
                 end
+                rgs = {'head', 'brain', 'outline'};
+                sm = round(str2double(get(obj.MW.smooth, 'String')));
+                if ~isfinite(sm) || sm < 1, sm = 1; end
+                opts = [opts, {'Region', rgs{get(obj.MW.region, 'Value')}, ...
+                    'ExcludeEnhancing', get(obj.MW.exclEnh, 'Value') > 0, 'SmoothFrames', sm}];
             end
             obj.MotionStop = false;
             wb = obj.wbOpen('Estimating head motion...');
@@ -4279,7 +4461,7 @@ classdef GRASPilot < handle
         end
 
         function motionProgress(obj, wb, f, m)
-            obj.wbUpdate(wb, f, m);
+            m = obj.wbUpdate(wb, f, m);
             if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig)
                 set(obj.MW.info, 'String', m);
             end
@@ -4301,6 +4483,13 @@ classdef GRASPilot < handle
             if D.MotionCorrected
                 obj.inform('The frames are already motion-corrected (Revert first).', 'Motion correction');
                 return
+            end
+            if ~quiet && ~obj.Quiet && ~M.Excess
+                b = obj.ask(sprintf(['The estimated motion is below the warning thresholds (max %.2f mm from ' ...
+                    'the reference, %.2f mm between frames).\n\nCorrecting it resamples every frame and can add ' ...
+                    'interpolation blur and small frame-to-frame jitter of its own. Correct anyway?'], ...
+                    max(M.AbsMean), max([M.RelMean; 0])), 'Motion correction', {'Correct anyway', 'Cancel'}, 'Cancel');
+                if ~strcmp(b, 'Correct anyway'), return; end
             end
             if ~quiet && ~obj.Quiet
                 mb = D.motionCorrectionBytes() / 2^20;
@@ -4336,6 +4525,11 @@ classdef GRASPilot < handle
         function afterFramesChanged(obj)
             % the frame source changed (motion correction): refresh everything
             obj.stopPlay();
+            if obj.AutoBaseline
+                obj.detectBaselineFrames();
+                set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
+                set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+            end
             for r = 1:numel(obj.ROIs), obj.ROIs(r).Dirty = true; end
             obj.CursorTC = [];
             obj.ParamCache = struct('key', '', 'V', []);
@@ -4395,7 +4589,7 @@ classdef GRASPilot < handle
             end
             obj.Layout = obj.Layout(arrayfun(@(L) ishghandle(L.h), obj.Layout));
             C = obj.Col;
-            W = 980; Hh = 720;
+            W = 980; Hh = 760;
             ss = get(0, 'ScreenSize');
             f = figure('Name', 'Motion check and correction', 'NumberTitle', 'off', 'MenuBar', 'none', ...
                 'ToolBar', 'none', 'Units', 'pixels', 'Color', C.bg, ...
@@ -4416,17 +4610,29 @@ classdef GRASPilot < handle
             obj.MW.warnRel = obj.ctl(P, 730, 34, 46, 22, 'edit', sprintf('%.2g', vmm / 2), ...
                 'TooltipString', 'mm between consecutive frames (default: half a voxel)');
             obj.ctl(P, 780, 36, 160, 18, 'text', 'mm between frames');
-            obj.MW.btnEst = obj.ctl(P, 12, 64, 150, 26, 'pushbutton', 'Estimate motion', 'FontWeight', 'bold', ...
+            obj.ctl(P, 12, 66, 70, 18, 'text', 'Register on');
+            obj.MW.region = obj.ctl(P, 86, 64, 210, 22, 'popupmenu', {'Head (nothing outside)', ...
+                'Brain only (no scalp)', 'Head + outline (former)'}, 'TooltipString', ...
+                ['Voxels used by the registration. Streak artifacts outside the head rotate from frame to frame; ' ...
+                'compare the regions if you suspect they bias the estimate']);
+            obj.MW.exclEnh = obj.ctl(P, 306, 64, 210, 22, 'checkbox', 'Exclude enhancing voxels', 'TooltipString', ...
+                ['Leave out vessels, scalp, dura and enhancing lesions, whose enhancement can be read as motion ' ...
+                '(an estimate that grows with the contrast uptake suggests this)']);
+            obj.ctl(P, 524, 66, 54, 18, 'text', 'Smooth');
+            obj.MW.smooth = obj.ctl(P, 580, 64, 40, 22, 'edit', '5', 'TooltipString', ...
+                'Running median of the estimates over this many frames (1 = none): removes estimation noise, keeps steps');
+            obj.ctl(P, 624, 66, 60, 18, 'text', 'frames');
+            obj.MW.btnEst = obj.ctl(P, 12, 94, 150, 26, 'pushbutton', 'Estimate motion', 'FontWeight', 'bold', ...
                 'Callback', @(s, e) obj.estimateMotion());
-            obj.MW.btnStop = obj.ctl(P, 168, 64, 60, 26, 'pushbutton', 'Stop', 'Enable', 'off', ...
+            obj.MW.btnStop = obj.ctl(P, 168, 94, 60, 26, 'pushbutton', 'Stop', 'Enable', 'off', ...
                 'Callback', @(s, e) obj.stopMotion());
-            obj.MW.btnApply = obj.ctl(P, 236, 64, 150, 26, 'pushbutton', 'Apply correction', ...
+            obj.MW.btnApply = obj.ctl(P, 236, 94, 150, 26, 'pushbutton', 'Apply correction', ...
                 'Callback', @(s, e) obj.applyMotion());
-            obj.MW.btnRevert = obj.ctl(P, 392, 64, 150, 26, 'pushbutton', 'Revert to original', ...
+            obj.MW.btnRevert = obj.ctl(P, 392, 94, 150, 26, 'pushbutton', 'Revert to original', ...
                 'Callback', @(s, e) obj.revertMotion());
-            obj.MW.btnExport = obj.ctl(P, 548, 64, 150, 26, 'pushbutton', 'Export (.csv)...', ...
+            obj.MW.btnExport = obj.ctl(P, 548, 94, 150, 26, 'pushbutton', 'Export (.csv)...', ...
                 'Callback', @(s, e) obj.onExportMotion());
-            obj.MW.info = obj.ctl(P, 12, 98, -12, 66, 'text', '', 'FontSize', 9);
+            obj.MW.info = obj.ctl(P, 12, 128, -12, 72, 'text', '', 'FontSize', 9);
             ttl = {'Translation (mm)', 'Rotation (deg)', 'Mean head displacement (mm)'};
             obj.MW.Ax = GRASPilot.handleArray(3);
             for i = 1:3
@@ -4445,7 +4651,7 @@ classdef GRASPilot < handle
             fp = get(obj.MW.Fig, 'Position');
             set(obj.MW.Panel, 'Position', [1 1 fp(3) fp(4)]);
             obj.layoutRecords(obj.MW.Panel);
-            top = 190; gap = 46; bottom = 40;
+            top = 222; gap = 46; bottom = 40;
             h = max(60, (fp(4) - top - bottom - 2 * gap) / 3);
             for i = 1:3
                 y = fp(4) - top - i * h - (i - 1) * gap;
@@ -4504,7 +4710,11 @@ classdef GRASPilot < handle
                 ax = obj.MW.Ax(i);
                 hl = zeros(1, 3);
                 for j = 1:3
-                    hl(j) = plot(ax, x, M.Params(:, 3 * (i - 1) + j), '-', 'Color', col(j, :), 'LineWidth', 1.2);
+                    if isfield(M, 'ParamsRaw') && M.SmoothFrames > 1     % per-frame estimates, faint
+                        plot(ax, x, M.ParamsRaw(:, 3 * (i - 1) + j), '-', 'Color', 0.45 * col(j, :) + 0.1, ...
+                            'LineWidth', 0.5);
+                    end
+                    hl(j) = plot(ax, x, M.Params(:, 3 * (i - 1) + j), '-', 'Color', col(j, :), 'LineWidth', 1.4);
                 end
                 obj.motionLegend(ax, hl, lbl{i});
             end
@@ -4615,6 +4825,7 @@ classdef GRASPilot < handle
         end
 
         function onBaseline(obj)
+            % baseline frames typed by the user: automatic detection off
             if isempty(obj.Data), return; end
             T = obj.Data.NT;
             a = round(str2double(get(obj.H.base1, 'String')));
@@ -4622,6 +4833,44 @@ classdef GRASPilot < handle
             if ~isfinite(a), a = obj.BaseFrames(1); end
             if ~isfinite(b), b = obj.BaseFrames(2); end
             a = max(1, min(T, a)); b = max(a, min(T, b));
+            if ~isequal([a b], obj.BaseFrames)
+                obj.AutoBaseline = false;
+                set(obj.H.baseAuto, 'Value', 0);
+            end
+            obj.applyBaseline([a b]);
+        end
+
+        function setAutoBaseline(obj, on)
+            % automatic baseline detection on (detect now) or off (keep the frames)
+            obj.AutoBaseline = logical(on);
+            if isfield(obj.H, 'baseAuto') && ishghandle(obj.H.baseAuto)
+                set(obj.H.baseAuto, 'Value', double(obj.AutoBaseline));
+            end
+            if obj.AutoBaseline && ~isempty(obj.Data)
+                ab = obj.BaseFrames;
+                obj.detectBaselineFrames();
+                nb = obj.BaseFrames;
+                obj.BaseFrames = ab;
+                obj.applyBaseline(nb);
+                obj.setStatus(obj.BaselineMsg);
+            end
+            obj.refreshParamWindow();
+        end
+
+        function detectBaselineFrames(obj)
+            % BaseFrames from the bolus arrival (GRASPilotData.detectBaseline)
+            try
+                [bf, info] = obj.Data.detectBaseline();
+                obj.BaseFrames = [bf(1) bf(end)];
+                obj.BaselineMsg = info.Message;
+            catch err
+                obj.BaselineMsg = ['Automatic baseline detection failed (' err.message '): frames 1-5 used.'];
+                obj.BaseFrames = [1 max(1, min(5, obj.Data.NT))];
+            end
+        end
+
+        function applyBaseline(obj, ab)
+            a = ab(1); b = ab(2);
             set(obj.H.base1, 'String', num2str(a));
             set(obj.H.base2, 'String', num2str(b));
             if isequal([a b], obj.BaseFrames), return; end
@@ -4692,7 +4941,7 @@ classdef GRASPilot < handle
                     files = cellfun(@(x) fullfile(p, x), f, 'UniformOutput', false);
                     if ~strcmp(GRASPilot.inputKind(files{1}), 'nifti')
                         error('GRASPilot:input', ['Select one file, or several 3D NIfTI files (one per frame). ' ...
-                            'For a DICOM series choose one of its images or use Open DICOM folder.']);
+                            'For a DICOM series choose one of its images or use Open folder.']);
                     end
                     obj.openImages(files, 'nifti');
                 else
@@ -4703,13 +4952,14 @@ classdef GRASPilot < handle
             end
         end
 
-        function onOpenDicomFolder(obj)
-            d = uigetdir(obj.startDir(), 'Folder with the DICOM series (subfolders are searched)');
+        function onOpenFolder(obj)
+            d = uigetdir(obj.startDir(), ['Folder with a DICOM series (files with or without extension; ' ...
+                'subfolders are searched), NIfTI or .mat files']);
             if isequal(d, 0), return; end
             try
-                obj.openImages(d, 'dicom');
+                obj.openFolder(d, obj.LoadOpts);
             catch err
-                obj.showError(err, 'Could not load DICOM');
+                obj.showError(err, 'Could not load data');
             end
         end
 
@@ -4860,6 +5110,7 @@ classdef GRASPilot < handle
                 '  S                show subtraction map (post - pre frame)'
                 '  G                grow from crosshair (threshold window)'
                 '  M                parameter colour map on / off'
+                '  X                crosshair on / off'
                 '  Ctrl+Z / Ctrl+Y  undo / redo (Ctrl+Shift+Z also redoes)'
                 ''
                 'ENHANCING TUMOR FROM THE SUBTRACTION MAP (last - first frame)'
@@ -5206,6 +5457,7 @@ classdef GRASPilot < handle
 
         function wb = wbOpen(obj, msg)
             obj.Busy = true;
+            obj.Eta = struct('tic', tic, 'f0', 0, 'e0', 0, 'last', 0);
             wb = [];
             if obj.Quiet, return; end
             try
@@ -5216,9 +5468,15 @@ classdef GRASPilot < handle
             end
         end
 
-        function wbUpdate(~, wb, f, msg)
+        function msg = wbUpdate(obj, wb, f, msg)
+            % progress bar with the estimated time remaining; returns the message shown
+            f = max(0, min(1, f));
+            if ~isempty(obj.Eta.tic)
+                [obj.Eta, eta] = GRASPilot.etaUpdate(obj.Eta, f, toc(obj.Eta.tic));
+                if ~isempty(eta), msg = sprintf('%s\nEstimated time remaining: %s', msg, eta); end
+            end
             if ~isempty(wb) && ishghandle(wb)
-                waitbar(max(0, min(1, f)), wb, msg);
+                waitbar(f, wb, msg);
             end
         end
 
@@ -5306,11 +5564,7 @@ classdef GRASPilot < handle
             if ~isempty(regexp(lf, '(\.nii|\.nii\.gz)$', 'once')), kind = 'nifti'; return; end
             if ~isempty(regexp(lf, '\.mat$', 'once')), return; end
             if ~isempty(regexp(lf, '(\.dcm|\.ima|\.dicom)$', 'once')), kind = 'dicom'; return; end
-            fid = fopen(file, 'r');
-            if fid < 0, return; end
-            b = fread(fid, 132, '*uint8')';
-            fclose(fid);
-            if numel(b) == 132 && isequal(b(129:132), uint8('DICM')), kind = 'dicom'; end
+            if graspilot_is_dicom(file), kind = 'dicom'; end
         end
 
         function L = wrapText(s, w)
@@ -5333,6 +5587,76 @@ classdef GRASPilot < handle
 
         function s = ternaryStr(c, a, b)
             if c, s = a; else, s = b; end
+        end
+
+        function v = versionInfo()
+            % Version (latest GitHub release this code is based on; update it when
+            % tagging release vX.Y.Z), git revision of the checkout and repository URL.
+            % See graspilot_version.
+            persistent cache
+            if ~isempty(cache), v = cache; return; end
+            v = struct('Version', '0.1.0', 'Revision', '', ...
+                'URL', 'https://github.com/Beyond-Enhancement/GRASPilot', 'Text', '', 'Details', '');
+            here = fileparts(which('GRASPilot'));
+            if exist(fullfile(here, '.git'), 'dir') == 7 || exist(fullfile(here, '.git'), 'file') == 2
+                try
+                    [st, out] = system(sprintf('git -C "%s" describe --tags --dirty --always', here));
+                    out = strtrim(out);
+                    if st == 0 && ~isempty(out) && isempty(regexp(out, '\s', 'once')), v.Revision = out; end
+                catch
+                end
+            end
+            v.Text = v.Version;
+            v.Details = sprintf(['Version %s; exact revision unknown (not run from a git checkout, or git not ' ...
+                'available)'], v.Version);
+            r = v.Revision;
+            if ~isempty(r)
+                v.Text = sprintf('%s (%s)', v.Version, r);
+                dirty = ~isempty(regexp(r, '-dirty$', 'once'));
+                r = regexprep(r, '-dirty$', '');
+                tk = regexp(r, '^(.*)-(\d+)-g([0-9a-f]+)$', 'tokens', 'once');
+                if ~isempty(tk)
+                    v.Details = sprintf('%s commit(s) after release %s (commit %s)', tk{2}, tk{1}, tk{3});
+                elseif ~isempty(regexp(r, '^v?\d', 'once'))
+                    v.Details = sprintf('Release %s', r);
+                else
+                    v.Details = sprintf('Commit %s (no release tag found in this checkout)', r);
+                end
+                if dirty, v.Details = [v.Details ', with local changes']; end
+            end
+            cache = v;
+        end
+
+        function [st, txt] = etaUpdate(st, f, elapsed)
+            % Estimated time remaining from the progress rate since the start of
+            % the current stage (a drop in the fraction starts a new stage).
+            % st: struct f0, e0 (fraction and elapsed s at the stage start), last.
+            % Shown after >= 2 s and >= 2% of progress in the stage; '' otherwise.
+            txt = '';
+            if f < st.last - 0.01
+                st.f0 = f; st.e0 = elapsed;
+            end
+            st.last = f;
+            df = f - st.f0; de = elapsed - st.e0;
+            if f >= 1 || de < 2 || df < 0.02, return; end
+            rem = (1 - f) * de / df;
+            if rem < 10
+                txt = 'a few seconds';
+            elseif rem < 60
+                txt = sprintf('about %d s', 5 * round(rem / 5));
+            elseif rem < 3600
+                m = floor(rem / 60); s = 10 * round(mod(rem, 60) / 10);
+                if s == 60, m = m + 1; s = 0; end
+                if m >= 10 || s == 0
+                    txt = sprintf('about %d min', round(rem / 60));
+                else
+                    txt = sprintf('about %d min %d s', m, s);
+                end
+            else
+                h = floor(rem / 3600); m = round(mod(rem, 3600) / 60);
+                if m == 60, h = h + 1; m = 0; end
+                txt = sprintf('about %d h %d min', h, m);
+            end
         end
 
         function dsp = formatStatsRows(rows)

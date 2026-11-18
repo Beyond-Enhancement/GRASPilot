@@ -6,6 +6,10 @@ app = GRASPilot(D);
 app.Quiet = true;
 cleanup = onCleanup(@() app.close(true));
 nfail = nfail + check('orientation check passes (LPS phantom)', app.checkOrientation(), 0);
+D.VoxNative = [2.5 2.5 1];                           % head 270 mm long: implausible voxel size
+okV = ~app.checkOrientation() && ~isempty(strfind(get(app.H.status, 'String'), 'Voxel size check'));
+D.VoxNative = [1 1 1];
+nfail = nfail + check('implausible voxel size flagged', okV && app.checkOrientation(), 0);
 app.addTumor();
 k = app.autoSSS();
 lin = find(app.Masks{k});
@@ -30,6 +34,16 @@ nfail = nfail + check('ROI follows axis-code change', isequal(D.canon2native(app
     D.canon2native(app.Masks{k})), 0);
 app.applyGeometry('LPS', [1 1 1], 4, 0);
 nfail = nfail + check('ROI back in place after restoring LPS', isequal(sort(find(app.Masks{k})), sort(ref)), 0);
+
+% ---- SSS ROI from the crosshair (Edit menu)
+lin0 = sort(find(app.Masks{k}));
+[i1, j1] = find(tr.SSS(:, :, 60));
+post = j1 >= max(j1) - 4;                            % the posterior cross-section (the arc is cut twice)
+app.setPos([round(mean(i1(post))) round(mean(j1(post))) 60]);
+k3 = app.autoSSS('Seed', app.Pos);
+nfail = nfail + check('SSS ROI from crosshair replaces SSS (auto)', k3 == k && all(tr.SSS(app.Masks{k})) && ...
+    nnz(app.Masks{k}) > 100 && ~isequal(sort(find(app.Masks{k})), lin0), nnz(app.Masks{k}));
+app.undo();
 
 % ---- semi-quantitative parameters, normalization to the SSS, statistics, export
 n = D.canonSize();
@@ -85,16 +99,25 @@ nfail = nfail + check('auto colour range from tumor ROIs (2-98%)', abs(c(1) - vv
     && abs(c(2) - vv(round(0.98 * numel(vv)))) < 1e-5, c(2));
 app.onKey(struct('Key', 'm', 'Modifier', {{}}, 'Character', 'm'));
 nfail = nfail + check('key M toggles the map', ~app.ParamOn && isempty(app.ParamA{1}), 0);
+ab = app.showAbout();
+gv = graspilot_version();
+nfail = nfail + check('Help > About: version and GitHub URL', ~isempty(strfind(ab, gv.Text)) && ...
+    ~isempty(strfind(ab, gv.URL)), 0);
+app.onKey(struct('Key', 'x', 'Modifier', {{}}, 'Character', 'x'));
+okX = ~app.ShowCross && get(app.H.chkCross, 'Value') == 0;
+app.onKey(struct('Key', 'x', 'Modifier', {{}}, 'Character', 'x'));
+nfail = nfail + check('key X toggles the crosshair (checkbox follows)', okX && app.ShowCross && ...
+    get(app.H.chkCross, 'Value') == 1, 0);
 app.onKey(struct('Key', 'm', 'Modifier', {{}}, 'Character', 'm'));
 app.openParamWindow();
 tb = get(app.PW.table, 'Data');
 okW = ishghandle(app.PW.Fig) && size(tb, 1) == numel(app.ParamKeys) + 3 && ...
     strcmp(get(app.PW.cmin, 'String'), sprintf('%.4g', c(1)));
 set(app.PW.cmap, 'Value', 2); app.onParamCmap(2);
-set(app.PW.washIn, 'Value', 2); app.onParamOptions(); app.onParamCompute();
-okW = okW && strcmp(app.ParamCmap, 'turbo') && strcmp(D.ParamOpts.WashIn, 'max') && D.hasMaps(bf);
-nfail = nfail + check('parameter window (table, colour map, options)', okW, size(tb, 1));
+okW = okW && get(app.PW.washIn, 'Value') == 3;      % default: max slope in the SSS wash-in period
 set(app.PW.washIn, 'Value', 1); app.onParamOptions(); app.onParamCompute();
+okW = okW && strcmp(app.ParamCmap, 'turbo') && strcmp(D.ParamOpts.WashIn, 'onset') && D.hasMaps(bf);
+nfail = nfail + check('parameter window (table, colour map, options)', okW, size(tb, 1));
 if nargin > 0 && ~isempty(out)
     shot = fullfile(out, 'param_window.png');
     try, print(app.PW.Fig, '-dpng', '-r60', shot); catch, end

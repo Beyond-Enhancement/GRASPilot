@@ -84,6 +84,7 @@ classdef GRASPilotData < handle
         Orig = [];                  % original frame source while motion-corrected
         SrcAffine = [];             % native voxel (0-based) -> RAS mm of a NIfTI / DICOM source
         SourceType = 'mat';         % 'mat' | 'nifti' | 'dicom' | 'array'
+        FastCopyFile = '';          % fast-open copy the data were read from ('' = the source itself)
     end
 
     properties
@@ -93,7 +94,7 @@ classdef GRASPilotData < handle
         RawTimes = [];              % measured times of the raw frames (s from frame 1); [] = uniform dt
         SourceFile = '';
         SourceVars = '';
-        ParamOpts = struct('WashIn', 'onset', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1, ...
+        ParamOpts = struct('WashIn', 'sss', 'WashOut', 'regression', 'AUCWindow', Inf, 'OnsetFrac', 0.1, ...
             'WashInFrames', [], 'EndFrame', Inf, 'EndTime', Inf, 'EarlyTime', 60, 'LateTime', Inf, ...
             'CurveTol', 10, 'RefSlopeFrac', 0.5);
         % pharmacokinetic models (setPKOptions / computePK): global T10 (ms) of tissue and
@@ -144,6 +145,14 @@ classdef GRASPilotData < handle
             if exist(matFile, 'file') ~= 2
                 error('GRASPilotData:file', 'File not found: %s', matFile);
             end
+            if any(strcmpi(p.Format, {'auto', 'subspace'}))
+                fc = GRASPilotData.fastCopyFor(matFile, p);  % current fast-open copy: skip the large file
+                if ~isempty(fc)
+                    obj = GRASPilotData.fromFastCopy(fc, p.Progress);
+                    obj.SourceFile = matFile;
+                    return
+                end
+            end
             info = whos('-file', matFile);
             names = {info.name};
             fmt = lower(p.Format);
@@ -157,6 +166,10 @@ classdef GRASPilotData < handle
                         'dialog or pass ''Format'',''dense'',''ImageVar'',name.'], ...
                         p.CoefVar, p.BasisVar, matFile);
                 end
+            end
+            if any(strcmp(names, 'graspilot_fast'))         % a fast-open copy itself
+                obj = GRASPilotData.fromFastCopy(matFile, p.Progress);
+                return
             end
             GRASPilotData.report(p.Progress, 0, 'Reading .mat file (this can take a while for large files)...');
             switch fmt
@@ -182,6 +195,59 @@ classdef GRASPilotData < handle
                     error('GRASPilotData:format', 'Unknown format "%s".', fmt);
             end
             obj.SourceFile = matFile;
+        end
+
+        function f = fastCopyName(matFile)
+            % default name of the fast-open copy of a .mat reconstruction
+            [d, b] = fileparts(matFile);
+            f = fullfile(d, [b '_graspilot.mat']);
+        end
+
+        function fc = fastCopyFor(matFile, p)
+            % the fast-open copy next to matFile if it is current: same source size
+            % and date, same variables, crop factor and normalization; else ''
+            fc = '';
+            f = GRASPilotData.fastCopyName(matFile);
+            if exist(f, 'file') ~= 2, return; end
+            try
+                S = load(f, 'graspilot_fast');
+                g = S.graspilot_fast;
+                src = dir(matFile);
+                cf = p.CropFactor; if isempty(cf), cf = 2; end
+                nm = p.Normalize; if isempty(nm), nm = true; end
+                if g.SourceBytes == src.bytes && abs(g.SourceDate - src.datenum) < 1e-6 && ...
+                        strcmp(g.CoefVar, p.CoefVar) && strcmp(g.BasisVar, p.BasisVar) && ...
+                        g.CropFactor == cf && logical(g.Normalized) == logical(nm)
+                    fc = f;
+                end
+            catch
+            end
+        end
+
+        function obj = fromFastCopy(file, progress)
+            % read a fast-open copy (GRASPilotData.saveFastCopy): cropped, normalized
+            % single-precision coefficients and basis, no preparation needed
+            if nargin < 2, progress = []; end
+            GRASPilotData.report(progress, 0, 'Reading the fast-open copy...');
+            S = load(file, 'graspilot_fast', 'C', 'Phi');
+            g = S.graspilot_fast;
+            obj = GRASPilotData();
+            obj.Mode = 'subspace';
+            obj.C = S.C;
+            obj.Phi = S.Phi;
+            n = size(S.C); n(end + 1:4) = 1;
+            obj.NativeSize = n([1 2 4]);
+            obj.NTRaw = size(S.Phi, 1);
+            obj.NK = n(3);
+            obj.setBinning(1);
+            obj.ScaleFactor = g.ScaleFactor;
+            obj.CropFactor = g.CropFactor;
+            obj.Normalized = logical(g.Normalized);
+            obj.setOrientation('axial', false, [false false false]);
+            obj.SourceFile = g.SourceFile;
+            obj.SourceVars = sprintf('%s + %s (fast-open copy)', g.CoefVar, g.BasisVar);
+            obj.FastCopyFile = file;
+            GRASPilotData.report(progress, 1, 'Fast-open copy read');
         end
 
         function obj = fromSubspace(vk_all, basis_all, varargin)
@@ -225,20 +291,42 @@ classdef GRASPilotData < handle
             P = nxF * nyF;
             blk = 65536;
             gmax = 0;
+            % Global maximum of |B Phi'| over all slices and frames (ReadData.m
+            % normalization), found exactly without evaluating every voxel: for a
+            % voxel with coefficients b, |b Phi(t,:)'| <= ||b|| max_t ||Phi(t,:)||.
+            % Pass 1 evaluates the voxels with the largest bounds of each slice;
+            % pass 2 only those whose bound still exceeds the best value found.
+            ub = cell(1, nz);
             for z = 1:nz
                 Bz = reshape(single(vk_all(z, :, :, :)), P, K);
                 if p.Normalize
                     PzH = Phi(:, :, z)';                  % [K T], conjugate transpose (TempPCASub)
-                    for b0 = 1:blk:P
-                        rows = b0:min(P, b0 + blk - 1);
-                        m = max(max(abs(Bz(rows, :) * PzH)));
-                        if m > gmax, gmax = m; end
-                    end
+                    cz = max(sqrt(sum(abs(double(Phi(:, :, z))) .^ 2, 2)));
+                    ub{z} = sqrt(sum(abs(double(Bz)) .^ 2, 2)) * cz;
+                    [~, o] = sort(ub{z}, 'descend');
+                    top = o(1:min(P, 2048));
+                    m = max(max(abs(Bz(top, :) * PzH)));
+                    if m > gmax, gmax = m; end
                 end
                 Bz = reshape(Bz, nxF, nyF, K);
                 Cc(:, :, :, z) = Bz(rr, cc, :);
-                GRASPilotData.report(p.Progress, z / nz, sprintf('Preparing slice %d/%d', z, nz));
+                GRASPilotData.report(p.Progress, 0.7 * z / nz, sprintf('Preparing slice %d/%d', z, nz));
             end
+            if p.Normalize
+                for z = 1:nz
+                    cand = find(ub{z} > gmax);
+                    if isempty(cand), continue; end
+                    Bz = reshape(single(vk_all(z, :, :, :)), P, K);
+                    PzH = Phi(:, :, z)';
+                    for b0 = 1:blk:numel(cand)
+                        rows = cand(b0:min(numel(cand), b0 + blk - 1));
+                        m = max(max(abs(Bz(rows, :) * PzH)));
+                        if m > gmax, gmax = m; end
+                    end
+                    GRASPilotData.report(p.Progress, 0.7 + 0.3 * z / nz, sprintf('Normalization: slice %d/%d', z, nz));
+                end
+            end
+            ub = []; %#ok<NASGU>
             sf = 1;
             if p.Normalize && gmax > 0
                 sf = 1 / double(gmax);
@@ -468,6 +556,30 @@ classdef GRASPilotData < handle
 
         function tf = validCurve(a, ke)
             tf = ~isempty(a) && numel(a) >= ke && all(isfinite(a(1:ke)));
+        end
+
+        function q = quantile(v, p)
+            v = sort(v(:));
+            q = v(max(1, min(numel(v), round(p * numel(v)))));
+        end
+
+        function th = otsu(vals)
+            % Otsu threshold of a vector
+            vals = double(vals(isfinite(vals)));
+            lo = min(vals); hi = max(vals);
+            th = lo;
+            if isempty(vals) || hi <= lo, return; end
+            nb = 256;
+            idx = min(nb, floor((vals - lo) / (hi - lo) * nb) + 1);
+            cnt = accumarray(idx(:), 1, [nb 1]);
+            pp = cnt / sum(cnt);
+            ctr = lo + ((1:nb)' - 0.5) * (hi - lo) / nb;
+            om = cumsum(pp);
+            mu = cumsum(pp .* ctr);
+            sb = (mu(end) * om - mu) .^ 2 ./ (om .* (1 - om));
+            sb(~isfinite(sb)) = 0;
+            [~, k] = max(sb);
+            th = lo + k * (hi - lo) / nb;
         end
 
         function h = maskHash(M)
@@ -1027,6 +1139,119 @@ classdef GRASPilotData < handle
             obj.Maps = M;
             obj.CanonMapCache = struct();
             obj.MapsVersion = obj.MapsVersion + 1;
+        end
+
+        function [bf, info] = detectBaseline(obj)
+            % Automatic baseline (pre-contrast) frames 1..be: bolus arrival on
+            % the mean curve of the earliest-arriving tenth of the strongly enhancing voxels (arteries,
+            % which enhance first). A constant-then-linear-rise model is fitted
+            % to that curve up to its peak (bolus arrival time, e.g. Cheong et
+            % al. 2003); the baseline ends before the knee and before any frame
+            % already 5% of the rise above the baseline level (temporal
+            % smoothing of the reconstruction). Falls back to frames
+            % 1-min(5, T) without a clear bolus. info: Arrival (frame),
+            % ArrivalTime, Curve, NVoxels, Message.
+            T = obj.NT;
+            bf = 1:max(1, min(5, T));
+            info = struct('Arrival', NaN, 'ArrivalTime', NaN, 'Curve', [], 'NVoxels', 0, 'Message', '');
+            if T < 4
+                info.Message = 'Too few frames for automatic baseline detection: frames 1-5 (or all) used.';
+                return
+            end
+            N = prod(obj.NativeSize);
+            lin = (1:max(1, floor(N / 60000)):N)';
+            TC = double(obj.nativeTC(lin));
+            m = mean(TC, 2);
+            head = m > GRASPilotData.otsu(m);
+            E0 = max(TC, [], 2) - mean(TC(:, 1:2), 2);
+            E0(~head) = -Inf;
+            nh = nnz(head);
+            if nh < 50
+                info.Message = 'No head found for automatic baseline detection: frames 1-5 used.';
+                return
+            end
+            % clearly enhancing voxels (vessels, enhancing tissue): at least 20% of the
+            % 99.9th percentile of the enhancement in the head, at most the top 3%
+            Eh = sort(E0(head), 'descend');
+            ref = Eh(max(1, round(0.001 * nh)));
+            nt = max(10, min([nh, round(0.03 * nh), nnz(E0 >= 0.2 * ref)]));
+            [~, o] = sort(E0, 'descend');
+            top = o(1:nt);
+            % earliest-arriving tenth of them (arteries before veins and tissue):
+            % first frame at 20% of each voxel's rise
+            Tt = TC(top, :);
+            b1 = mean(Tt(:, 1:2), 2);
+            nrm = (Tt - repmat(b1, 1, T)) ./ repmat(max(Tt, [], 2) - b1, 1, T);
+            [~, arr] = max(nrm >= 0.2, [], 2);
+            early = top(arr <= max(min(arr), GRASPilotData.quantile(arr, 0.1)));
+            if numel(early) < 10
+                [~, oa] = sort(arr);
+                early = top(oa(1:min(10, numel(oa))));
+            end
+            c = mean(TC(early, :), 1);
+            nt = numel(early);
+            info.Curve = c; info.NVoxels = nt;
+            t = obj.paramTimes();
+            [cmax, tp] = max(c);
+            if tp < 3 || ~(cmax > c(1))
+                info.Message = 'No bolus arrival found (peak in the first frames): frames 1-5 used.';
+                return
+            end
+            sse = Inf(1, tp - 1);
+            for k = 1:tp - 1
+                X = [ones(tp, 1), max(0, t(1:tp)' - t(k))];
+                beta = X \ c(1:tp)';
+                if beta(2) > 0, sse(k) = sum((c(1:tp)' - X * beta) .^ 2); end
+            end
+            [~, k0] = min(sse);
+            b0 = median(c(1:k0));
+            sg = 0;
+            if k0 >= 3, sg = std(c(1:k0 - 1)); end
+            thr = b0 + max(0.03 * (cmax - b0), 3 * sg);
+            be = k0;
+            while be > 1 && c(be) > thr, be = be - 1; end
+            bf = 1:be;
+            info.Arrival = k0 + 1;
+            info.ArrivalTime = t(min(T, k0 + 1));
+            unit = 'frame'; if obj.hasTiming(), unit = 's'; end
+            info.Message = sprintf(['Baseline frames 1-%d detected automatically: contrast arrives after frame %d ' ...
+                '(%.4g %s) on the mean curve of the %d earliest of the most enhancing voxels.'], be, k0, t(k0), unit, nt);
+        end
+
+        function file = saveFastCopy(obj, file)
+            % Save a fast-open copy of a .mat reconstruction: the cropped, normalized
+            % coefficients and the basis in single precision, uncompressed (~1/8 of
+            % a double-precision source with crop factor 2). Opening the source .mat
+            % then reads it instead while it is current. Default name: <source>_graspilot.mat
+            if ~strcmp(obj.SourceType, 'mat') || exist(obj.SourceFile, 'file') ~= 2
+                error('GRASPilotData:fast', 'A fast-open copy needs data opened from a .mat file.');
+            end
+            if obj.MotionCorrected || ~strcmp(obj.Mode, 'subspace')
+                error('GRASPilotData:fast', ['A fast-open copy holds the subspace coefficients: revert the ' ...
+                    'motion correction first.']);
+            end
+            if nargin < 2 || isempty(file), file = GRASPilotData.fastCopyName(obj.SourceFile); end
+            src = dir(obj.SourceFile);
+            vars = regexp(obj.SourceVars, '^(\S+) \+ (\S+)', 'tokens', 'once');
+            if isempty(vars), vars = {'vk_all', 'basis_all'}; end
+            v = GRASPilot.versionInfo();
+            w = whos('-file', obj.SourceFile);              % listing for the load dialog
+            sw = struct('name', {w.name}, 'size', {w.size}, 'bytes', {w.bytes}, 'class', {w.class}, ...
+                'complex', {w.complex});
+            graspilot_fast = struct('Format', 'GRASPilot fast-open copy', 'Version', v.Text, 'SourceWhos', {sw}, ...
+                'SourceFile', obj.SourceFile, 'SourceBytes', src.bytes, 'SourceDate', src.datenum, ...
+                'CoefVar', vars{1}, 'BasisVar', vars{2}, 'CropFactor', obj.CropFactor, ...
+                'Normalized', obj.Normalized, 'ScaleFactor', obj.ScaleFactor); %#ok<NASGU>
+            C = obj.C; Phi = obj.Phi; %#ok<NASGU>
+            if exist('OCTAVE_VERSION', 'builtin')
+                save('-v6', file, 'graspilot_fast', 'C', 'Phi');
+            else
+                try
+                    save(file, 'graspilot_fast', 'C', 'Phi', '-v7.3', '-nocompression');
+                catch
+                    save(file, 'graspilot_fast', 'C', 'Phi', '-v7.3');
+                end
+            end
         end
 
         function S = sliceTC(obj, z)

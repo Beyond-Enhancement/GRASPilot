@@ -9,9 +9,14 @@ function M = graspilot_motion_estimate(D, varargin)
 %   normalized mutual information (Studholme et al. 1999), which tolerates
 %   the signal changes caused by contrast enhancement. Registration is
 %   multi-resolution (Gaussian smoothing 3 mm, then 1 mm) with a simplex
-%   search (fminsearch), using up to MaxPoints voxels of the head and its
-%   outline, and starts from the estimate of the previous frame.
-%   No toolboxes are needed.
+%   search (fminsearch) and starts from the estimate of the previous frame.
+%   The cost uses up to MaxPoints voxels of the head (Region): nothing
+%   outside the head, where the streak artifacts of radial (stack-of-stars)
+%   sampling rotate from frame to frame. Optionally strongly enhancing voxels
+%   (vessels, scalp, dura, enhancing lesions) are left out as well, whose
+%   enhancement can be read as motion. The estimates are then smoothed over
+%   time with a running median (SmoothFrames), which removes frame-to-frame
+%   estimation noise but keeps sudden (step) motion. No toolboxes are needed.
 %
 %   Geometry: canonical voxel order of GRASPilotData (axis 1 R->L, 2 A->P,
 %   3 I->S) in mm. A head point x of the reference is found at
@@ -26,6 +31,15 @@ function M = graspilot_motion_estimate(D, varargin)
 %     'Frames'      raw frames to register (1:NTRaw)
 %     'MaxPoints'   sample voxels used by the cost function (30000)
 %     'Bins'        histogram bins for mutual information (32)
+%     'Region'      'head' (default: head voxels only), 'brain' (head minus
+%                   MarginMM along its outer surface and the first and last
+%                   slice: no scalp) or 'outline' (head and a 4 mm band
+%                   outside it, the former behaviour)
+%     'MarginMM'    8
+%     'ExcludeEnhancing'  false; true: leave out voxels whose median signal
+%                   in the frames after the reference rises by more than
+%                   EnhFrac (0.15) of the median head signal (dilated 1 voxel)
+%     'SmoothFrames' running-median length (5; 1 = none)
 %     'WarnAbsMM'   warning threshold, mean head displacement from the
 %                   reference (one voxel: geometric mean voxel size, >= 1 mm)
 %     'WarnRelMM'   warning threshold, mean head displacement between
@@ -34,7 +48,8 @@ function M = graspilot_motion_estimate(D, varargin)
 %     'Cancel'      @() returning true to stop (frames done so far are kept)
 %
 %   Output M (struct)
-%     Params [NTRaw x 6], NaN for frames not registered
+%     Params [NTRaw x 6], NaN for frames not registered (smoothed)
+%     ParamsRaw   [NTRaw x 6] per-frame estimates before smoothing
 %     AbsMean, AbsMax  [NTRaw x 1] mean / max displacement (mm) of the head
 %                      voxels relative to the reference
 %     RelMean, RelMax  [NTRaw x 1] same, relative to the previous frame
@@ -48,6 +63,7 @@ function M = graspilot_motion_estimate(D, varargin)
 %   noted even when the frames are corrected.
 
 p = struct('Reference', 'baseline', 'RefFrames', [], 'Frames', [], 'MaxPoints', 30000, 'Bins', 32, ...
+    'Region', 'head', 'MarginMM', 8, 'SmoothFrames', 5, 'ExcludeEnhancing', false, 'EnhFrac', 0.15, ...
     'WarnAbsMM', [], 'WarnRelMM', [], 'Progress', [], 'Cancel', []);
 for i = 1:2:numel(varargin)
     fn = fieldnames(p);
@@ -93,7 +109,34 @@ head = R > otsu(R(1:max(1, floor(numel(R) / 300000)):end));
 if nnz(head) < 100
     error('graspilot_motion_estimate:head', 'Could not find the head in the reference volume.');
 end
-region = dilate(head, max(1, round(4 ./ vox)));
+if strcmpi(p.Region, 'outline')
+    region = dilate(head, max(1, round(4 ./ vox)));
+elseif strcmpi(p.Region, 'brain')
+    region = interior(head, vox, p.MarginMM);
+    region(:, :, [1 end]) = false;
+    if nnz(region) < 2000                       % small head or slab: fall back
+        region = head;
+    end
+else
+    region = head;                              % head voxels only: nothing outside the head
+end
+nexcl = 0;
+if p.ExcludeEnhancing && T > numel(rf) + 1
+    % median signal change after the reference (robust to transient motion)
+    fs = unique(round(linspace(max(rf) + 1, T, min(9, T - max(rf)))));
+    Rs = smooth3d(R, 2 ./ vox);
+    Ch = zeros([n numel(fs)], 'single');
+    for i = 1:numel(fs)
+        Ch(:, :, :, i) = single(smooth3d(double(D.rawCanonVolume(fs(i))), 2 ./ vox) - Rs);
+    end
+    enh = median(Ch, 4) > p.EnhFrac * median(R(head));
+    enh = dilate(enh, [1 1 1]);
+    if nnz(region & ~enh) >= 2000
+        nexcl = nnz(region & enh);
+        region = region & ~enh;
+    end
+    clear Ch Rs
+end
 hl = find(head);
 [a1, a2, a3] = ind2sub(n, hl);
 Cmm = [mean(a1 - 1) mean(a2 - 1) mean(a3 - 1)] .* vox;
@@ -151,6 +194,18 @@ for ii = 1:numel(fr)
 end
 report(1, 'Motion: done');
 
+% temporal smoothing: running median per parameter (keeps steps)
+Praw = P;
+w = max(1, round(p.SmoothFrames));
+if w > 1
+    h = floor(w / 2);
+    dn = find(done);
+    for f = dn
+        nb = dn(abs(dn - f) <= h);
+        P(f, :) = median(Praw(nb, :), 1);
+    end
+end
+
 % displacements
 absM = NaN(T, 1); absX = NaN(T, 1); relM = NaN(T, 1); relX = NaN(T, 1);
 Y = cell(1, T);
@@ -164,7 +219,8 @@ for f = find(done)
     end
 end
 ex = find(absM > p.WarnAbsMM | relM > p.WarnRelMM)';
-M = struct('Params', P, 'AbsMean', absM, 'AbsMax', absX, 'RelMean', relM, 'RelMax', relX, ...
+M = struct('Params', P, 'ParamsRaw', Praw, 'SmoothFrames', w, 'Region', lower(p.Region), ...
+    'ExcludedEnhancing', nexcl, 'AbsMean', absM, 'AbsMax', absX, 'RelMean', relM, 'RelMax', relX, ...
     'Centre', Cmm, 'VoxelMM', vox, 'RefFrames', rf, 'Reference', reftxt, 'Frames', find(done), ...
     'NMI', nmi, 'WarnAbsMM', p.WarnAbsMM, 'WarnRelMM', p.WarnRelMM, 'ExcessFrames', ex, ...
     'Excess', ~isempty(ex), 'Complete', complete, 'Message', '');
@@ -211,6 +267,27 @@ for a = 1:3
     sw = ones(1, 3); sw(a) = numel(w);
     B = B ./ repmat(reshape(w, sw), size(B) ./ sw);
 end
+end
+
+function R = interior(head, vox, mm)
+% head voxels at least mm (in-plane) from the outer head surface: distance to
+% the first and last head voxel of the voxel's row and column (dark skull or
+% CSF inside the head do not count as outside)
+n = size(head); n(end + 1:3) = 1;
+d = Inf(n, 'single');
+for dim = 1:2
+    m = any(head, dim);
+    [~, f] = max(head, [], dim);
+    [~, l] = max(flip(head, dim), [], dim);
+    l = n(dim) - l + 1;
+    sz = ones(1, 3); sz(dim) = n(dim);
+    idx = reshape(single(1:n(dim)), sz);
+    rep = n; rep(dim) = 1;
+    dd = min(repmat(idx, rep) - repmat(single(f), sz), repmat(single(l), sz) - repmat(idx, rep)) * vox(dim);
+    dd(~repmat(m, sz)) = -Inf;
+    d = min(d, dd);
+end
+R = d >= mm;
 end
 
 function M = dilate(M, r)
