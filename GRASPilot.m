@@ -458,6 +458,13 @@ classdef GRASPilot < handle
                 obj.setStatus(sprintf(['Orientation check: the head is wider left-right (%.0f mm) than ' ...
                     'front-back (%.0f mm), so the views are probably rotated 90 degrees. ' ...
                     'Use View > Geometry (axis codes, Rotate 90).'], ext(1), ext(2)));
+            elseif max(ext) > 240 || max(ext) < 100
+                % heads are ~120-220 mm front to back (infant to adult, with nose and scalp)
+                ok = false;
+                obj.setStatus(sprintf(['Voxel size check: with %.3g x %.3g mm pixels the head measures %.0f mm ' ...
+                    'front to back and %.0f mm left to right, which is implausible: check the pixel and slice ' ...
+                    'spacing (View > Geometry). Auto SSS, brush and circle radii, ROI volumes and mm-based ' ...
+                    'settings depend on it.'], vox(1), vox(2), ext(2), ext(1)));
             end
         end
 
@@ -1780,7 +1787,7 @@ classdef GRASPilot < handle
             D = obj.Data;
             S = struct();
             S.Format = 'GRASPilot ROI session';
-            vv = graspilot_version();
+            vv = GRASPilot.versionInfo();
             S.Version = vv.Text;
             S.Saved = datestr(now, 'yyyy-mm-dd HH:MM:SS');
             S.SourceFile = D.SourceFile;
@@ -2109,7 +2116,7 @@ classdef GRASPilot < handle
 
         function s = showAbout(obj)
             % version (release and git revision) and the GitHub repository
-            v = graspilot_version();
+            v = GRASPilot.versionInfo();
             s = sprintf(['GRASPilot %s\n%s.\n\n%s\n\nFrames are synthesized from the subspace coefficients ' ...
                 'exactly as in ReadData.m (TempPCASub adjoint, CropImg, global-max normalization). No toolboxes ' ...
                 'required; runs offline.'], v.Text, v.Details, v.URL);
@@ -2122,7 +2129,7 @@ classdef GRASPilot < handle
         end
 
         function openRepoPage(obj)
-            url = graspilot_version().URL;
+            url = GRASPilot.versionInfo().URL;
             ok = false;
             try
                 st = web(url, '-browser');
@@ -5532,6 +5539,44 @@ classdef GRASPilot < handle
 
         function s = ternaryStr(c, a, b)
             if c, s = a; else, s = b; end
+        end
+
+        function v = versionInfo()
+            % Version (latest GitHub release this code is based on; update it when
+            % tagging release vX.Y.Z), git revision of the checkout and repository URL.
+            % See graspilot_version.
+            persistent cache
+            if ~isempty(cache), v = cache; return; end
+            v = struct('Version', '0.1.0', 'Revision', '', ...
+                'URL', 'https://github.com/Beyond-Enhancement/GRASPilot', 'Text', '', 'Details', '');
+            here = fileparts(which('GRASPilot'));
+            if exist(fullfile(here, '.git'), 'dir') == 7 || exist(fullfile(here, '.git'), 'file') == 2
+                try
+                    [st, out] = system(sprintf('git -C "%s" describe --tags --dirty --always', here));
+                    out = strtrim(out);
+                    if st == 0 && ~isempty(out) && isempty(regexp(out, '\s', 'once')), v.Revision = out; end
+                catch
+                end
+            end
+            v.Text = v.Version;
+            v.Details = sprintf(['Version %s; exact revision unknown (not run from a git checkout, or git not ' ...
+                'available)'], v.Version);
+            r = v.Revision;
+            if ~isempty(r)
+                v.Text = sprintf('%s (%s)', v.Version, r);
+                dirty = ~isempty(regexp(r, '-dirty$', 'once'));
+                r = regexprep(r, '-dirty$', '');
+                tk = regexp(r, '^(.*)-(\d+)-g([0-9a-f]+)$', 'tokens', 'once');
+                if ~isempty(tk)
+                    v.Details = sprintf('%s commit(s) after release %s (commit %s)', tk{2}, tk{1}, tk{3});
+                elseif ~isempty(regexp(r, '^v?\d', 'once'))
+                    v.Details = sprintf('Release %s', r);
+                else
+                    v.Details = sprintf('Commit %s (no release tag found in this checkout)', r);
+                end
+                if dirty, v.Details = [v.Details ', with local changes']; end
+            end
+            cache = v;
         end
 
         function [st, txt] = etaUpdate(st, f, elapsed)

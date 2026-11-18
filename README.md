@@ -86,7 +86,9 @@ Three **axis codes** give the direction in which row, column and slice index inc
 **Left-right cannot be judged from symmetric anatomy**: confirm it once per reconstruction
 pipeline with a lateralized finding, and press Flip L-R if mirrored. View > Geometry has
 the codes, presets, Rotate axial 90 CW and Flip L-R/A-P/S-I; ROIs follow. A check after
-loading warns if the head looks wider than long (view probably rotated).
+loading warns if the head looks wider than long (view probably rotated), or implausibly long
+or short for the voxel size (outside 100-240 mm front to back): check the pixel and slice
+spacing then, since Auto SSS, brush/circle radii and volumes are in mm.
 
 Exports use one voxel order (i = R->L, j = A->P, k = I->S) with an affine to RAS mm, so
 image, mask and map NIfTIs overlay in ITK-SNAP, 3D Slicer, FSLeyes and nibabel. For `.mat`
@@ -147,7 +149,8 @@ midline cross-section against the inner table, from 2 mm below the thickest one 
 50 mm. It stops where the sinus is lost, jumps or turns forward over the vertex. Veins
 joining the sinus and partial-volume edges (< 50% of the maximum) are trimmed. The status
 bar explains the result; always check the ROI. It needs the correct orientation and voxel
-size (a wrong slice spacing shortens the ROI).
+size: its limits are in mm, so pixels or slices declared larger or smaller than they are
+shorten or clip the ROI.
 
 If detection fails, put the crosshair on the sinus above the torcula and accept *Use
 crosshair*, or use Edit > **SSS ROI from crosshair** at any time. The crosshair voxel must
@@ -437,8 +440,8 @@ Help > About shows the version: the latest GitHub release the code is based on (
 (e.g. `v0.1.0-12-gab9e173` = 12 commits after release v0.1.0, `-dirty` = local changes).
 Exports (JSON sidecar, spreadsheet Info/Settings sheets) and ROI sessions record the same
 string. Help > GitHub page opens https://github.com/Beyond-Enhancement/GRASPilot (releases,
-issues). In code: `graspilot_version()`. When tagging a release `vX.Y.Z`, set `Version` in
-`graspilot_version.m` to `X.Y.Z`.
+issues). In code: `graspilot_version()` or `GRASPilot.versionInfo()`. When tagging a release
+`vX.Y.Z`, set `Version` in `GRASPilot.versionInfo` (GRASPilot.m) to `X.Y.Z`.
 
 ## Files
 

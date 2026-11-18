@@ -43,11 +43,13 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %      cross-section is missing, no longer overlaps the cross-section of the
 %      slice below, or where the sinus turns forward over the vertex (its
 %      posterior edge moving anteriorly by more than MaxSlope mm per mm of
-%      height over >= 4 mm: the axial cut becomes oblique and partial-volumed)
+%      height over >= 4 mm: the axial cut becomes oblique and partial-volumed).
+%      All distances are in mm: a wrong voxel size shortens or clips the ROI
 %   7. in each ROI slice the cross-section voxels enhancing >= Core x their
 %      maximum (excludes partial-volume edge voxels), no wider than 1.5 x
-%      the sinus at the thickest slice; voxels peaking > 1.5 frames before
-%      the ROI's median time to peak (arteries touching the sinus) are dropped
+%      the sinus at the thickest slice; voxels peaking more than 3 s (at
+%      least 1.5 frames) before the ROI's median time to peak (arteries
+%      touching the sinus) are dropped
 %
 %   'Seed' [i j k] (canonical voxel on the sinus, e.g. the crosshair) skips
 %   the search: the region is grown from the most enhancing voxel within
@@ -57,9 +59,9 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   tumour, dura and falx do not.
 %
 %   Options (defaults): 'BaseFrames' (automatic, GRASPilotData.detectBaseline), 'MidlineMM' (10),
-%   'LateralMM' (50), 'BandMM' (25), 'RelThr' (0.5), 'PosteriorMM' (12),
+%   'LateralMM' (50), 'BandMM' (25), 'RelThr' (0.5), 'PosteriorMM' (15),
 %   'TorculaWidthMM' (30), 'MaxWidthMM' (20), 'GapMM' (5), 'SearchMM' (35),
-%   'InferiorMM' (2), 'SuperiorMM' (50), 'MaxSlope' (1), 'Core' (0.5),
+%   'InferiorMM' (2), 'SuperiorMM' (50), 'MaxSlope' (1.5), 'Core' (0.5),
 %   'Seeds' (6), 'Seed' ([]), 'Progress' ([]). 'SlabMM' (empty) gives the
 %   former ROI: SlabMM of slices centred on the thickest slice (sets
 %   InferiorMM and SuperiorMM to SlabMM/2).
@@ -69,8 +71,8 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   Width (posterior structure) and Area (cross-section) per slice, Message.
 
 p = struct('BaseFrames', [], 'MidlineMM', 10, 'LateralMM', 50, 'BandMM', 25, 'RelThr', 0.5, ...
-    'PosteriorMM', 12, 'TorculaWidthMM', 30, 'MaxWidthMM', 20, 'GapMM', 5, 'SearchMM', 35, ...
-    'InferiorMM', 2, 'SuperiorMM', 50, 'MaxSlope', 1, 'SlabMM', [], 'Core', 0.5, 'Seeds', 6, ...
+    'PosteriorMM', 15, 'TorculaWidthMM', 30, 'MaxWidthMM', 20, 'GapMM', 5, 'SearchMM', 35, ...
+    'InferiorMM', 2, 'SuperiorMM', 50, 'MaxSlope', 1.5, 'SlabMM', [], 'Core', 0.5, 'Seeds', 6, ...
     'Seed', [], 'MinWashout', 0.15, 'Progress', []);
 for i = 1:2:numel(varargin)
     fn = fieldnames(p);
@@ -304,15 +306,21 @@ for pass = 1:2
         [bx, ~] = ind2sub([n(1) n(2)], l2);
         [~, im] = max(e);
         sx = bx(im);
-        keep = keep & abs(bx - sx) <= hwk;
+        xm = round(median(bx(keep)));             % centre of the sinus core
+        keep = keep & abs(bx - xm) <= hwk;
         M2 = false(n(1), n(2));
         M2(l2(keep)) = true;
+        if ~keep(im)                              % brightest voxel trimmed: start from the brightest kept one
+            ek = e; ek(~keep) = -Inf;
+            [~, im] = max(ek);
+            sx = bx(im);
+        end
         [~, sy] = ind2sub([n(1) n(2)], l2(im));
         R2 = GRASPilot.floodFill3D(M2, [sx sy 1]);
         lin = [lin; find(R2) + (k - 1) * np]; %#ok<AGROW>
         if pass == 1 && k == kb
             [rx, ~] = find(R2);
-            hwk = max(1.5 * (max(rx) - min(rx) + 1) / 2, 3 / vox(1));
+            hwk = max(1.5 * (max(rx) - min(rx) + 1) / 2, 4 / vox(1));
         end
     end
     if ~isfinite(hwk), break; end
@@ -322,9 +330,10 @@ end
 if numel(lin) > 10
     TTP = double(D.canonMap('TTP'));
     tt = D.paramTimes();
-    dtf = median(diff(tt));
+    lag = 1.5 * median(diff(tt));
+    if D.hasTiming(), lag = max(lag, 3); end    % arteries peak several seconds before the sinus
     tp = TTP(lin);
-    lin = lin(~(tp < median(tp) - 1.5 * dtf));
+    lin = lin(~(tp < median(tp) - lag));
 end
 [ii, jj, kk] = ind2sub(n, lin);
 info.Slices = ks;

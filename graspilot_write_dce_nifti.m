@@ -22,7 +22,7 @@ graspilot_nifti_write(outFile, @(i) D.canonVolume(frames(i)), hdr, progress);
 
 % JSON sidecar
 J = struct();
-gv = graspilot_version();
+gv = GRASPilot.versionInfo();
 J.CreatedBy = ['GRASPilot ' gv.Text];
 J.GRASPilotURL = gv.URL;
 J.Created = datestr(now, 'yyyy-mm-ddTHH:MM:SS');

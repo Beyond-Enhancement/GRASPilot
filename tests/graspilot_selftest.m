@@ -151,9 +151,9 @@ ok = abs(infoS.TorculaSlice - tr.TorculaZ) <= 2 && min(kk) >= infoS.TorculaSlice
     && abs(infoS.Centroid(1) - 50) < 2 && isequal(unique(kk)', min(kk):max(kk));
 nfail = nfail + check('SSS ROI starts just above torcula, midline, contiguous', ok, infoS.TorculaSlice);
 % extends up the posterior SSS toward the vertex: 50 mm above the thickest slice, or until the
-% sinus turns forward (phantom SSS: posterior edge moves forward > 1 mm per mm above z ~ 70)
+% sinus turns forward (MaxSlope 1.5 mm per mm; the phantom SSS reaches that near z ~ 75)
 ok = max(kk) >= infoS.ThickestSlice + 40 && max(kk) <= 75 && numel(linS) > 2000 && ...
-    ~isempty(strfind(infoS.StopReason, 'forward'));
+    (~isempty(strfind(infoS.StopReason, 'forward')) || ~isempty(strfind(infoS.StopReason, 'SuperiorMM')));
 nfail = nfail + check('SSS ROI extends superiorly toward the vertex', ok, max(kk));
 [linV, infoV] = graspilot_detect_sss(Dp, 'SuperiorMM', 20);
 [~, ~, kv] = ind2sub(np, linV);

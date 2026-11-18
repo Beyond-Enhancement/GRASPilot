@@ -87,7 +87,7 @@ for q = 1:R
 end
 
 % info block
-gv = graspilot_version();
+gv = GRASPilot.versionInfo();
 info = {
     'Created by', sprintf('GRASPilot %s (graspilot_export_timeseries), %s', gv.Text, gv.URL);
     'Date', datestr(now, 'yyyy-mm-dd HH:MM:SS');

@@ -38,7 +38,7 @@ for k = 1:numel(keys)
     phdr{k} = sprintf('%s [%s]', keys{k}, units{k});
 end
 vhdr = [{'Voxel', 'i', 'j', 'k', 'x_mm', 'y_mm', 'z_mm'}, phdr];
-gv = graspilot_version();
+gv = GRASPilot.versionInfo();
 info = [{'Created by', sprintf('GRASPilot %s (graspilot_export_params), %s', gv.Text, gv.URL);
     'Date', datestr(now, 'yyyy-mm-dd HH:MM:SS');
     'Source file', D.SourceFile;

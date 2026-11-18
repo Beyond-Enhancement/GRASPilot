@@ -6,6 +6,10 @@ app = GRASPilot(D);
 app.Quiet = true;
 cleanup = onCleanup(@() app.close(true));
 nfail = nfail + check('orientation check passes (LPS phantom)', app.checkOrientation(), 0);
+D.VoxNative = [2.5 2.5 1];                           % head 270 mm long: implausible voxel size
+okV = ~app.checkOrientation() && ~isempty(strfind(get(app.H.status, 'String'), 'Voxel size check'));
+D.VoxNative = [1 1 1];
+nfail = nfail + check('implausible voxel size flagged', okV && app.checkOrientation(), 0);
 app.addTumor();
 k = app.autoSSS();
 lin = find(app.Masks{k});
