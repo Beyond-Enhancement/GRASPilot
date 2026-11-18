@@ -24,7 +24,10 @@ end
 numNames = names(numIdx);
 if isempty(numNames), numNames = {'(none)'}; end
 
-bg = [0.94 0.94 0.94];
+% dark theme of the viewer, set explicitly so the dialog looks the same under
+% the light and dark MATLAB themes
+C = GRASPilot.Col;
+bg = C.panel; fg = C.fg; dim = C.dim; box = [0.21 0.21 0.24];
 if geomOnly, H = 290; else, H = 590; end
 W = 640;
 ss = get(0, 'ScreenSize');
@@ -38,7 +41,7 @@ hFmt = []; hCoef = []; hBasis = []; hImg = []; hOrder = []; hCrop = []; hNorm = 
 if ~geomOnly
     y = y - 30;
     [~, fb, fe] = fileparts(matFile);
-    txt(12, y, W - 24, ['File: ' fb fe], 'FontWeight', 'bold');
+    txt(12, y, W - 24, ['File: ' fb fe], 'FontWeight', 'bold', 'ForegroundColor', C.accent);
     y = y - 96;
     desc = cell(1, numel(info));
     for i = 1:numel(info)
@@ -49,7 +52,8 @@ if ~geomOnly
             info(i).class, c, info(i).bytes / 2^20);
     end
     uicontrol(d, 'Style', 'listbox', 'Units', 'pixels', 'Position', [12 y W - 24 90], ...
-        'String', desc, 'Enable', 'inactive', 'FontName', 'FixedWidth', 'BackgroundColor', 'w');
+        'String', desc, 'Enable', 'inactive', 'FontName', 'FixedWidth', 'BackgroundColor', box, ...
+        'ForegroundColor', fg);
 
     hasSub = any(strcmp(names, opts.CoefVar)) && any(strcmp(names, opts.BasisVar));
     fmtIdx = 2;
@@ -73,24 +77,24 @@ if ~geomOnly
     txt(300, y, 110, 'Dimension order');
     hOrder = edt(415, y + 2, 60, opts.DimOrder);
     set(hOrder, 'Callback', @(~, ~) updateInfo());
-    txt(482, y, 140, 'e.g. xytz, xyzt', 'ForegroundColor', [0.4 0.4 0.4]);
+    txt(482, y, 140, 'e.g. xytz, xyzt', 'ForegroundColor', dim);
 
     y = y - 30;
     txt(12, y, 110, 'Crop factor');
     hCrop = edt(125, y + 2, 50, '');
     set(hCrop, 'Callback', @(~, ~) updateInfo());
-    txt(180, y, 120, '(2 = CropImg.m)', 'ForegroundColor', [0.4 0.4 0.4]);
+    txt(180, y, 120, '(2 = CropImg.m)', 'ForegroundColor', dim);
     hNorm = uicontrol(d, 'Style', 'checkbox', 'Units', 'pixels', 'Position', [300 y + 2 328 20], ...
-        'String', 'Normalize to global max (ReadData.m)', 'BackgroundColor', bg);
+        'String', 'Normalize to global max (ReadData.m)', 'BackgroundColor', bg, 'ForegroundColor', fg);
 
     y = y - 62;
     hInfo = uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [12 y W - 24 56], ...
-        'String', '', 'HorizontalAlignment', 'left', 'BackgroundColor', [1 1 0.92], ...
-        'FontName', 'FixedWidth');
+        'String', '', 'HorizontalAlignment', 'left', 'BackgroundColor', box, ...
+        'ForegroundColor', [0.98 0.88 0.55], 'FontName', 'FixedWidth');
 end
 
 y = y - 34;
-txt(12, y, 300, 'Acquisition geometry', 'FontWeight', 'bold');
+txt(12, y, 300, 'Acquisition geometry', 'FontWeight', 'bold', 'ForegroundColor', C.accent);
 y = y - 30;
 txt(12, y, 160, 'Voxel orientation');
 codes = {'LPS', 'PLS', 'ILP', 'IPL'};
@@ -127,9 +131,9 @@ txt(262, y, 140, 'Time of frame 1 (s)');
 hT0 = edt(400, y + 2, 60, num2str(opts.t0));
 y = y - 30;
 txt(12, y, W - 24, 'Temporal resolution = seconds per reconstructed frame; leave blank if unknown.', ...
-    'ForegroundColor', [0.4 0.4 0.4]);
+    'ForegroundColor', dim);
 txt(12, y - 18, W - 24, 'Geometry can be changed later under View > Geometry.', ...
-    'ForegroundColor', [0.4 0.4 0.4]);
+    'ForegroundColor', dim);
 
 uicontrol(d, 'Style', 'pushbutton', 'Units', 'pixels', 'Position', [W - 210 12 95 30], ...
     'String', 'OK', 'FontWeight', 'bold', 'Callback', @onOK);
@@ -144,15 +148,16 @@ uiwait(d);
 % ------------------------------------------------------------------ nested
     function h = txt(x, yy, w, s, varargin)
         h = uicontrol(d, 'Style', 'text', 'Units', 'pixels', 'Position', [x yy w 18], ...
-            'String', s, 'HorizontalAlignment', 'left', 'BackgroundColor', bg, varargin{:});
+            'String', s, 'HorizontalAlignment', 'left', 'BackgroundColor', bg, 'ForegroundColor', fg, varargin{:});
     end
     function h = edt(x, yy, w, s)
         h = uicontrol(d, 'Style', 'edit', 'Units', 'pixels', 'Position', [x yy w 22], ...
-            'String', s, 'BackgroundColor', 'w', 'HorizontalAlignment', 'left');
+            'String', s, 'BackgroundColor', [1 1 1], 'ForegroundColor', [0 0 0], 'HorizontalAlignment', 'left');
     end
     function h = pop(x, yy, w, s, v)
         h = uicontrol(d, 'Style', 'popupmenu', 'Units', 'pixels', 'Position', [x yy w 22], ...
-            'String', s, 'Value', v, 'BackgroundColor', 'w', 'Callback', @(~, ~) updateInfo());
+            'String', s, 'Value', v, 'BackgroundColor', [1 1 1], 'ForegroundColor', [0 0 0], ...
+            'Callback', @(~, ~) updateInfo());
     end
 
     function onFormat(initial)
