@@ -171,6 +171,22 @@ Dp2.setAxisCodes('PLS');
 nfail = nfail + check('SSS detection reports failure, wrong orientation', ...
     isempty(lin3) || ~all(tr2.SSS(Dp2.canon2nativeLin(lin3))), numel(lin3));
 
+% realistic: cortical veins, enhancing dura/falx/tentorium, tumour beside the midline,
+% 2 mm slices, stored rotated and flipped S-I (axis codes PLI)
+[Dr, trr] = graspilot_sss_phantom([], 'realistic');
+[linR, infoR] = graspilot_detect_sss(Dr);
+[~, ~, kr] = ind2sub(Dr.canonSize(), linR);
+ok = numel(linR) > 500 && mean(trr.SSS(linR)) > 0.95 && ~any(trr.Tumor(linR)) && ...
+    abs(infoR.TorculaSlice - trr.TorculaZ) <= 1 && min(kr) > infoR.TorculaSlice && max(kr) - min(kr) >= 15;
+nfail = nfail + check('SSS detection: veins, dura, tumour, 2 mm, PLI', ok, mean(trr.SSS(linR)));
+[i1, j1] = find(trr.SSS(:, :, 20));
+[linC, infoC] = graspilot_detect_sss(Dr, 'Seed', [round(mean(i1)) round(mean(j1)) 20]);
+[it, jt, kt] = ind2sub(size(trr.Tumor), find(trr.Tumor, 1));
+[linT, infoT] = graspilot_detect_sss(Dr, 'Seed', [it jt kt]);
+ok = mean(trr.SSS(linC)) > 0.95 && infoC.ThickestSlice == 20 && isempty(linT) && ...
+    ~isempty(strfind(infoT.Message, 'wash out'));
+nfail = nfail + check('SSS from a crosshair seed; tumour seed rejected', ok, numel(linC));
+
 % ---------------------------------------------------------------- 4. enhancement maps
 D.setOrientation('axial', false, [0 0 0]);
 D.computeMaps(1:3);

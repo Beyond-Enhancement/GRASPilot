@@ -135,14 +135,23 @@ grown from the crosshair, necrotic core excluded.*
 *Auto SSS on a venous phantom: the ROI (red) follows the posterior SSS from above the
 torcula toward the vertex; straight and transverse sinuses and a scalp vein are excluded.*
 
-**Auto SSS** places `SSS (auto)` in the posterior SSS. It finds the venous complex (largest
-connected region enhancing >= 35% of the brightest posterior-midline voxel), the torcula
-level (structure wider than 30 mm), then the most posterior midline cross-section against
-the inner table on the slices above, from 2 mm below the thickest cross-section up to
-50 mm. It stops where the sinus is lost, widens, jumps or turns forward over the vertex.
-Partial-volume edges (< 50% of the maximum) are excluded. The status bar explains the
-result; always check the ROI. Needs correct orientation. Scripting:
-`[lin, info] = graspilot_detect_sss(D)` (thresholds in `help graspilot_detect_sss`).
+**Auto SSS** places `SSS (auto)` in the posterior SSS. It works in a 25 mm band along the
+head surface, where the sinuses lie (the straight sinus, deep vessels and most tumors do
+not), on voxels enhancing >= 50% of the brightest posterior-midline voxel there (the
+moderately enhancing dura and falx drop out). The torcula is the top of the lowest run of
+slices where the posterior structure is wider than 30 mm (transverse sinuses), so cortical
+veins joining the SSS higher up do not move it. Above it, the ROI takes the most posterior
+midline cross-section against the inner table, from 2 mm below the thickest one up to
+50 mm. It stops where the sinus is lost, jumps or turns forward over the vertex. Veins
+joining the sinus and partial-volume edges (< 50% of the maximum) are trimmed. The status
+bar explains the result; always check the ROI. It needs the correct orientation and voxel
+size (a wrong slice spacing shortens the ROI).
+
+If detection fails, put the crosshair on the sinus above the torcula and accept *Use
+crosshair*, or use Edit > **SSS ROI from crosshair** at any time. The crosshair voxel must
+wash out after the first pass like venous blood, so a crosshair on tumor or dura is
+rejected. Scripting: `[lin, info] = graspilot_detect_sss(D)` or `app.autoSSS('Seed',
+[i j k])` (thresholds in `help graspilot_detect_sss`).
 
 ## Time, binning and curves
 
@@ -413,13 +422,14 @@ Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a g
 | `legacy/` | original ReadData.m, CropImg.m, @TempPCASub (validation reference) |
 | `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
 | `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
-| `tests/*_phantom.m` | venous (SSS), motion, PK (SPGR) and RATIO (complex subspace) phantoms |
+| `tests/*_phantom.m` | venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion, PK (SPGR) and RATIO (complex subspace) phantoms |
 
 ## Notes and limitations
 
 - `.mat` geometry comes from the dialog: check voxel size, left-right and timing once per
   protocol.
-- The DICOM reader, Auto SSS, motion estimation and the PK models were validated on
+- The DICOM reader, Auto SSS (incl. a phantom with cortical veins, enhancing dura and a
+  tumor beside the sinus), motion estimation and the PK models were validated on
   synthetic data only; check them on the first real series.
 - Signal is the reconstruction magnitude. Semi-quantitative values compare only between
   scans with the same protocol and scaling (or use /SSS). PK values depend on the assumed

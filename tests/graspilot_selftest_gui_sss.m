@@ -31,6 +31,16 @@ nfail = nfail + check('ROI follows axis-code change', isequal(D.canon2native(app
 app.applyGeometry('LPS', [1 1 1], 4, 0);
 nfail = nfail + check('ROI back in place after restoring LPS', isequal(sort(find(app.Masks{k})), sort(ref)), 0);
 
+% ---- SSS ROI from the crosshair (Edit menu)
+lin0 = sort(find(app.Masks{k}));
+[i1, j1] = find(tr.SSS(:, :, 60));
+post = j1 >= max(j1) - 4;                            % the posterior cross-section (the arc is cut twice)
+app.setPos([round(mean(i1(post))) round(mean(j1(post))) 60]);
+k3 = app.autoSSS('Seed', app.Pos);
+nfail = nfail + check('SSS ROI from crosshair replaces SSS (auto)', k3 == k && all(tr.SSS(app.Masks{k})) && ...
+    nnz(app.Masks{k}) > 100 && ~isequal(sort(find(app.Masks{k})), lin0), nnz(app.Masks{k}));
+app.undo();
+
 % ---- semi-quantitative parameters, normalization to the SSS, statistics, export
 n = D.canonSize();
 t = 1;                                               % the tumor ROI added above

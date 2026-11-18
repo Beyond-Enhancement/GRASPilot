@@ -1624,15 +1624,16 @@ classdef GRASPilot < handle
             obj.refreshPKWindow();
         end
 
-        function r = autoSSS(obj)
+        function r = autoSSS(obj, varargin)
             % detect the posterior superior sagittal sinus from above the torcula
-            % toward the vertex and put it in the ROI "SSS (auto)" (replaced on each run)
+            % toward the vertex and put it in the ROI "SSS (auto)" (replaced on each
+            % run). Options as in graspilot_detect_sss, e.g. 'Seed', obj.Pos.
             r = 0;
             if ~obj.requireData(), return; end
             wb = obj.wbOpen('Detecting the superior sagittal sinus...');
             try
                 [lin, info] = graspilot_detect_sss(obj.Data, 'BaseFrames', obj.BaseFrames(1):obj.BaseFrames(2), ...
-                    'Progress', @(f, m) obj.wbUpdate(wb, f, m));
+                    'Progress', @(f, m) obj.wbUpdate(wb, f, m), varargin{:});
             catch err
                 obj.wbClose(wb);
                 obj.showError(err, 'SSS detection failed');
@@ -1640,7 +1641,15 @@ classdef GRASPilot < handle
             end
             obj.wbClose(wb);
             if isempty(lin)
-                obj.inform(info.Message, 'Auto SSS');
+                seeded = any(strcmpi(varargin(1:2:end), 'Seed'));
+                if seeded || obj.Quiet
+                    obj.inform(info.Message, 'Auto SSS');
+                else
+                    b = obj.ask(sprintf(['%s\n\nStart from the crosshair instead? Put it on the sinus above ' ...
+                        'the torcula first (posterior midline, against the inner table).'], info.Message), ...
+                        'Auto SSS', {'Use crosshair', 'Cancel'}, 'Use crosshair');
+                    if strcmp(b, 'Use crosshair'), r = obj.autoSSS('Seed', obj.Pos); end
+                end
                 return
             end
             k = find(strcmp({obj.ROIs.Name}, 'SSS (auto)'), 1);
@@ -2058,6 +2067,8 @@ classdef GRASPilot < handle
             uimenu(m, 'Label', 'Fill holes in active ROI', 'Callback', @(s, e) obj.fillHoles());
             uimenu(m, 'Label', 'Detect superior sagittal sinus (auto ROI)', 'Separator', 'on', ...
                 'Callback', @(s, e) obj.autoSSS());
+            uimenu(m, 'Label', 'SSS ROI from crosshair (crosshair on the sinus)', ...
+                'Callback', @(s, e) obj.autoSSS('Seed', obj.Pos));
             uimenu(m, 'Label', 'Grow from crosshair   (G)', 'Callback', @(s, e) obj.growFromCrosshair());
             uimenu(m, 'Label', 'All voxels in threshold window -> active ROI', 'Callback', @(s, e) obj.windowToROI());
             m = uimenu(obj.Fig, 'Label', 'View');
