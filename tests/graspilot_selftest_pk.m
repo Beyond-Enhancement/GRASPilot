@@ -278,6 +278,8 @@ ka = app.autoAIFIndex();
 okA = ok && ka > 0 && mean(th.Art(app.Masks{ka})) > 0.9 && app.pkReady() && ...
     ~any(strcmp(rows(:, 1), 'AIF (auto)')) && any(strcmp(rows(:, 1), 'Tumor 1'));
 nfail = nfail + check('AIF = Auto AIF: ROI "AIF (auto)" made and used, not in tumor stats', okA, ka);
+nfail = nfail + check('Auto AIF puts the crosshair on one of its voxels', ka > 0 && ...
+    app.Masks{ka}(app.Pos(1), app.Pos(2), app.Pos(3)), 0);
 ra = app.addROI('Artery', [1 0.5 0]); app.setVoxels(ra, find(th.Art), true); app.afterMaskChange();
 ok = app.computePK('AIF', 'artery');
 a = app.aifInput();

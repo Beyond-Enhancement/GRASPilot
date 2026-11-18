@@ -16,7 +16,31 @@ lin = find(app.Masks{k});
 [ref, info] = graspilot_detect_sss(D, 'BaseFrames', app.BaseFrames(1):app.BaseFrames(2));
 nfail = nfail + check('Auto SSS button creates "SSS (auto)" ROI', k > 0 && strcmp(app.ROIs(k).Name, 'SSS (auto)') ...
     && isequal(sort(lin), sort(ref)) && all(tr.SSS(lin)), numel(lin));
-nfail = nfail + check('crosshair moved to the SSS ROI', isequal(app.Pos, round(info.Centroid)), 0);
+[~, ~, ks] = ind2sub(D.canonSize(), lin);
+kmid = round((min(ks) + max(ks)) / 2);
+nfail = nfail + check('crosshair moved onto an SSS ROI voxel, middle slice', app.Masks{k}(app.Pos(1), ...
+    app.Pos(2), app.Pos(3)) && abs(app.Pos(3) - kmid) <= 1, app.Pos(3) - kmid);
+
+% ---- go to an ROI by clicking it in the ROI list
+app.setPos([5 5 5]);
+app.ROIs(k).Visible = false; app.refreshROIList();
+app.onTableSelect(struct('Indices', [k 2]));
+nfail = nfail + check('click on ROI row: crosshair on its middle slice, ROI shown', app.ActiveROI == k && ...
+    app.Masks{k}(app.Pos(1), app.Pos(2), app.Pos(3)) && abs(app.Pos(3) - kmid) <= 1 && app.ROIs(k).Visible, 0);
+app.setPos([5 5 5]);
+app.onTableSelect(struct('Indices', [k 3]));
+nfail = nfail + check('click on the Show checkbox does not move the crosshair', isequal(app.Pos, [5 5 5]), 0);
+app.onTableSelect(struct('Indices', [1 2]));
+nfail = nfail + check('empty ROI: crosshair stays, status says so', app.ActiveROI == 1 && ...
+    isequal(app.Pos, [5 5 5]) && ~isempty(strfind(get(app.H.status, 'String'), 'empty')), 0);
+set(app.V(1).Ax, 'XLim', [0.5 10.5], 'YLim', [0.5 10.5]);
+app.setActiveROI(k);
+msg = app.goToROI();
+sp = app.canon2screen(1, app.Pos);
+xl = get(app.V(1).Ax, 'XLim'); yl = get(app.V(1).Ax, 'YLim');
+nfail = nfail + check('go to ROI pans a zoomed view (key R)', sp(1) >= xl(1) && sp(1) <= xl(2) && ...
+    sp(2) >= yl(1) && sp(2) <= yl(2) && abs(diff(xl) - 10) < 1e-9 && ~isempty(strfind(msg, 'SSS (auto)')), 0);
+app.resetZoom();
 k2 = app.autoSSS();
 nfail = nfail + check('second run replaces, does not duplicate', k2 == k && numel(app.ROIs) == 2 && ...
     nnz(app.Masks{k}) == numel(ref), numel(app.ROIs));
