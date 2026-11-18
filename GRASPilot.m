@@ -73,6 +73,8 @@ classdef GRASPilot < handle
         ThrLo = -Inf;
         ThrHi = Inf;
         BaseFrames = [1 5];
+        AutoBaseline = true;    % baseline frames detected from the bolus arrival (GRASPilotData.detectBaseline)
+        BaselineMsg = '';
         Alpha = 0.35;
         ShowOutline = true;
         ShowCross = true;
@@ -397,8 +399,11 @@ classdef GRASPilot < handle
             obj.Pos = max(1, round((n + 1) / 2));
             obj.Frame = max(1, min(D.NT, round(0.75 * D.NT)));
             obj.BaseFrames = [1 max(1, min(5, D.NT))];
+            obj.BaselineMsg = '';
+            if obj.AutoBaseline, obj.detectBaselineFrames(); end
             set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
             set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+            set(obj.H.baseAuto, 'Value', double(obj.AutoBaseline));
             obj.setSubFrames(D.NT, 1, false);
             set(obj.H.binEdit, 'String', num2str(D.BinSize));
             obj.ViewMode = 'frame';
@@ -428,7 +433,7 @@ classdef GRASPilot < handle
             obj.Modified = keep;
             [~, nm] = fileparts(D.SourceFile);
             set(obj.Fig, 'Name', ['GRASPilot - ' nm]);
-            obj.setStatus(sprintf('Loaded %s. %s', nm, D.describe()));
+            obj.setStatus(strtrim(sprintf('Loaded %s. %s %s', nm, D.describe(), obj.BaselineMsg)));
             obj.checkOrientation();
         end
 
@@ -957,8 +962,9 @@ classdef GRASPilot < handle
             a = min(T, floor((rawBase(1) - 1) / n) + 1);
             b = max(a, min(T, floor(rawBase(2) / n)));
             obj.BaseFrames = [a b];
-            set(obj.H.base1, 'String', num2str(a));
-            set(obj.H.base2, 'String', num2str(b));
+            if obj.AutoBaseline, obj.detectBaselineFrames(); end
+            set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
+            set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
             obj.setSubFrames(T, 1, false);
             obj.CLimStore.sub = [];
             set(obj.H.binEdit, 'String', num2str(n));
@@ -1785,6 +1791,7 @@ classdef GRASPilot < handle
             S.t0 = D.t0;
             S.RawTimes = D.RawTimes;
             S.BaseFrames = obj.BaseFrames;
+            S.AutoBaseline = obj.AutoBaseline;
             S.BinSize = D.BinSize;
             S.BinKeepPartial = D.BinKeepPartial;
             S.SubFrames = obj.SubFrames;
@@ -1881,11 +1888,15 @@ classdef GRASPilot < handle
                 obj.Masks{k} = D.native2canon(Mn);
                 obj.ROIs(k).Visible = logical(S.ROIVisible(r));
             end
-            if isfield(S, 'BaseFrames') && (applied || ~binDiff)
+            if isfield(S, 'AutoBaseline') && S.AutoBaseline
+                obj.setAutoBaseline(true);
+            elseif isfield(S, 'BaseFrames') && (applied || ~binDiff)
                 bfr = max(1, min(D.NT, S.BaseFrames));
+                obj.AutoBaseline = false;
                 obj.BaseFrames = [bfr(1) max(bfr)];
                 set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
                 set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+                set(obj.H.baseAuto, 'Value', 0);
             end
             if isfield(S, 'SubFrames') && (applied || ~binDiff)
                 obj.setSubFrames(S.SubFrames(1), S.SubFrames(2), false);
@@ -2182,10 +2193,13 @@ classdef GRASPilot < handle
             obj.H.btnSub = obj.ctl(P, 226, 319, 64, 22, 'togglebutton', 'Show', ...
                 'TooltipString', 'Display the subtraction map instead of the current frame (key S)', ...
                 'Callback', @(s, e) obj.toggleSubView());
-            obj.ctl(P, 10, 349, 100, 18, 'text', 'Baseline frames');
-            obj.H.base1 = obj.ctl(P, 112, 347, 40, 22, 'edit', '1', 'Callback', @(s, e) obj.onBaseline());
-            obj.ctl(P, 155, 349, 20, 18, 'text', 'to');
-            obj.H.base2 = obj.ctl(P, 176, 347, 40, 22, 'edit', '5', 'Callback', @(s, e) obj.onBaseline());
+            obj.ctl(P, 10, 349, 60, 18, 'text', 'Baseline', 'TooltipString', 'Pre-contrast frames (S0)');
+            obj.H.base1 = obj.ctl(P, 70, 347, 36, 22, 'edit', '1', 'Callback', @(s, e) obj.onBaseline());
+            obj.ctl(P, 109, 349, 16, 18, 'text', 'to');
+            obj.H.base2 = obj.ctl(P, 126, 347, 36, 22, 'edit', '5', 'Callback', @(s, e) obj.onBaseline());
+            obj.H.baseAuto = obj.ctl(P, 166, 347, 52, 22, 'togglebutton', 'Auto', 'Value', 1, ...
+                'TooltipString', ['Detect the baseline frames from the bolus arrival (default); typing frames ' ...
+                'switches it off'], 'Callback', @(s, e) obj.setAutoBaseline(get(s, 'Value')));
             obj.ctl(P, 222, 347, 68, 22, 'pushbutton', 'Maps', ...
                 'TooltipString', 'Recompute baseline / peak enhancement maps', 'Callback', @(s, e) obj.ensureMaps(true));
             obj.ctl(P, 10, 377, 32, 18, 'text', 'Low');
@@ -3311,6 +3325,9 @@ classdef GRASPilot < handle
             obj.PW.base1 = obj.ctl(P, x1 + 108, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
             obj.ctl(P, x1 + 152, 36, 20, 18, 'text', 'to');
             obj.PW.base2 = obj.ctl(P, x1 + 174, 34, 40, 22, 'edit', '', 'Callback', @(s, e) obj.onParamBaseline());
+            obj.PW.baseAuto = obj.ctl(P, x1 + 220, 34, 56, 22, 'togglebutton', 'Auto', ...
+                'TooltipString', 'Detect the baseline frames from the bolus arrival', ...
+                'Callback', @(s, e) obj.setAutoBaseline(get(s, 'Value')));
             obj.ctl(P, x1, 64, 96, 18, 'text', 'Wash-in slope');
             obj.PW.washIn = obj.ctl(P, x1 + 100, 62, 240, 22, 'popupmenu', ...
                 {'dS / (TP - To), onset to peak', 'Maximum up-slope', 'Max slope in SSS wash-in period'}, ...
@@ -3434,6 +3451,7 @@ classdef GRASPilot < handle
             if ~isfield(obj.PW, 'Fig') || ~ishghandle(obj.PW.Fig) || isempty(obj.Data), return; end
             D = obj.Data;
             set(obj.PW.base1, 'String', num2str(obj.BaseFrames(1)));
+            set(obj.PW.baseAuto, 'Value', double(obj.AutoBaseline));
             set(obj.PW.base2, 'String', num2str(obj.BaseFrames(2)));
             o = D.ParamOpts;
             set(obj.PW.washIn, 'Value', max(1, find(strcmpi({'onset', 'max', 'sss'}, o.WashIn))));
@@ -4412,6 +4430,11 @@ classdef GRASPilot < handle
         function afterFramesChanged(obj)
             % the frame source changed (motion correction): refresh everything
             obj.stopPlay();
+            if obj.AutoBaseline
+                obj.detectBaselineFrames();
+                set(obj.H.base1, 'String', num2str(obj.BaseFrames(1)));
+                set(obj.H.base2, 'String', num2str(obj.BaseFrames(2)));
+            end
             for r = 1:numel(obj.ROIs), obj.ROIs(r).Dirty = true; end
             obj.CursorTC = [];
             obj.ParamCache = struct('key', '', 'V', []);
@@ -4691,6 +4714,7 @@ classdef GRASPilot < handle
         end
 
         function onBaseline(obj)
+            % baseline frames typed by the user: automatic detection off
             if isempty(obj.Data), return; end
             T = obj.Data.NT;
             a = round(str2double(get(obj.H.base1, 'String')));
@@ -4698,6 +4722,44 @@ classdef GRASPilot < handle
             if ~isfinite(a), a = obj.BaseFrames(1); end
             if ~isfinite(b), b = obj.BaseFrames(2); end
             a = max(1, min(T, a)); b = max(a, min(T, b));
+            if ~isequal([a b], obj.BaseFrames)
+                obj.AutoBaseline = false;
+                set(obj.H.baseAuto, 'Value', 0);
+            end
+            obj.applyBaseline([a b]);
+        end
+
+        function setAutoBaseline(obj, on)
+            % automatic baseline detection on (detect now) or off (keep the frames)
+            obj.AutoBaseline = logical(on);
+            if isfield(obj.H, 'baseAuto') && ishghandle(obj.H.baseAuto)
+                set(obj.H.baseAuto, 'Value', double(obj.AutoBaseline));
+            end
+            if obj.AutoBaseline && ~isempty(obj.Data)
+                ab = obj.BaseFrames;
+                obj.detectBaselineFrames();
+                nb = obj.BaseFrames;
+                obj.BaseFrames = ab;
+                obj.applyBaseline(nb);
+                obj.setStatus(obj.BaselineMsg);
+            end
+            obj.refreshParamWindow();
+        end
+
+        function detectBaselineFrames(obj)
+            % BaseFrames from the bolus arrival (GRASPilotData.detectBaseline)
+            try
+                [bf, info] = obj.Data.detectBaseline();
+                obj.BaseFrames = [bf(1) bf(end)];
+                obj.BaselineMsg = info.Message;
+            catch err
+                obj.BaselineMsg = ['Automatic baseline detection failed (' err.message '): frames 1-5 used.'];
+                obj.BaseFrames = [1 max(1, min(5, obj.Data.NT))];
+            end
+        end
+
+        function applyBaseline(obj, ab)
+            a = ab(1); b = ab(2);
             set(obj.H.base1, 'String', num2str(a));
             set(obj.H.base2, 'String', num2str(b));
             if isequal([a b], obj.BaseFrames), return; end

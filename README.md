@@ -111,7 +111,7 @@ S subtraction view, G grow, M parameter map, Ctrl+Z/Y undo/redo (Help lists all)
   voxels and mL listed.
 - **Threshold maps:** signal at the frame, subtraction post - pre (default), frame -
   baseline, relative enhancement, peak - baseline, peak relative enhancement (baseline =
-  mean of the pre-contrast frames, default 1-5). Each works with Preview, Otsu, Keep:
+  mean of the baseline frames, detected automatically, see below). Each works with Preview, Otsu, Keep:
   slice/3D, Grow, All -> ROI and Constrain brush/circle.
 
 ### Enhancing tumor from the subtraction map
@@ -164,6 +164,16 @@ of n consecutive frames, e.g. to compare an 8-spoke reconstruction binned x2/x4 
 incomplete last bin is dropped unless kept (View > Temporal binning); n = 1 restores the
 original. Exports record the bin size and add `_<N>frames` to file names. It is not a
 reconstruction with more spokes per frame.
+
+**Baseline frames** (S0 for every map, parameter, curve and PK model) are detected
+automatically by default (**Auto** next to the baseline fields, also in the Parameters
+window). The bolus arrival is found on the mean curve of the earliest-arriving tenth of the
+strongly enhancing voxels (arteries enhance before veins and tissue), by fitting a
+constant-then-linear-rise model up to the peak. The baseline is frame 1 up to the arrival,
+minus trailing frames already 3% of the rise above baseline (temporal smoothing of the
+reconstruction). It is re-detected after binning or motion correction. Without a clear bolus,
+frames 1-5 are used. Typing frames switches Auto off; ROI sessions keep the choice.
+Scripting: `[bf, info] = D.detectBaseline()`, `app.setAutoBaseline(true)`.
 
 **Curves:** mean +/- SD, median [IQR] or mean only; signal, relative enhancement, S/S0 or
 S - S0; seconds or frames. File > Save TIC plot as PNG.

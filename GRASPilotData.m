@@ -470,6 +470,30 @@ classdef GRASPilotData < handle
             tf = ~isempty(a) && numel(a) >= ke && all(isfinite(a(1:ke)));
         end
 
+        function q = quantile(v, p)
+            v = sort(v(:));
+            q = v(max(1, min(numel(v), round(p * numel(v)))));
+        end
+
+        function th = otsu(vals)
+            % Otsu threshold of a vector
+            vals = double(vals(isfinite(vals)));
+            lo = min(vals); hi = max(vals);
+            th = lo;
+            if isempty(vals) || hi <= lo, return; end
+            nb = 256;
+            idx = min(nb, floor((vals - lo) / (hi - lo) * nb) + 1);
+            cnt = accumarray(idx(:), 1, [nb 1]);
+            pp = cnt / sum(cnt);
+            ctr = lo + ((1:nb)' - 0.5) * (hi - lo) / nb;
+            om = cumsum(pp);
+            mu = cumsum(pp .* ctr);
+            sb = (mu(end) * om - mu) .^ 2 ./ (om .* (1 - om));
+            sb(~isfinite(sb)) = 0;
+            [~, k] = max(sb);
+            th = lo + k * (hi - lo) / nb;
+        end
+
         function h = maskHash(M)
             % cheap identity of a logical mask (for the PK map key)
             if isempty(M), h = []; return; end
@@ -1027,6 +1051,83 @@ classdef GRASPilotData < handle
             obj.Maps = M;
             obj.CanonMapCache = struct();
             obj.MapsVersion = obj.MapsVersion + 1;
+        end
+
+        function [bf, info] = detectBaseline(obj)
+            % Automatic baseline (pre-contrast) frames 1..be: bolus arrival on
+            % the mean curve of the earliest-arriving tenth of the strongly enhancing voxels (arteries,
+            % which enhance first). A constant-then-linear-rise model is fitted
+            % to that curve up to its peak (bolus arrival time, e.g. Cheong et
+            % al. 2003); the baseline ends before the knee and before any frame
+            % already 5% of the rise above the baseline level (temporal
+            % smoothing of the reconstruction). Falls back to frames
+            % 1-min(5, T) without a clear bolus. info: Arrival (frame),
+            % ArrivalTime, Curve, NVoxels, Message.
+            T = obj.NT;
+            bf = 1:max(1, min(5, T));
+            info = struct('Arrival', NaN, 'ArrivalTime', NaN, 'Curve', [], 'NVoxels', 0, 'Message', '');
+            if T < 4
+                info.Message = 'Too few frames for automatic baseline detection: frames 1-5 (or all) used.';
+                return
+            end
+            N = prod(obj.NativeSize);
+            lin = (1:max(1, floor(N / 60000)):N)';
+            TC = double(obj.nativeTC(lin));
+            m = mean(TC, 2);
+            head = m > GRASPilotData.otsu(m);
+            E0 = max(TC, [], 2) - mean(TC(:, 1:2), 2);
+            E0(~head) = -Inf;
+            nh = nnz(head);
+            if nh < 50
+                info.Message = 'No head found for automatic baseline detection: frames 1-5 used.';
+                return
+            end
+            % clearly enhancing voxels (vessels, enhancing tissue): at least 20% of the
+            % 99.9th percentile of the enhancement in the head, at most the top 3%
+            Eh = sort(E0(head), 'descend');
+            ref = Eh(max(1, round(0.001 * nh)));
+            nt = max(10, min([nh, round(0.03 * nh), nnz(E0 >= 0.2 * ref)]));
+            [~, o] = sort(E0, 'descend');
+            top = o(1:nt);
+            % earliest-arriving tenth of them (arteries before veins and tissue):
+            % first frame at 20% of each voxel's rise
+            Tt = TC(top, :);
+            b1 = mean(Tt(:, 1:2), 2);
+            nrm = (Tt - repmat(b1, 1, T)) ./ repmat(max(Tt, [], 2) - b1, 1, T);
+            [~, arr] = max(nrm >= 0.2, [], 2);
+            early = top(arr <= max(min(arr), GRASPilotData.quantile(arr, 0.1)));
+            if numel(early) < 10
+                [~, oa] = sort(arr);
+                early = top(oa(1:min(10, numel(oa))));
+            end
+            c = mean(TC(early, :), 1);
+            nt = numel(early);
+            info.Curve = c; info.NVoxels = nt;
+            t = obj.paramTimes();
+            [cmax, tp] = max(c);
+            if tp < 3 || ~(cmax > c(1))
+                info.Message = 'No bolus arrival found (peak in the first frames): frames 1-5 used.';
+                return
+            end
+            sse = Inf(1, tp - 1);
+            for k = 1:tp - 1
+                X = [ones(tp, 1), max(0, t(1:tp)' - t(k))];
+                beta = X \ c(1:tp)';
+                if beta(2) > 0, sse(k) = sum((c(1:tp)' - X * beta) .^ 2); end
+            end
+            [~, k0] = min(sse);
+            b0 = median(c(1:k0));
+            sg = 0;
+            if k0 >= 3, sg = std(c(1:k0 - 1)); end
+            thr = b0 + max(0.03 * (cmax - b0), 3 * sg);
+            be = k0;
+            while be > 1 && c(be) > thr, be = be - 1; end
+            bf = 1:be;
+            info.Arrival = k0 + 1;
+            info.ArrivalTime = t(min(T, k0 + 1));
+            unit = 'frame'; if obj.hasTiming(), unit = 's'; end
+            info.Message = sprintf(['Baseline frames 1-%d detected automatically: contrast arrives after frame %d ' ...
+                '(%.4g %s) on the mean curve of the %d earliest of the most enhancing voxels.'], be, k0, t(k0), unit, nt);
         end
 
         function S = sliceTC(obj, z)

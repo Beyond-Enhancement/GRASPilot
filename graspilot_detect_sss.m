@@ -45,7 +45,9 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %      posterior edge moving anteriorly by more than MaxSlope mm per mm of
 %      height over >= 4 mm: the axial cut becomes oblique and partial-volumed)
 %   7. in each ROI slice the cross-section voxels enhancing >= Core x their
-%      maximum (excludes partial-volume edge voxels)
+%      maximum (excludes partial-volume edge voxels), no wider than 1.5 x
+%      the sinus at the thickest slice; voxels peaking > 1.5 frames before
+%      the ROI's median time to peak (arteries touching the sinus) are dropped
 %
 %   'Seed' [i j k] (canonical voxel on the sinus, e.g. the crosshair) skips
 %   the search: the region is grown from the most enhancing voxel within
@@ -54,7 +56,7 @@ function [lin, info] = graspilot_detect_sss(D, varargin)
 %   1 - MinWashout (0.15) of the peak), as venous blood does and enhancing
 %   tumour, dura and falx do not.
 %
-%   Options (defaults): 'BaseFrames' (1:min(5,T)), 'MidlineMM' (10),
+%   Options (defaults): 'BaseFrames' (automatic, GRASPilotData.detectBaseline), 'MidlineMM' (10),
 %   'LateralMM' (50), 'BandMM' (25), 'RelThr' (0.5), 'PosteriorMM' (12),
 %   'TorculaWidthMM' (30), 'MaxWidthMM' (20), 'GapMM' (5), 'SearchMM' (35),
 %   'InferiorMM' (2), 'SuperiorMM' (50), 'MaxSlope' (1), 'Core' (0.5),
@@ -91,7 +93,7 @@ n = D.canonSize();
 vox = D.canonVox();
 T = D.NT;
 bf = p.BaseFrames;
-if isempty(bf), bf = 1:max(1, min(5, T - 1)); end
+if isempty(bf), bf = D.detectBaseline(); end
 if ~D.hasMaps(bf), D.computeMaps(bf, p.Progress); end
 E = double(D.canonMap('PeakEnh'));
 B = double(D.canonMap('Baseline'));
@@ -314,6 +316,15 @@ for pass = 1:2
         end
     end
     if ~isfinite(hwk), break; end
+end
+% arterial voxels touching the sinus peak earlier than venous blood: drop
+% voxels peaking more than 1.5 frames before the ROI's median time to peak
+if numel(lin) > 10
+    TTP = double(D.canonMap('TTP'));
+    tt = D.paramTimes();
+    dtf = median(diff(tt));
+    tp = TTP(lin);
+    lin = lin(~(tp < median(tp) - 1.5 * dtf));
 end
 [ii, jj, kk] = ind2sub(n, lin);
 info.Slices = ks;
