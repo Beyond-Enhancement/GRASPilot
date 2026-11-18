@@ -292,9 +292,27 @@ placeholders: **enter your protocol and agent** (r1 in plasma at 3 T: gadobutrol
 gadoterate ~3.5, gadopentetate ~3.7; Rohrer 2005). Ktrans scales with the assumed T10, so
 keep it fixed across scans. Baseline frames must be strictly pre-contrast.
 
-**AIF.** *Reference ROI (SSS)*: large, little partial volume, but venous (late, broadened);
-**AIF shift** moves it in time. *Population* (Parker 2006), injection at the last baseline
-frame. *VCAI*: arterial ROI calibrated to the SSS (below). Plasma = blood / (1 - Hct).
+**AIF.** Plasma = blood / (1 - Hct) for every option.
+
+- *Reference ROI (SSS)*: large, little partial volume, but venous (late, broadened); **AIF
+  shift** moves it in time.
+- *Population* (Parker 2006): no ROI needed; injection at the last baseline frame.
+- *VCAI*: the arterial ROI calibrated to the SSS (below).
+- *Arterial ROI*: the mean signal of the arterial ROI (**Arterial ROI**: chosen, or the first
+  ROI named artery/AIF/MCA/ICA; **+ Artery** to draw one) converted with the blood T10.
+- *Auto AIF*: arterial voxels found automatically (**Auto AIF** button, or chosen in the
+  menu): among strongly enhancing, washing-out voxels inside the head (12 mm from its surface,
+  so no scalp arteries), those peaking earliest; the 20 most enhancing of them form the
+  editable ROI "AIF (auto)". Scripting: `[lin, info] = graspilot_detect_aif(D)`.
+
+Small arteries are partial-volumed, so an arterial input is often too low (Ktrans and vp
+too high). Check the curve; the VCAI corrects the amplitude with a neighbour ring. Vessel
+ROIs (SSS, arterial ROI, "AIF (auto)") are left out of the tumor statistics.
+
+The upper graph shows the AIF. The lower graph shows the mean concentration curve of one ROI
+with the fit of each model and its parameters in the legend. **Fits shown for** chooses that
+ROI; it only changes the display, not the AIF, the settings or the maps. Both graphs follow
+the settings at once, before the (slower) voxel fit.
 
 **Fitting.** Frames up to the analysis endpoint; uneven frame times supported; exact
 convolution for an AIF linear between frames. Rate constants on a log grid with the linear
@@ -474,11 +492,12 @@ issues). In code: `graspilot_version()` or `GRASPilot.versionInfo()`. When taggi
 | `graspilot_pk_fit.m`, `graspilot_ratio_fit.m`, `graspilot_vcai.m` | Tofts / extended Tofts / 2CXM; RATIO; VCAI |
 | `graspilot_expconv.m`, `graspilot_varpro_lm.m` | exact exponential convolution; batched Levenberg-Marquardt |
 | `graspilot_motion_estimate.m`, `graspilot_rigid_matrix.m`, `graspilot_motion_summary.m` | motion |
-| `graspilot_detect_sss.m`, `graspilot_reorient_to_ref.m`, `graspilot_convert_mat2nifti.m` | Auto SSS; mask import; batch conversion |
+| `graspilot_detect_sss.m`, `graspilot_detect_aif.m` | Auto SSS; Auto AIF (arterial voxels) |
+| `graspilot_reorient_to_ref.m`, `graspilot_convert_mat2nifti.m` | mask import; batch conversion |
 | `legacy/` | original ReadData.m, CropImg.m, @TempPCASub (validation reference) |
 | `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
 | `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
-| `tests/*_phantom.m` | venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
+| `tests/*_phantom.m` | head-shaped complex phantom (screenshots, Auto AIF), venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
 
 ## Notes and limitations
 

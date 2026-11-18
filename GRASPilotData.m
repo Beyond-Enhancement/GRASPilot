@@ -1291,8 +1291,8 @@ classdef GRASPilotData < handle
             if ~(p.Hct >= 0 && p.Hct < 1), error('GRASPilotData:pk', 'Hct must be in [0, 1).'); end
             if isempty(p.AIFShift) || ~isfinite(p.AIFShift), p.AIFShift = 0; end
             p.AIF = lower(p.AIF);
-            if ~any(strcmp(p.AIF, {'ref', 'population', 'vcai'}))
-                error('GRASPilotData:pk', 'AIF must be ''ref'', ''population'' or ''vcai''.');
+            if ~any(strcmp(p.AIF, {'ref', 'population', 'vcai', 'artery', 'auto'}))
+                error('GRASPilotData:pk', 'AIF must be ''ref'', ''population'', ''vcai'', ''artery'' or ''auto''.');
             end
             p.VCAIAnchor = lower(p.VCAIAnchor);
             if ~any(strcmp(p.VCAIAnchor, {'phase', 'magnitude'}))
@@ -1318,6 +1318,7 @@ classdef GRASPilotData < handle
             switch obj.PKOpts.AIF
                 case 'population', aif = [];
                 case 'ref', aif = aif.Ref;
+                case {'artery', 'auto'}, aif = aif.Art;
             end
             k = {obj.PKOpts, baseFrames, obj.dt, obj.t0, obj.BinSize, obj.NT, obj.RawTimes, ...
                 obj.analysisEnd(), aif, regionHash};
@@ -1338,6 +1339,8 @@ classdef GRASPilotData < handle
             %   'vcai'       venous-calibrated arterial input (graspilot_vcai):
             %                Art (and Ring) calibrated against the SSS phase
             %                (or magnitude) curve
+            %   'artery', 'auto'  Art (arterial ROI, drawn or found by
+            %                graspilot_detect_aif) converted with the blood T10
             % Shifted by AIFShift seconds (positive = later). info: VCAI fit.
             if ~obj.hasTiming()
                 error('GRASPilotData:pk', ['Pharmacokinetic models need the frame times: enter the ' ...
@@ -1357,6 +1360,8 @@ classdef GRASPilotData < handle
                     Cb = graspilot_pop_aif(t - t(max(bf)) - o.AIFShift);
                 case 'ref'
                     Cb = obj.bloodConc(aif.Ref, bf, ke, 'reference ROI');
+                case {'artery', 'auto'}
+                    Cb = obj.bloodConc(aif.Art, bf, ke, 'arterial ROI');
                 case 'vcai'
                     if ~GRASPilotData.validCurve(aif.Art, ke)
                         error('GRASPilotData:pk', ['The VCAI needs an arterial ROI (MCA or distal ICA; a ' ...
@@ -1401,6 +1406,10 @@ classdef GRASPilotData < handle
             % blood concentration of a mean vessel signal (blood T10)
             o = obj.PKOpts;
             if ~GRASPilotData.validCurve(a, ke)
+                if strcmp(what, 'arterial ROI')
+                    error('GRASPilotData:pk', ['The AIF needs an arterial ROI: press Auto AIF, or + Artery ' ...
+                        'and draw a few voxels in the MCA or distal ICA.']);
+                end
                 error('GRASPilotData:pk', ['The AIF needs a reference ROI in the superior sagittal ' ...
                     'sinus (Auto SSS) or the population AIF.']);
             end

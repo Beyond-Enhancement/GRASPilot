@@ -1359,7 +1359,7 @@ classdef GRASPilot < handle
             rows = cell(0, numel(hdr));
             if isempty(obj.Data) || ~obj.Data.hasMaps(obj.BaseFrames(1):obj.BaseFrames(2)), return; end
             rr = obj.refIndex();
-            ra = obj.arteryIndex();             % vessel ROIs are not tumor ROIs
+            ra = [obj.arteryIndex() obj.autoAIFIndex()];   % vessel ROIs are not tumor ROIs
             pkOn = obj.pkReady();
             keys = obj.paramKeyList(pkOn);
             for r = 1:numel(obj.ROIs)
@@ -1407,7 +1407,7 @@ classdef GRASPilot < handle
                 return
             end
             rr = obj.refIndex();
-            ra = obj.arteryIndex();
+            ra = [obj.arteryIndex() obj.autoAIFIndex()];
             keys = obj.paramKeyList();
             blocks = struct('id', {}, 'name', {}, 'lin', {}, 'values', {});
             for r = 1:numel(obj.ROIs)
@@ -3718,14 +3718,15 @@ classdef GRASPilot < handle
             % SSS phase curve
             a = GRASPilotData.aifStruct(obj.aifSignal());
             D = obj.Data;
-            if isempty(D) || ~strcmp(D.PKOpts.AIF, 'vcai'), return; end
+            if isempty(D) || ~any(strcmp(D.PKOpts.AIF, {'vcai', 'artery', 'auto'})), return; end
             o = D.PKOpts;
-            ra = obj.arteryIndex(); rs = obj.refIndex();
+            vcai = strcmp(o.AIF, 'vcai');
+            ra = obj.aifArteryIndex(); rs = obj.refIndex();
             bf = obj.BaseFrames(1):obj.BaseFrames(2);
             hs = {[], []};
             if ra > 0, hs{1} = GRASPilotData.maskHash(obj.Masks{ra}); end
             if rs > 0, hs{2} = GRASPilotData.maskHash(obj.Masks{rs}); end
-            key = {D.MapsVersion, ra, rs, hs, bf, o.VCAIRing, o.RingWidth, o.VCAIAnchor, cellfun(@nnz, obj.Masks)};
+            key = {D.MapsVersion, o.AIF, ra, rs, hs, bf, o.VCAIRing, o.RingWidth, o.VCAIAnchor, cellfun(@nnz, obj.Masks)};
             if isequaln(obj.AIFInCache.key, key)
                 a = obj.AIFInCache.a;
                 return
@@ -3733,12 +3734,12 @@ classdef GRASPilot < handle
             if ra > 0 && any(obj.Masks{ra}(:))
                 if obj.ROIs(ra).Dirty || isempty(obj.ROIs(ra).Stats), obj.computeStats(ra); end
                 a.Art = obj.ROIs(ra).Stats.mean;
-                if o.VCAIRing
+                if vcai && o.VCAIRing
                     ring = find(obj.ringMask(ra));
                     if ~isempty(ring), a.Ring = mean(double(D.timecourses(ring)), 1); end
                 end
             end
-            if strcmp(o.VCAIAnchor, 'phase') && rs > 0 && any(obj.Masks{rs}(:))
+            if vcai && strcmp(o.VCAIAnchor, 'phase') && rs > 0 && any(obj.Masks{rs}(:))
                 a.Phase = D.phaseCurve(find(obj.Masks{rs}), bf);
             end
             a = GRASPilotData.aifStruct(a);
@@ -3758,6 +3759,58 @@ classdef GRASPilot < handle
             end
             k = find(~cellfun(@isempty, regexpi(names, 'arter|\<aif\>|\<mca\>|\<ica\>', 'once')), 1);
             if ~isempty(k), r = k; end
+        end
+
+        function r = autoAIFIndex(obj)
+            % the ROI "AIF (auto)" made by Auto AIF (0 if none)
+            r = 0;
+            if isempty(obj.ROIs), return; end
+            k = find(strcmp({obj.ROIs.Name}, 'AIF (auto)'), 1);
+            if ~isempty(k), r = k; end
+        end
+
+        function r = aifArteryIndex(obj)
+            % arterial ROI used by the AIF: "AIF (auto)" for AIF = auto, else the arterial ROI
+            if ~isempty(obj.Data) && strcmp(obj.Data.PKOpts.AIF, 'auto')
+                r = obj.autoAIFIndex();
+            else
+                r = obj.arteryIndex();
+            end
+        end
+
+        function r = autoAIF(obj)
+            % detect arterial voxels (graspilot_detect_aif) and put them in the ROI
+            % "AIF (auto)" (replaced on each run)
+            r = 0;
+            if ~obj.requireData(), return; end
+            wb = obj.wbOpen('Detecting arterial voxels (Auto AIF)...');
+            try
+                [lin, info] = graspilot_detect_aif(obj.Data, 'BaseFrames', obj.BaseFrames(1):obj.BaseFrames(2));
+            catch err
+                obj.wbClose(wb);
+                obj.showError(err, 'Auto AIF failed');
+                return
+            end
+            obj.wbClose(wb);
+            if isempty(lin)
+                obj.inform(info.Message, 'Auto AIF');
+                return
+            end
+            k = obj.autoAIFIndex();
+            if k == 0
+                k = obj.addROI('AIF (auto)', [1.00 0.40 0.10]);
+            else
+                obj.setActiveROI(k);
+                obj.ROIs(k).Visible = true;
+            end
+            obj.beginAction();
+            obj.setVoxels(k, find(obj.Masks{k}), false);
+            obj.addVoxels(k, lin);
+            obj.commitAction('Auto AIF');
+            obj.setPos(round(info.Centroid));
+            obj.afterMaskChange();
+            obj.setStatus([info.Message ' Edit or undo as needed.']);
+            r = k;
         end
 
         function M = ringMask(obj, r)
@@ -3852,6 +3905,18 @@ classdef GRASPilot < handle
             msg = '';
             D = obj.Data; o = D.PKOpts;
             if strcmp(o.AIF, 'population'), return; end
+            if any(strcmp(o.AIF, {'artery', 'auto'}))
+                ra = obj.aifArteryIndex();
+                if ra == 0 || ~any(obj.Masks{ra}(:))
+                    if strcmp(o.AIF, 'auto')
+                        msg = 'No automatic AIF yet: press Auto AIF.';
+                    else
+                        msg = ['The AIF needs an arterial ROI: press + Artery and draw a few voxels in the MCA ' ...
+                            'or distal ICA (or use Auto AIF).'];
+                    end
+                end
+                return
+            end
             if isempty(obj.aifSignal())
                 msg = ['The AIF needs a reference ROI in the superior sagittal sinus: press Auto SSS (or ' ...
                     'draw an ROI whose name contains SSS), or choose the population AIF.'];
@@ -3890,6 +3955,7 @@ classdef GRASPilot < handle
                 return
             end
             if ~obj.ensureMaps(false), return; end
+            if strcmp(D.PKOpts.AIF, 'auto') && obj.autoAIFIndex() == 0, obj.autoAIF(); end
             msg = obj.pkInputProblem();
             if ~isempty(msg)
                 obj.inform(msg, 'Pharmacokinetic models');
@@ -3945,6 +4011,12 @@ classdef GRASPilot < handle
                     r = obj.refIndex();
                     aif = sprintf(['reference ROI %s (%d voxels): mean signal converted with the blood T10, ' ...
                         'plasma = blood / (1 - Hct)'], obj.ROIs(r).Name, nnz(obj.Masks{r}));
+                case {'artery', 'auto'}
+                    ra = obj.aifArteryIndex();
+                    src = 'arterial ROI';
+                    if strcmp(o.AIF, 'auto'), src = 'automatic AIF (graspilot_detect_aif)'; end
+                    aif = sprintf(['%s %s (%d voxels): mean signal converted with the blood T10, plasma = ' ...
+                        'blood / (1 - Hct); no partial-volume correction'], src, obj.ROIs(ra).Name, nnz(obj.Masks{ra}));
                 otherwise
                     ra = obj.arteryIndex(); r = obj.refIndex();
                     aif = sprintf(['VCAI: arterial ROI %s (%d voxels)%s, calibrated against the %s of %s ' ...
@@ -4050,8 +4122,10 @@ classdef GRASPilot < handle
             hdr(202, 'ARTERIAL INPUT FUNCTION');
             lab(x1, 226, 130, 'AIF');
             obj.KW.aif = pop(x1 + 132, 226, 238, {'Reference ROI (SSS, venous)', 'Population (Parker 2006)', ...
-                'VCAI: artery calibrated to SSS'}, ['VCAI (RATIO): arterial timing and shape calibrated ' ...
-                'against the sinus curve through a fitted dispersion kernel']);
+                'VCAI: artery calibrated to SSS', 'Arterial ROI', 'Auto AIF (arterial voxels found)'}, ...
+                ['SSS: venous, large; Population: no ROI needed; VCAI (RATIO): arterial timing and shape ' ...
+                'calibrated against the SSS; Arterial ROI: the ROI below, converted directly; Auto AIF: ' ...
+                'arterial voxels found automatically (ROI "AIF (auto)")']);
             lab(x1, 254, 130, 'AIF shift (s)');
             obj.KW.shift = edt(x1 + 132, 254, ['Shift of the AIF in time: negative = earlier (the SSS ' ...
                 'bolus arrives a few seconds after the arteries)']);
@@ -4059,12 +4133,17 @@ classdef GRASPilot < handle
             lab(x1, 282, 130, 'SSS ROI');
             obj.KW.ref = obj.ctl(P, x1 + 132, 282, 238, 22, 'popupmenu', {'(auto)'}, ...
                 'Callback', @(s, e) obj.onPKRef());
-            hdr(314, 'VCAI AND RATIO');
-            lab(x1, 338, 130, 'Arterial ROI');
-            obj.KW.art = obj.ctl(P, x1 + 132, 338, 160, 22, 'popupmenu', {'(auto)'}, ...
+            lab(x1, 310, 130, 'Arterial ROI');
+            obj.KW.art = obj.ctl(P, x1 + 132, 310, 98, 22, 'popupmenu', {'(auto)'}, ...
+                'TooltipString', 'Arterial ROI for the AIF options Arterial ROI and VCAI', ...
                 'Callback', @(s, e) obj.onPKArtery());
-            obj.ctl(P, x1 + 296, 338, 74, 22, 'pushbutton', '+ Artery', ...
+            obj.ctl(P, x1 + 234, 310, 66, 22, 'pushbutton', '+ Artery', ...
                 'TooltipString', 'New ROI for a few voxels in the MCA or distal ICA', 'Callback', @(s, e) obj.addArtery());
+            obj.ctl(P, x1 + 304, 310, 66, 22, 'pushbutton', 'Auto AIF', ...
+                'TooltipString', ['Find arterial voxels automatically (earliest peak among strongly enhancing, ' ...
+                'washing-out voxels inside the head) and put them in the ROI "AIF (auto)"'], ...
+                'Callback', @(s, e) obj.onPKAutoAIF());
+            hdr(342, 'VCAI AND RATIO');
             lab(x1, 366, 130, 'Sinus anchor');
             obj.KW.anchor = pop(x1 + 132, 366, 238, {'Phase (complex data)', 'Magnitude (blood T10)'}, ...
                 'Sinus phase is linear in concentration; magnitude is the fallback (needs the blood T10)');
@@ -4100,8 +4179,12 @@ classdef GRASPilot < handle
             % curves
             obj.ctl(P, 420, 10, 300, 18, 'text', 'CONCENTRATION CURVES', 'FontWeight', 'bold', ...
                 'ForegroundColor', C.accent);
-            obj.ctl(P, -380, 10, 30, 18, 'text', 'ROI');
-            obj.KW.roi = obj.ctl(P, -346, 8, 220, 22, 'popupmenu', {'(none)'}, 'Callback', @(s, e) obj.onPKRoi());
+            obj.ctl(P, -452, 10, 102, 18, 'text', 'Fits shown for', 'HorizontalAlignment', 'right', ...
+                'TooltipString', 'ROI whose mean concentration curve and model fits are plotted below');
+            obj.KW.roi = obj.ctl(P, -346, 8, 220, 22, 'popupmenu', {'(none)'}, 'Callback', @(s, e) obj.onPKRoi(), ...
+                'TooltipString', ['Choose the ROI whose mean concentration curve and model fits are plotted in the ' ...
+                'lower graph (with its fitted parameters in the legend). Display only: it does not change the ' ...
+                'AIF, the settings or the voxel maps.']);
             obj.KW.png = obj.ctl(P, -118, 8, 106, 22, 'pushbutton', 'PNG...', 'Callback', @(s, e) obj.onPKPng());
             obj.KW.Ax = GRASPilot.handleArray(2);
             ttl = {'AIF: plasma concentration Cp (mM)', 'ROI mean concentration (mM) and model fits'};
@@ -4147,7 +4230,7 @@ classdef GRASPilot < handle
             set(obj.KW.fa, 'String', num2str(o.FlipAngle));
             set(obj.KW.r1, 'String', num2str(o.r1));
             set(obj.KW.hct, 'String', num2str(o.Hct));
-            set(obj.KW.aif, 'Value', find(strcmp({'ref', 'population', 'vcai'}, o.AIF)));
+            set(obj.KW.aif, 'Value', find(strcmp({'ref', 'population', 'vcai', 'artery', 'auto'}, o.AIF)));
             set(obj.KW.shift, 'String', num2str(o.AIFShift));
             set(obj.KW.anchor, 'Value', 1 + strcmp(o.VCAIAnchor, 'magnitude'));
             set(obj.KW.ring, 'Value', 2 - o.VCAIRing);
@@ -4163,7 +4246,7 @@ classdef GRASPilot < handle
             ra = obj.arteryIndex();
             val = 1;
             if ~isempty(obj.ArteryROIName) && ra > 0, val = ra + 1; end
-            set(obj.KW.art, 'String', [{'(auto: artery/AIF/MCA/ICA)'}, names], 'Value', val);
+            set(obj.KW.art, 'String', [{'(auto by name)'}, names], 'Value', val);
             % info
             ready = obj.pkReady();
             msg = {};
@@ -4199,7 +4282,7 @@ classdef GRASPilot < handle
             keep = obj.KWRoi;
             rv = find(strcmp(names, keep), 1);
             if isempty(rv)
-                cand = setdiff(1:numel(names), [r ra]);
+                cand = setdiff(1:numel(names), [r ra obj.autoAIFIndex()]);
                 cand = cand(arrayfun(@(q) any(obj.Masks{q}(:)), cand));
                 if isempty(cand), rv = []; else, rv = cand(1); end
             end
@@ -4255,6 +4338,7 @@ classdef GRASPilot < handle
             lg = {'plasma Cp', 'blood'};
             switch D.PKOpts.AIF
                 case 'ref', lg{1} = sprintf('plasma Cp (%s)', obj.ROIs(obj.refIndex()).Name);
+                case {'artery', 'auto'}, lg{1} = sprintf('plasma Cp (%s)', obj.ROIs(obj.aifArteryIndex()).Name);
                 case 'vcai'
                     lg{1} = sprintf('plasma Cp (VCAI, %s)', obj.ROIs(obj.arteryIndex()).Name);
                     if ~isempty(vi) && isfinite(vi.Gain) && vi.Gain ~= 0
@@ -4276,7 +4360,12 @@ classdef GRASPilot < handle
             set(ax, 'XLim', [t(1) t(end) + eps]);
             xlabel(ax, 'Time (s)', 'Color', [0.85 0.85 0.85]);
             ax = obj.KW.Ax(2);
-            if isempty(r) || ~any(obj.Masks{r}(:)), return; end
+            if isempty(r) || ~any(obj.Masks{r}(:))
+                title(ax, 'ROI mean concentration (mM) and model fits: no ROI', 'Color', [0.85 0.85 0.85], 'FontSize', 9);
+                return
+            end
+            title(ax, sprintf('%s: mean concentration (mM) and model fits', obj.ROIs(r).Name), ...
+                'Color', [0.85 0.85 0.85], 'FontSize', 9, 'Interpreter', 'none');
             [R, Fit, C] = obj.roiPK(r);
             hh = plot(ax, t, C, 'o', 'Color', obj.ROIs(r).Color, 'MarkerSize', 3, 'MarkerFaceColor', obj.ROIs(r).Color);
             lg = {sprintf('%s (data)', obj.ROIs(r).Name)};
@@ -4314,13 +4403,27 @@ classdef GRASPilot < handle
             xlabel(ax, 'Time (s)', 'Color', [0.85 0.85 0.85]);
         end
 
+        function onPKAutoAIF(obj)
+            % Auto AIF button: detect arterial voxels and use them as the AIF
+            if isempty(obj.Data), return; end
+            if obj.autoAIF() > 0
+                if ~strcmp(obj.Data.PKOpts.AIF, 'auto')
+                    obj.Data.setPKOptions('AIF', 'auto');
+                    obj.rememberPK();
+                end
+                obj.ParamCache = struct('key', '', 'V', []);
+                obj.refreshPKWindow();
+                obj.refreshParamWindow();
+            end
+        end
+
         function onPKOptions(obj)
             if isempty(obj.Data), return; end
             mdl = {'tofts', 'etofts', '2cxm', 'ratio'};
             on = [get(obj.KW.mTofts, 'Value'), get(obj.KW.mETofts, 'Value'), get(obj.KW.m2CXM, 'Value'), ...
                 get(obj.KW.mRatio, 'Value')] > 0;
             num = @(h) str2double(get(h, 'String'));
-            aifs = {'ref', 'population', 'vcai'}; regs = {'head', 'rois', 'all'};
+            aifs = {'ref', 'population', 'vcai', 'artery', 'auto'}; regs = {'head', 'rois', 'all'};
             anch = {'phase', 'magnitude'}; dom = {'basis', 'frames'};
             rw = num(obj.KW.ringW);
             if ~isfinite(rw), rw = obj.Data.PKOpts.RingWidth; end
@@ -4335,6 +4438,9 @@ classdef GRASPilot < handle
                 obj.rememberPK();
             catch err
                 obj.showError(err, 'Pharmacokinetic model settings');
+            end
+            if strcmp(obj.Data.PKOpts.AIF, 'auto') && obj.autoAIFIndex() == 0
+                obj.autoAIF();                                 % Auto AIF chosen: find the arteries now
             end
             obj.ParamCache = struct('key', '', 'V', []);
             if obj.ParamOn && GRASPilot.isPKKey(obj.ParamKey), obj.refreshParamDisplay(); end
