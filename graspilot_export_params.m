@@ -1,7 +1,8 @@
-function files = graspilot_export_params(file, D, hdr, rows, blocks, keys, units, settings)
-%GRASPILOT_EXPORT_PARAMS Write semi-quantitative parameter statistics and voxel values.
+function files = graspilot_export_params(file, D, hdr, rows, blocks, keys, units, settings, varargin)
+%GRASPILOT_EXPORT_PARAMS Write parameter statistics, voxel values (and curves) to a spreadsheet.
 %
 %   files = graspilot_export_params(file, D, hdr, rows, blocks, keys, units, settings)
+%   files = graspilot_export_params(..., 'Tag', 'pk', 'Curves', {chdr, cdata})
 %
 %   file      output .xlsx or .csv
 %   D         GRASPilotData object (geometry, binning)
@@ -11,18 +12,33 @@ function files = graspilot_export_params(file, D, hdr, rows, blocks, keys, units
 %             values [nvox x numel(keys)]
 %   keys      parameter keys (e.g. 'PE', 'PE_SSS', ...), units: their units
 %   settings  {name, value} cell array describing how the values were computed
+%   Options:
+%   'Tag'     name part of the .csv files (default 'param'; 'pk' for the
+%             pharmacokinetic export)
+%   'Curves'  {chdr, cdata}: header (cell row) and numeric matrix of curves
+%             (e.g. time, AIF, ROI concentrations and model fits), written
+%             to the sheet Curves / <base>_<tag>_curves.csv
 %
-%   .xlsx : sheets Stats, Settings and one sheet per ROI with one row per
-%           voxel: Voxel, i, j, k, x_mm, y_mm, z_mm and one column per
-%           parameter (header "<key> [unit]").
-%   .csv  : <base>_param_stats.csv, <base>_param_voxels.csv (all ROIs, with
-%           ROI_ID and ROI_Name columns) and <base>_param_settings.txt.
+%   .xlsx : sheets Stats, Settings, (Curves) and one sheet per ROI with one
+%           row per voxel: Voxel, i, j, k, x_mm, y_mm, z_mm and one column
+%           per parameter (header "<key> [unit]").
+%   .csv  : <base>_<tag>_stats.csv, <base>_<tag>_voxels.csv (all ROIs, with
+%           ROI_ID and ROI_Name columns), (<base>_<tag>_curves.csv) and
+%           <base>_<tag>_settings.txt.
 %   After temporal binning, _<N>frames is appended to the base name (unless
 %   already present).
 %
 %   i, j, k are 1-based indices into the arrays exported to NIfTI by the
 %   viewer (canonical LPS voxel order); x, y, z are RAS mm from the affine.
 
+p = struct('Tag', 'param', 'Curves', []);
+for i = 1:2:numel(varargin)
+    fn = fieldnames(p);
+    m = find(strcmpi(fn, varargin{i}), 1);
+    if isempty(m), error('graspilot_export_params:opt', 'Unknown option %s.', varargin{i}); end
+    p.(fn{m}) = varargin{i + 1};
+end
+hasCurves = iscell(p.Curves) && numel(p.Curves) == 2 && ~isempty(p.Curves{2});
 [folder, base, ext] = fileparts(file);
 if isempty(folder), folder = pwd; end
 ext = lower(ext);
@@ -76,6 +92,11 @@ switch ext
         writecell([hdr; nanToEmpty(rows)], file, 'Sheet', 'Stats');
         writecell(stringify(info), file, 'Sheet', 'Settings');
         used = {'Stats', 'Settings'};
+        if hasCurves
+            writecell(p.Curves{1}, file, 'Sheet', 'Curves', 'Range', 'A1');
+            writematrix(p.Curves{2}, file, 'Sheet', 'Curves', 'Range', 'A2');
+            used{end + 1} = 'Curves';
+        end
         for q = 1:numel(blocks)
             sh = sheetName(blocks(q).id, blocks(q).name, used);
             used{end + 1} = sh; %#ok<AGROW>
@@ -87,9 +108,9 @@ switch ext
         files = {file};
 
     case '.csv'
-        fs = fullfile(folder, [base '_param_stats.csv']);
-        fv = fullfile(folder, [base '_param_voxels.csv']);
-        fi = fullfile(folder, [base '_param_settings.txt']);
+        fs = fullfile(folder, sprintf('%s_%s_stats.csv', base, p.Tag));
+        fv = fullfile(folder, sprintf('%s_%s_voxels.csv', base, p.Tag));
+        fi = fullfile(folder, sprintf('%s_%s_settings.txt', base, p.Tag));
         % statistics
         fid = fopen(fs, 'w');
         if fid < 0, error('graspilot_export_params:open', 'Cannot write %s.', fs); end
@@ -129,6 +150,17 @@ switch ext
         end
         fclose(fid);
         files = {fs, fv, fi};
+        if hasCurves
+            fc = fullfile(folder, sprintf('%s_%s_curves.csv', base, p.Tag));
+            fid = fopen(fc, 'w');
+            if fid < 0, error('graspilot_export_params:open', 'Cannot write %s.', fc); end
+            fprintf(fid, '%s\n', strjoin(cellfun(@quote, p.Curves{1}, 'UniformOutput', false), ','));
+            for r = 1:size(p.Curves{2}, 1)
+                fprintf(fid, '%s\n', strjoin(arrayfun(@num, p.Curves{2}(r, :), 'UniformOutput', false), ','));
+            end
+            fclose(fid);
+            files{end + 1} = fc;
+        end
 
     otherwise
         error('graspilot_export_params:ext', 'Use a .xlsx or .csv file name.');

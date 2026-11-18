@@ -45,7 +45,9 @@ function P = graspilot_curve_params(S, t, bf, opts)
 %     TTP      time to peak from the end of the baseline       (s or frames)
 %     Onset    onset time To from the end of the baseline: last frame before
 %              the peak with enhancement < OnsetFrac x PE      (s or frames)
-%     WashIn   wash-in slope                                   (a.u./s)
+%     WashIn   wash-in slope by the chosen method              (a.u./s)
+%     WashInSSS, WashInMax, WashInOnset  wash-in slope by each method
+%              ('sss', 'max', 'onset'), for comparing them
 %     WashOut  washout slope; negative = washout               (a.u./s)
 %     AUC      trapezoidal area of S - S0 from the end of the
 %              baseline over AUCWindow                         (a.u. x s)
@@ -90,7 +92,7 @@ if isempty(bf), bf = 1; end
 be = max(bf);
 nanv = NaN(N, 1);
 P = struct('S0', nanv, 'Smax', nanv, 'PE', nanv, 'RE', nanv, 'TTP', nanv, 'Onset', nanv, ...
-    'WashIn', nanv, 'WashOut', nanv, 'AUC', nanv, 'PeakFrame', nanv, 'T90', nanv, 'MITR', nanv, ...
+    'WashIn', nanv, 'WashInSSS', nanv, 'WashInMax', nanv, 'WashInOnset', nanv, 'WashOut', nanv, 'AUC', nanv, 'PeakFrame', nanv, 'T90', nanv, 'MITR', nanv, ...
     'REearly', nanv, 'SER', nanv, 'WashoutPct', nanv, 'Plateau', nanv, 'CurveType', nanv, 'EndFrame', T);
 S0 = mean(S(:, bf), 2);
 P.S0 = S0;
@@ -120,24 +122,23 @@ io(io < be) = be;
 To = t(io)';
 P.Onset = To - t(be);
 
-% wash-in slope
+% wash-in slope: every method (for comparison), WashIn = the chosen one
+dS = diff(S, 1, 2) ./ repmat(diff(t), N, 1);
+w = opts.WashInFrames;
+if numel(w) == 2 && w(1) >= 1 && w(2) <= T && w(2) > w(1)
+    P.WashInSSS = max(dS(:, w(1):w(2) - 1), [], 2);      % slopes between frames w(1)..w(2)
+end
+JJ = repmat(1:T - 1, N, 1);
+ok = JJ >= be & JJ <= repmat(ipk - 1, 1, T - 1);
+dS(~ok) = -Inf;
+wi = max(dS, [], 2);
+wi(~isfinite(wi)) = NaN;
+P.WashInMax = wi;
+P.WashInOnset = PE ./ (tpk - To);
 switch lower(opts.WashIn)
-    case 'sss'
-        w = opts.WashInFrames;
-        if numel(w) == 2 && w(1) >= 1 && w(2) <= T && w(2) > w(1)
-            dS = diff(S(:, w(1):w(2)), 1, 2) ./ repmat(diff(t(w(1):w(2))), N, 1);
-            P.WashIn = max(dS, [], 2);
-        end
-    case 'max'
-        dS = diff(S, 1, 2) ./ repmat(diff(t), N, 1);
-        JJ = repmat(1:T - 1, N, 1);
-        ok = JJ >= be & JJ <= repmat(ipk - 1, 1, T - 1);
-        dS(~ok) = -Inf;
-        wi = max(dS, [], 2);
-        wi(~isfinite(wi)) = NaN;
-        P.WashIn = wi;
-    otherwise
-        P.WashIn = PE ./ (tpk - To);
+    case 'sss', P.WashIn = P.WashInSSS;
+    case 'max', P.WashIn = P.WashInMax;
+    otherwise, P.WashIn = P.WashInOnset;
 end
 
 % washout slope from the peak (at least the last 3 frames) to the end

@@ -234,14 +234,18 @@ frames.
   the steepest rise of the SSS curve where its slope stays >= 50% of the steepest
   (`RefSlopeFrac`); the wash-in slope is the maximum slope in that period. The 50% and
   maximum-slope rules are this tool's reading of the paper.
+- **Compare wash-in methods** (Parameters window, statistics column) lists the wash-in slope of all three methods, each
+  absolute and / SSS, next to each other: rows "Wash-in: ..." in the statistics table
+  (voxel statistics and ROI mean curve), parameter maps (`WIS_PERIOD`, `WIS_MAXUP`,
+  `WIS_ONSET`, each also `_SSS`) and exports. "Wash-in slope" stays the chosen method.
 - **/SSS** values divide by the same parameter of the reference ROI mean curve (first ROI
   named SSS, or chosen), cancelling the arbitrary scaling of the reconstruction (cf. the
   venous AUC ratio of Heye et al. 2016). A positive WOS/SSS means tumor washout.
 
 ![Parameters window: settings, colour scale and tumor ROI statistics](docs/screenshot_param_window.png)
 
-*Parameters window: settings, colour map and statistics per tumor ROI (here including the
-pharmacokinetic parameters).*
+*Parameters window: settings, colour map and statistics per tumor ROI, with the wash-in
+slope of all three methods compared (rows "Wash-in: ...").*
 
 **Colour maps:** parameter, Show on images (M), Jet/Turbo/Hot/Gray, Min/Max (Auto head =
 1st-99.5th percentile in the head, Auto ROIs = 2nd-98th in the tumor ROIs), opacity, Hide
@@ -258,6 +262,7 @@ map (`<base>_<key>.nii.gz`). ROI sessions keep the options and the reference ROI
 
 ```matlab
 app.computeParams('WashIn', 'sss', 'AUCWindow', 60, 'EndTime', 100);
+app.setCompareWashIn(true);                            % all three wash-in methods
 [hdr, rows] = app.paramStatsTable();
 app.setParamKey('WIS_SSS'); app.setParamDisplay(true); app.setParamCLim([0 2]);
 app.exportParams('tumor_parameters.xlsx');
@@ -387,6 +392,7 @@ app.computePK('Models', {'tofts', 'etofts', '2cxm'}, 'T10', 1400, 'TR', 3.9, ...
 app.computePK('Models', {'ratio'}, 'AIF', 'vcai', 'VCAIAnchor', 'phase', 'Region', 'rois');
 app.setParamKey('KPE_RATIO'); app.setParamDisplay(true);
 app.exportMaps(folder, 'case01', {'KT_ETM', 'VP_ETM', 'KEP_RATIO', 'KPE_RATIO'});
+app.exportPK('case01_pk.xlsx');                  % statistics, voxel values, curves, settings
 
 C  = graspilot_signal2conc(S, S0, 1.4, 3.9e-3, 12, 5.0);       % s, s, deg, 1/(mM s)
 R  = graspilot_pk_fit(C, t, Cp, {'tofts', 'etofts', '2cxm'});  % R.tofts.Ktrans, R.cxm.Fp
@@ -442,6 +448,8 @@ graspilot_convert_mat2nifti('recon.mat', '', 'dt', 3.3, 'MotionCorrect', true); 
 | ROI voxel time series | `.xlsx` (Info, Summary, one sheet per ROI: i, j, k, x, y, z, F001..) or `.csv` |
 | Parameter maps -> NIfTI | chosen maps, one float32 `<base>_<key>.nii.gz` each |
 | Parameter statistics + voxel values | `.xlsx` or `.csv` (see Semi-quantitative parameters) |
+| PK parameters -> spreadsheet | PK window or Analysis menu: `.xlsx` sheets Stats (per ROI, with the ROI-curve fit), Settings (T10, TR, flip angle, r1, AIF, models), Curves (time, AIF Cp, each ROI's mean concentration and model fits), one per ROI with voxel values; or `_pk_stats/voxels/curves.csv` + `_pk_settings.txt` |
+| Export case (everything) | button at the bottom of Export, or File menu: a folder `<base>_graspilot` with all of the above (4D image + JSON, label map + per-ROI masks, ROI session, time series, parameter and PK spreadsheets, every map in `maps/`, motion `.csv`, curve plot `.png`) and `export_contents.txt` (files, ROIs, settings, what was skipped and why) |
 | Save / Load ROIs | `.mat` session (ROIs, geometry, options); reloads onto any reconstruction with the same matrix, e.g. 8-/16-/32-spoke versions |
 | Import mask | label NIfTI, reoriented from its header; names/colours from `_labels.txt` |
 
@@ -467,6 +475,7 @@ app = GRASPilot(D);                                 % drive the GUI
 app.addTumor(); app.setThrSource('sub'); app.setThreshold(0.2, Inf);
 app.setPos([90 50 24]); app.growFromCrosshair(); app.autoSSS();
 app.exportMaskNifti('mask.nii.gz');
+[files, skipped] = app.exportCase('case01_export');  % everything ('Image', false: no 4D image)
 ```
 
 Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a graspilot_*.m`.
@@ -503,6 +512,12 @@ issues). In code: `graspilot_version()` or `GRASPilot.versionInfo()`. When taggi
 | `tests/graspilot_selftest.m` | end-to-end test; `graspilot_selftest(true)` also drives the GUI |
 | `tests/graspilot_validate_readdata.m` | compares with ReadData.m on a real file |
 | `tests/*_phantom.m` | head-shaped complex phantom (screenshots, Auto AIF), venous (SSS; `'realistic'`: cortical veins, dura, tumor, 2 mm, rotated), motion (optionally rotating streaks, brain texture, one-sided lesion), PK (SPGR) and RATIO (complex subspace) phantoms |
+
+## Python
+
+A port to Python is feasible (no toolbox dependencies; numpy/scipy, nibabel, pydicom,
+PySide6 + pyqtgraph); see [docs/python_port_feasibility.md](docs/python_port_feasibility.md).
+Not started.
 
 ## Notes and limitations
 
