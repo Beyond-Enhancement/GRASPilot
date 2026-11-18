@@ -12,7 +12,8 @@ function graspilot_dicom_write(folder, V, g)
 %      (true: implicit VR little endian), SeriesNumber, Description;
 %      optional: Times (frame times, s; default (0:T-1) dt), T0 (time of day
 %      of frame 1, s; default 10:05:00), Files ('per' default, or a fixed
-%      file-name prefix).
+%      file-name prefix), NoPreamble (true: bare data set without the
+%      128-byte preamble and file meta information, implicit VR).
 %   Test data only: not a complete DICOM object.
 if exist(folder, 'dir') ~= 7, mkdir(folder); end
 [nx, ny, nz, T] = size(V);
@@ -45,12 +46,17 @@ for c = 1:numel(order)
         '0028', '0100', 'US', 16; ...
         '0028', '0103', 'US', 0};
     fid = fopen(fullfile(folder, sprintf('I%d_%05d', g.SeriesNumber, mod(c * 7919, 99991))), 'w', 'ieee-le');
-    fwrite(fid, zeros(1, 128, 'uint8'));
-    fwrite(fid, 'DICM');
-    if g.Implicit, ts = '1.2.840.10008.1.2'; else, ts = '1.2.840.10008.1.2.1'; end
-    tsv = pad(ts, 'UI');
-    fwrite(fid, [2 0 0 0], 'uint8'); fwrite(fid, 'UL'); fwrite(fid, 4, 'uint16'); fwrite(fid, 8 + numel(tsv), 'uint32');
-    fwrite(fid, [2 0 16 0], 'uint8'); fwrite(fid, 'UI'); fwrite(fid, numel(tsv), 'uint16'); fwrite(fid, tsv);
+    bare = isfield(g, 'NoPreamble') && g.NoPreamble;
+    if bare
+        g.Implicit = true;
+    else
+        fwrite(fid, zeros(1, 128, 'uint8'));
+        fwrite(fid, 'DICM');
+        if g.Implicit, ts = '1.2.840.10008.1.2'; else, ts = '1.2.840.10008.1.2.1'; end
+        tsv = pad(ts, 'UI');
+        fwrite(fid, [2 0 0 0], 'uint8'); fwrite(fid, 'UL'); fwrite(fid, 4, 'uint16'); fwrite(fid, 8 + numel(tsv), 'uint32');
+        fwrite(fid, [2 0 16 0], 'uint8'); fwrite(fid, 'UI'); fwrite(fid, numel(tsv), 'uint16'); fwrite(fid, tsv);
+    end
     for k = 1:size(E, 1)
         fwrite(fid, hex2dec(E{k, 1}), 'uint16'); fwrite(fid, hex2dec(E{k, 2}), 'uint16');
         if strcmp(E{k, 3}, 'US')

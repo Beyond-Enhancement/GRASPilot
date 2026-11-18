@@ -18,14 +18,15 @@ show synthetic phantoms rendered with GNU Octave; controls look slightly differe
 
 ```matlab
 addpath('/path/to/GRASPilot')
-GRASPilot                              % then File > Open
+GRASPilot                              % then Open... or Open folder...
 GRASPilot('recon.mat')                 % load dialog for this file
 GRASPilot(vk_all, basis_all)           % variables in the workspace
 GRASPilot(data1)                       % output of ReadData.m ([nx ny t nz])
 GRASPilot('recon.mat', 'Voxel', [1 1 1], 'dt', 3.3, 'NoDialog', true)
 GRASPilot('recon.mat', 'BinSize', 2)   % average every 2 frames on load
 GRASPilot('dce_4d.nii.gz')             % 4D NIfTI
-GRASPilot('/path/to/dicom_folder')     % DICOM series (or one of its files)
+GRASPilot('/path/to/folder')           % DICOM series (also extensionless files), NIfTI or .mat
+GRASPilot('/path/to/dicom/IM_0001')    % one image of a DICOM series
 ```
 
 For `.mat` files the load dialog detects `vk_all`/`basis_all`, shows matrix, K, T and a
@@ -44,7 +45,13 @@ the cropped coefficients are kept; frames, time courses and maps are computed on
 the original ReadData.m on a real file (expected difference ~1e-7). Bases stored as
 `[slices K T]` or one shared `[T K]` are accepted.
 
-**NIfTI and DICOM** (File > Open, File > Open DICOM folder) need no dialog:
+**Open folder...** (button or File menu) opens what a folder holds: a DICOM series, NIfTI
+files (one 4D file, or 3D files = frames in name order) or a `.mat` file; a list asks when
+there is a choice. DICOM files are recognized by their content, so names without an
+extension (e.g. `IM_0001`, `I1234`) and files without the 128-byte preamble work, and
+subfolders (patient/study/series) are searched. Other files in the folder are ignored.
+
+**NIfTI and DICOM** need no dialog:
 
 - Geometry from the header; exports keep the scanner coordinates of the input, so they
   overlay on the original series. Oblique slices are shown on their own grid.
@@ -394,6 +401,7 @@ Standalone build: `mcc -m graspilot_app.m -a GRASPilot.m -a GRASPilotData.m -a g
 | `GRASPilot.m`, `graspilot_app.m` | GUI; launcher / compiler entry point |
 | `GRASPilotData.m` | data model: loading, frame synthesis, orientation, maps, PK maps, affine |
 | `graspilot_load_dialog.m`, `graspilot_dicom_read.m` | `.mat` dialog; DICOM reader |
+| `graspilot_folder_contents.m`, `graspilot_is_dicom.m` | what a folder holds; DICOM detection by content |
 | `graspilot_nifti_read.m`, `graspilot_nifti_write.m`, `graspilot_write_dce_nifti.m` | NIfTI I/O, series + JSON sidecar |
 | `graspilot_export_timeseries.m`, `graspilot_export_params.m` | spreadsheet exports |
 | `graspilot_curve_params.m`, `graspilot_ref_window.m`, `graspilot_end_frame.m` | semi-quantitative parameters, SSS wash-in period, endpoint |

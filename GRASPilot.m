@@ -207,6 +207,10 @@ classdef GRASPilot < handle
 
         function openFile(obj, file, opts)
             if nargin < 3, opts = obj.LoadOpts; end
+            if exist(file, 'dir') == 7
+                obj.openFolder(file, opts);
+                return
+            end
             kind = GRASPilot.inputKind(file);
             if ~strcmp(kind, 'mat')
                 obj.openImages(file, kind, opts);
@@ -231,6 +235,63 @@ classdef GRASPilot < handle
             obj.applyLoadGeometry(D, opts);
             obj.LastDir = fileparts(file);
             obj.setData(D);
+        end
+
+        function openFolder(obj, folder, opts)
+            % Open what a folder holds: a DICOM series (files with any name or
+            % no extension; subfolders are searched), NIfTI files (one 4D file,
+            % or several 3D files = frames) or a .mat reconstruction. When the
+            % folder holds several kinds or several files, a list asks which.
+            if nargin < 3, opts = obj.LoadOpts; end
+            c = graspilot_folder_contents(folder);
+            kinds = {};
+            lbl = {};
+            if c.Dicom
+                kinds{end + 1} = 'dicom'; lbl{end + 1} = 'DICOM series (this folder and its subfolders)';
+            end
+            if ~isempty(c.Nifti)
+                kinds{end + 1} = 'nifti'; lbl{end + 1} = sprintf('NIfTI (%d file(s))', numel(c.Nifti));
+            end
+            if ~isempty(c.Mat)
+                kinds{end + 1} = 'mat'; lbl{end + 1} = sprintf('MATLAB .mat reconstruction (%d file(s))', numel(c.Mat));
+            end
+            if isempty(kinds)
+                error('GRASPilot:input', ['No DICOM, NIfTI or .mat files found in %s (DICOM files are ' ...
+                    'recognized by their content, also without extension; subfolders are searched).'], folder);
+            end
+            k = 1;
+            if numel(kinds) > 1 && ~obj.Quiet
+                [k, okd] = listdlg('ListString', lbl, 'SelectionMode', 'single', 'InitialValue', 1, ...
+                    'Name', 'Open folder', 'ListSize', [420 120], 'PromptString', 'The folder holds:');
+                if ~okd || isempty(k), return; end
+            end
+            obj.LastDir = folder;
+            switch kinds{k}
+                case 'dicom'
+                    obj.openImages(folder, 'dicom', opts);
+                case 'nifti'
+                    files = c.Nifti;
+                    if numel(files) > 1 && ~obj.Quiet
+                        [~, nm, ex] = cellfun(@fileparts, files, 'UniformOutput', false);
+                        [sel, okd] = listdlg('ListString', strcat(nm, ex), 'InitialValue', 1:numel(files), ...
+                            'Name', 'NIfTI files', 'ListSize', [420 300], 'PromptString', ...
+                            {'One 4D file, or several 3D files (one per frame,', 'in name order):'});
+                        if ~okd || isempty(sel), return; end
+                        files = files(sel);
+                    end
+                    if numel(files) == 1, files = files{1}; end
+                    obj.openImages(files, 'nifti', opts);
+                case 'mat'
+                    f = c.Mat{1};
+                    if numel(c.Mat) > 1 && ~obj.Quiet
+                        [~, nm, ex] = cellfun(@fileparts, c.Mat, 'UniformOutput', false);
+                        [sel, okd] = listdlg('ListString', strcat(nm, ex), 'SelectionMode', 'single', ...
+                            'Name', '.mat files', 'ListSize', [420 300], 'PromptString', 'Reconstruction to open:');
+                        if ~okd || isempty(sel), return; end
+                        f = c.Mat{sel};
+                    end
+                    obj.openFile(f, opts);
+            end
         end
 
         function openImages(obj, src, kind, opts)
@@ -1979,7 +2040,7 @@ classdef GRASPilot < handle
         function buildMenus(obj)
             m = uimenu(obj.Fig, 'Label', 'File');
             uimenu(m, 'Label', 'Open (.mat, NIfTI, DICOM file)...', 'Callback', @(s, e) obj.onOpen());
-            uimenu(m, 'Label', 'Open DICOM folder...', 'Callback', @(s, e) obj.onOpenDicomFolder());
+            uimenu(m, 'Label', 'Open folder (DICOM, NIfTI, .mat)...', 'Callback', @(s, e) obj.onOpenFolder());
             uimenu(m, 'Label', 'Save ROIs (session)...', 'Separator', 'on', 'Callback', @(s, e) obj.onSaveROIs());
             uimenu(m, 'Label', 'Load ROIs (session)...', 'Callback', @(s, e) obj.onLoadROIs());
             uimenu(m, 'Label', 'Import mask NIfTI...', 'Callback', @(s, e) obj.onImportMask());
@@ -2052,8 +2113,12 @@ classdef GRASPilot < handle
             P = obj.H.left; C = obj.Col;
             hdr = @(top, s) obj.ctl(P, 10, top, -10, 18, 'text', s, 'FontWeight', 'bold', 'ForegroundColor', C.accent);
             hdr(8, 'DATA');
-            obj.ctl(P, 10, 28, 135, 26, 'pushbutton', 'Open...', 'TooltipString', '.mat reconstruction, 4D NIfTI or a DICOM image (File menu: Open DICOM folder)', 'Callback', @(s, e) obj.onOpen());
-            obj.ctl(P, 150, 28, 140, 26, 'pushbutton', 'Geometry...', 'Callback', @(s, e) obj.geometryDialog());
+            obj.ctl(P, 10, 28, 84, 26, 'pushbutton', 'Open...', 'TooltipString', ...
+                '.mat reconstruction, NIfTI, or one image of a DICOM series', 'Callback', @(s, e) obj.onOpen());
+            obj.ctl(P, 98, 28, 104, 26, 'pushbutton', 'Open folder...', 'TooltipString', ...
+                ['Folder with a DICOM series (files with or without extension, subfolders searched), ' ...
+                'NIfTI files or a .mat file'], 'Callback', @(s, e) obj.onOpenFolder());
+            obj.ctl(P, 206, 28, 84, 26, 'pushbutton', 'Geometry...', 'Callback', @(s, e) obj.geometryDialog());
             obj.H.info = obj.ctl(P, 10, 58, -10, 44, 'text', 'No data loaded.', 'FontSize', 8, 'ForegroundColor', C.dim);
             obj.ctl(P, 10, 108, 86, 18, 'text', 'Average every');
             obj.H.binEdit = obj.ctl(P, 98, 106, 36, 22, 'edit', '1', ...
@@ -4692,7 +4757,7 @@ classdef GRASPilot < handle
                     files = cellfun(@(x) fullfile(p, x), f, 'UniformOutput', false);
                     if ~strcmp(GRASPilot.inputKind(files{1}), 'nifti')
                         error('GRASPilot:input', ['Select one file, or several 3D NIfTI files (one per frame). ' ...
-                            'For a DICOM series choose one of its images or use Open DICOM folder.']);
+                            'For a DICOM series choose one of its images or use Open folder.']);
                     end
                     obj.openImages(files, 'nifti');
                 else
@@ -4703,13 +4768,14 @@ classdef GRASPilot < handle
             end
         end
 
-        function onOpenDicomFolder(obj)
-            d = uigetdir(obj.startDir(), 'Folder with the DICOM series (subfolders are searched)');
+        function onOpenFolder(obj)
+            d = uigetdir(obj.startDir(), ['Folder with a DICOM series (files with or without extension; ' ...
+                'subfolders are searched), NIfTI or .mat files']);
             if isequal(d, 0), return; end
             try
-                obj.openImages(d, 'dicom');
+                obj.openFolder(d, obj.LoadOpts);
             catch err
-                obj.showError(err, 'Could not load DICOM');
+                obj.showError(err, 'Could not load data');
             end
         end
 
@@ -5306,11 +5372,7 @@ classdef GRASPilot < handle
             if ~isempty(regexp(lf, '(\.nii|\.nii\.gz)$', 'once')), kind = 'nifti'; return; end
             if ~isempty(regexp(lf, '\.mat$', 'once')), return; end
             if ~isempty(regexp(lf, '(\.dcm|\.ima|\.dicom)$', 'once')), kind = 'dicom'; return; end
-            fid = fopen(file, 'r');
-            if fid < 0, return; end
-            b = fread(fid, 132, '*uint8')';
-            fclose(fid);
-            if numel(b) == 132 && isequal(b(129:132), uint8('DICM')), kind = 'dicom'; end
+            if graspilot_is_dicom(file), kind = 'dicom'; end
         end
 
         function L = wrapText(s, w)

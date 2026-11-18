@@ -65,6 +65,52 @@ f1 = dir(fullfile(dd, 's3')); f1 = f1(~[f1.isdir]);
 app.openFile(fullfile(dd, 's3', f1(1).name));                % one image of a series
 okD = okD && app.Data.NTRaw == 6;
 nfail = nfail + check('viewer opens DICOM (folder, series choice, single file)', okD, app.Data.NTRaw);
+% Open folder: extensionless DICOM in a subfolder, bare data sets, NIfTI folders
+df = fullfile(out, 'folder_dcm');
+graspilot_dicom_write(fullfile(df, 'patient', 'study', 'series'), Vu, gd);
+fid = fopen(fullfile(df, 'README'), 'w'); fprintf(fid, 'not DICOM\n'); fclose(fid);
+fid = fopen(fullfile(df, 'patient', 'notes'), 'w'); fprintf(fid, 'not DICOM either\n'); fclose(fid);
+c = graspilot_folder_contents(df);
+okF = c.Dicom && isempty(c.Nifti) && isempty(c.Mat) && ~graspilot_is_dicom(fullfile(df, 'README'));
+app.openFolder(df);
+okF = okF && strcmp(app.Data.SourceType, 'dicom') && app.Data.NTRaw == 6 && ...
+    isequal(app.Data.canonVolume(5), single(Vu(:, :, :, 5)));
+nfail = nfail + check('Open folder: DICOM without extensions, in subfolders', okF, app.Data.NTRaw);
+db = fullfile(out, 'folder_bare');
+gb = gd; gb.NoPreamble = true; gb.SeriesNumber = 9;
+graspilot_dicom_write(db, Vu, gb);
+fb = dir(db); fb = fb(~[fb.isdir]);
+okB = graspilot_is_dicom(fullfile(db, fb(1).name)) && strcmp(GRASPilot.inputKind(fullfile(db, fb(1).name)), 'dicom');
+app.openFolder(db);
+okB = okB && app.Data.NTRaw == 6 && isequal(app.Data.canonVolume(2), single(Vu(:, :, :, 2)));
+app.openFile(fullfile(db, fb(1).name));
+okB = okB && app.Data.NTRaw == 6;
+nfail = nfail + check('DICOM without preamble (folder and single file)', okB, app.Data.NTRaw);
+dn = fullfile(out, 'folder_nii4d'); mkdir(dn);
+copyfile(fin, fullfile(dn, 'dyn.nii.gz'));
+app.openFolder(dn);
+okN = strcmp(app.Data.SourceType, 'nifti') && app.Data.NTRaw == T;
+d3 = fullfile(out, 'folder_nii3d'); mkdir(d3);
+for f = 1:3
+    graspilot_nifti_write(fullfile(d3, sprintf('frame%02d.nii', f)), Vn(:, :, :, f), struct('Dim', n, ...
+        'Vox', [2 2 2], 'Affine', A, 'Datatype', 'float32', 'Descrip', 'test'));
+end
+app.openFolder(d3);
+okN = okN && app.Data.NTRaw == 3 && isequal(app.Data.canonVolume(3), Vc(:, :, :, 3));
+copyfile(fullfile(df, 'patient'), fullfile(d3, 'dicom'));    % DICOM and NIfTI: DICOM first (quiet)
+c = graspilot_folder_contents(d3);
+app.openFolder(d3);
+okN = okN && c.Dicom && numel(c.Nifti) == 3 && strcmp(app.Data.SourceType, 'dicom');
+nfail = nfail + check('Open folder: 4D NIfTI, 3D NIfTI frames, mixed folder', okN, app.Data.NTRaw);
+de = fullfile(out, 'folder_empty'); mkdir(de);
+copyfile(fullfile(df, 'README'), de);
+try
+    app.openFolder(de);
+    okE = false;
+catch err
+    okE = ~isempty(strfind(err.message, 'No DICOM, NIfTI or .mat'));
+end
+nfail = nfail + check('Open folder: nothing to open -> clear error', okE, 0);
 % uneven frame timing: display, parameters, export / re-import, typed s/frame
 tu = [0 4 8 12 20 28];
 gu = gd; gu.SeriesNumber = 5; gu.Description = 'uneven'; gu.Times = tu;
