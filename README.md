@@ -101,6 +101,8 @@ Mouse: left = tool, right-drag = window/level, shift/middle-drag = pan, wheel = 
 Ctrl+wheel = zoom, click on the curves = jump to that frame. Keys: Left/Right frame
 (Shift: 10), Up/Down slice, Space play, N/C/B/E tools, [ ] brush size, D 3D, P preview,
 S subtraction view, G grow, M parameter map, X crosshair, Ctrl+Z/Y undo/redo (Help lists all).
+Progress bars (loading, maps, model fits, motion) show the estimated time remaining once a
+few seconds of progress allow an estimate.
 
 ## Segmentation
 

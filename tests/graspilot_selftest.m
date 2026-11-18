@@ -194,6 +194,15 @@ ok = ~isempty(regexp(gv.Version, '^\d+\.\d+\.\d+$', 'once')) && ...
     (isempty(gv.Revision) || ~isempty(strfind(gv.Details, regexprep(gv.Revision, '-.*$', ''))) || ...
     ~isempty(strfind(gv.Details, 'Commit')));
 nfail = nfail + check(['version ' gv.Text], ok, 0);
+% estimated time remaining: rate since the stage start; a drop in the fraction starts a new stage
+st = struct('f0', 0, 'e0', 0, 'last', 0);
+[st, t1] = GRASPilot.etaUpdate(st, 0.01, 1);
+[st, t2] = GRASPilot.etaUpdate(st, 0.10, 10);
+[st, t3] = GRASPilot.etaUpdate(st, 0.05, 100);
+[st, t4] = GRASPilot.etaUpdate(st, 0.10, 110);
+[~, t5] = GRASPilot.etaUpdate(struct('f0', 0, 'e0', 0, 'last', 0), 0.10, 1000);
+nfail = nfail + check('estimated time remaining (stages, formatting)', isempty(t1) && strcmp(t2, 'about 1 min 30 s') && ...
+    isempty(t3) && strcmp(t4, 'about 3 min') && strcmp(t5, 'about 2 h 30 min'), 0);
 
 % ---------------------------------------------------------------- 4. enhancement maps
 D.setOrientation('axial', false, [0 0 0]);

@@ -105,6 +105,7 @@ classdef GRASPilot < handle
         ParamA = cell(1, 3);
         LoadOpts = struct();
         Busy = false;
+        Eta = struct('tic', [], 'f0', 0, 'e0', 0, 'last', 0);   % progress timing (estimated time remaining)
         Quiet = false;          % true: dialogs auto-answer with defaults (scripting/tests)
     end
 
@@ -4403,7 +4404,7 @@ classdef GRASPilot < handle
         end
 
         function motionProgress(obj, wb, f, m)
-            obj.wbUpdate(wb, f, m);
+            m = obj.wbUpdate(wb, f, m);
             if isfield(obj.MW, 'Fig') && ishghandle(obj.MW.Fig)
                 set(obj.MW.info, 'String', m);
             end
@@ -5399,6 +5400,7 @@ classdef GRASPilot < handle
 
         function wb = wbOpen(obj, msg)
             obj.Busy = true;
+            obj.Eta = struct('tic', tic, 'f0', 0, 'e0', 0, 'last', 0);
             wb = [];
             if obj.Quiet, return; end
             try
@@ -5409,9 +5411,15 @@ classdef GRASPilot < handle
             end
         end
 
-        function wbUpdate(~, wb, f, msg)
+        function msg = wbUpdate(obj, wb, f, msg)
+            % progress bar with the estimated time remaining; returns the message shown
+            f = max(0, min(1, f));
+            if ~isempty(obj.Eta.tic)
+                [obj.Eta, eta] = GRASPilot.etaUpdate(obj.Eta, f, toc(obj.Eta.tic));
+                if ~isempty(eta), msg = sprintf('%s\nEstimated time remaining: %s', msg, eta); end
+            end
             if ~isempty(wb) && ishghandle(wb)
-                waitbar(max(0, min(1, f)), wb, msg);
+                waitbar(f, wb, msg);
             end
         end
 
@@ -5522,6 +5530,38 @@ classdef GRASPilot < handle
 
         function s = ternaryStr(c, a, b)
             if c, s = a; else, s = b; end
+        end
+
+        function [st, txt] = etaUpdate(st, f, elapsed)
+            % Estimated time remaining from the progress rate since the start of
+            % the current stage (a drop in the fraction starts a new stage).
+            % st: struct f0, e0 (fraction and elapsed s at the stage start), last.
+            % Shown after >= 2 s and >= 2% of progress in the stage; '' otherwise.
+            txt = '';
+            if f < st.last - 0.01
+                st.f0 = f; st.e0 = elapsed;
+            end
+            st.last = f;
+            df = f - st.f0; de = elapsed - st.e0;
+            if f >= 1 || de < 2 || df < 0.02, return; end
+            rem = (1 - f) * de / df;
+            if rem < 10
+                txt = 'a few seconds';
+            elseif rem < 60
+                txt = sprintf('about %d s', 5 * round(rem / 5));
+            elseif rem < 3600
+                m = floor(rem / 60); s = 10 * round(mod(rem, 60) / 10);
+                if s == 60, m = m + 1; s = 0; end
+                if m >= 10 || s == 0
+                    txt = sprintf('about %d min', round(rem / 60));
+                else
+                    txt = sprintf('about %d min %d s', m, s);
+                end
+            else
+                h = floor(rem / 3600); m = round(mod(rem, 3600) / 60);
+                if m == 60, h = h + 1; m = 0; end
+                txt = sprintf('about %d h %d min', h, m);
+            end
         end
 
         function dsp = formatStatsRows(rows)
